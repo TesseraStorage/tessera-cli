@@ -1,0 +1,5 @@
+/tessera
+/tessera-*
+/tessera.exe
+*.exe
+dist/
