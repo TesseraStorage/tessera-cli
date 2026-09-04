@@ -6,7 +6,19 @@ Command-line client for [Tessera](https://siagate.dev) — decentralized storage
 
 ## Quickstart
 
-### 1. Download
+### macOS / Linux
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TesseraStorage/tessera-cli/main/install.sh | bash
+```
+
+### Windows (PowerShell)
+
+```powershell
+powershell -c "irm https://raw.githubusercontent.com/TesseraStorage/tessera-cli/main/install.ps1 | iex"
+```
+
+### Manual download
 
 | Platform | Binary |
 |---|---|
@@ -15,24 +27,16 @@ Command-line client for [Tessera](https://siagate.dev) — decentralized storage
 | **macOS** (Intel) | `tessera-darwin-amd64` |
 | **Windows** (x86_64) | `tessera-windows-amd64.exe` |
 
-### 2. Login
+### Next steps
 
 ```bash
-./tessera login
-```
-
-A browser tab opens. Enter the connect key you were given, click Approve. Save your 12-word recovery phrase — it's the **only** way back to your account.
-
-### 3. Use
-
-```bash
-./tessera upload photo.png      # Erasure-coded across 30 Sia hosts
-./tessera list                  # See all your files
-./tessera download photo.png    # Get it back, SHA-256 verified
-./tessera share photo.png       # Create a 30-day share link
-./tessera delete photo.png      # Remove from your account
-./tessera status                # File count + total storage used
-./tessera logout                # Remove local credentials
+tessera login                    # Browser opens — enter your connect key, approve, save 12 words
+tessera upload photo.png         # Erasure-coded across 30 Sia hosts
+tessera list                     # See all your files
+tessera download photo.png       # Get it back, SHA-256 verified
+tessera share photo.png          # Create a 30-day share link
+tessera fetch <url> photo.png    # Download someone else's shared file
+tessera status                   # File count + total storage used
 ```
 
 ## Commands
