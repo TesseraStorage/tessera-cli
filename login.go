@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"go.sia.tech/core/types"
+	indexdapp "go.sia.tech/indexd/api/app"
 	"go.sia.tech/indexd/slabs"
 	siastorage "go.sia.tech/siastorage"
 	"golang.org/x/term"
@@ -44,6 +45,24 @@ func connectSDK(ctx context.Context, cfg *Config) (*siastorage.SDK, func(), erro
 	}
 	cleanup := func() { sdk.Close() }
 	return sdk, cleanup, nil
+}
+
+// connectAPI creates a lightweight indexer API client for read-only
+// operations. Unlike connectSDK, it does NOT fetch hosts, warm
+// connections, or start background refresh loops that increment server
+// occupancy on the El Grande pair server.
+//
+// Use this for commands that only need indexer API access (status, list,
+// whoami). Commands that need host connectivity (upload, download, fetch)
+// must still use connectSDK.
+func connectAPI(cfg *Config) (*indexdapp.Client, types.PrivateKey, error) {
+	appKeyBytes, err := hex.DecodeString(cfg.AppKey)
+	if err != nil || len(appKeyBytes) < 32 {
+		return nil, nil, fmt.Errorf("invalid app key (%d bytes) — run 'tessera login'", len(appKeyBytes))
+	}
+	appKey := types.PrivateKey(appKeyBytes)
+	client := indexdapp.NewClient(cfg.IndexerURL)
+	return client, appKey, nil
 }
 
 // openBrowser tries to open url in the default browser.
@@ -222,13 +241,12 @@ func cmdStatus() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	sdk, cleanup, err := connectSDK(ctx, cfg)
+	client, appKey, err := connectAPI(cfg)
 	if err != nil {
 		fatal("%v", err)
 	}
-	defer cleanup()
 
-	acct, err := sdk.Account(ctx)
+	acct, err := client.Account(ctx, appKey)
 	if err != nil {
 		fatal("account: %v", err)
 	}
@@ -238,7 +256,7 @@ func cmdStatus() {
 	var count int
 	var cursor slabs.Cursor
 	for {
-		evs, err := sdk.ObjectEvents(ctx, cursor, 100)
+		evs, err := client.ListObjects(ctx, appKey, cursor, 100)
 		if err != nil {
 			fatal("list: %v", err)
 		}
@@ -251,7 +269,9 @@ func cmdStatus() {
 			}
 			count++
 			if ev.Object != nil {
-				total += ev.Object.Size()
+				for _, ss := range ev.Object.Slabs {
+					total += uint64(ss.Length)
+				}
 			}
 		}
 		last := evs[len(evs)-1]
