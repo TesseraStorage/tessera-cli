@@ -30,11 +30,10 @@ func cmdList() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	sdk, cleanup, err := connectSDK(ctx, cfg)
+	client, appKey, err := connectAPI(cfg)
 	if err != nil {
 		fatal("%v", err)
 	}
-	defer cleanup()
 
 	type row struct {
 		name      string
@@ -45,7 +44,7 @@ func cmdList() {
 
 	var cursor slabs.Cursor
 	for {
-		evs, err := sdk.ObjectEvents(ctx, cursor, 100)
+		evs, err := client.ListObjects(ctx, appKey, cursor, 100)
 		if err != nil {
 			fatal("list: %v", err)
 		}
@@ -59,14 +58,8 @@ func cmdList() {
 			name := ev.Key.String()[:12] + "..."
 			var sz uint64
 			if ev.Object != nil {
-				sz = ev.Object.Size()
-				if meta := ev.Object.Metadata(); len(meta) > 0 {
-					var m map[string]string
-					if json.Unmarshal(meta, &m) == nil {
-						if n, ok := m["name"]; ok && n != "" {
-							name = n
-						}
-					}
+				for _, ss := range ev.Object.Slabs {
+					sz += uint64(ss.Length)
 				}
 			}
 			rows = append(rows, row{name: name, size: sz, updatedAt: ev.UpdatedAt})
