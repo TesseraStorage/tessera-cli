@@ -70,7 +70,7 @@ Credentials stored at `~/.tessera/config.json`:
 
 ```json
 {
-  "indexer_url": "https://index.dithr.dev",
+  "indexer_url": "https://index.tessera.storage",
   "app_id": "...",
   "app_key": "...",
   "phrase_encrypted": "...",   // optional — AES-GCM with Argon2id key

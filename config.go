@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	defaultIndexer = "https://index.dithr.dev"
+	defaultIndexer = "https://index.tessera.storage"
 	configDirName  = ".tessera"
 	configFileName = "config.json"
 )
