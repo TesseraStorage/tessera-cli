@@ -97,6 +97,6 @@ Usage:
   %s share <name>        Create a share link for a file
   %s fetch <url> [name]  Download a shared file
 
-Indexer: https://index.dithr.dev
+Indexer: https://index.tessera.storage
 `, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe)
 }
