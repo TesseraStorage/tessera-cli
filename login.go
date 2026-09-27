@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -79,9 +78,20 @@ func openBrowser(url string) error {
 	}
 }
 
-func cmdLogin() {
+func cmdLogin(args []string) {
 	fmt.Println("Tessera CLI — Login")
 	fmt.Println()
+
+	// A seed phrase supplied up front makes the resulting app key
+	// deterministic, which is what the test key documented in TESTING.md
+	// relies on. It is also useful for restoring an existing account.
+	phraseArg := ""
+	if pos := positional(args); len(pos) > 0 {
+		phraseArg = pos[0]
+	}
+	if env := os.Getenv("TESSERA_PHRASE"); phraseArg == "" && env != "" {
+		phraseArg = env
+	}
 
 	cfg, err := loadConfig()
 	if err == nil && cfg.AppKey != "" {
@@ -142,18 +152,27 @@ func cmdLogin() {
 		fatal("wait failed: %v\n  (did you approve in the browser?)", err)
 	}
 
-	// Step 4 — generate recovery phrase and register
-	phrase := siastorage.NewSeedPhrase()
-	fmt.Println("approved!")
-	fmt.Println()
-	fmt.Println(strings.Repeat("═", 54))
-	fmt.Println("  RECOVERY PHRASE — SAVE THESE 12 WORDS")
-	fmt.Println("  They are the ONLY way to recover your account.")
-	fmt.Println("  We do not store them.")
-	fmt.Println(strings.Repeat("═", 54))
-	fmt.Printf("  %s\n", phrase)
-	fmt.Println(strings.Repeat("═", 54))
-	fmt.Println()
+	// Step 4 — generate or reuse the recovery phrase and register
+	phrase := phraseArg
+	if phrase == "" {
+		phrase = siastorage.NewSeedPhrase()
+		fmt.Println("approved!")
+		fmt.Println()
+		fmt.Println(strings.Repeat("═", 54))
+		fmt.Println("  RECOVERY PHRASE — SAVE THESE 12 WORDS")
+		fmt.Println("  They are the ONLY way to recover your account.")
+		fmt.Println("  We do not store them.")
+		fmt.Println(strings.Repeat("═", 54))
+		fmt.Printf("  %s\n", phrase)
+		fmt.Println(strings.Repeat("═", 54))
+		fmt.Println()
+	} else {
+		fmt.Println("approved!")
+		fmt.Println()
+		fmt.Println("Using the recovery phrase you supplied — the app key is derived")
+		fmt.Println("from it, so this account is reproducible on any machine.")
+		fmt.Println()
+	}
 
 	sdk, err := builder.Register(ctx, phrase)
 	if err != nil {
@@ -164,23 +183,26 @@ func cmdLogin() {
 	cfg.AppKey = hex.EncodeToString([]byte(appKey))
 	sdk.Close()
 
-	// Optional: encrypt phrase locally
-	fmt.Print("Protect recovery phrase with a master password? [Y/n] ")
-	var protect string
-	fmt.Scanln(&protect)
-	if strings.ToLower(protect) != "n" {
-		pass := readPassword("Master password: ")
-		confirm := readPassword("Confirm password:   ")
-		if pass != confirm {
-			fmt.Println("Passwords don't match. Phrase will NOT be saved locally.")
-		} else if pass != "" {
-			enc, salt, e := encryptPhrase(phrase, pass)
-			if e != nil {
-				fmt.Printf("Encryption failed: %v\n", e)
-			} else {
-				cfg.PhraseEncrypted = enc
-				cfg.PhraseSalt = salt
-				fmt.Println("Recovery phrase encrypted and saved.")
+	// Optional: encrypt phrase locally. Skipped when the phrase was supplied
+	// on the command line, since the caller already has it.
+	if phraseArg == "" {
+		fmt.Print("Protect recovery phrase with a master password? [Y/n] ")
+		var protect string
+		fmt.Scanln(&protect)
+		if strings.ToLower(protect) != "n" {
+			pass := readPassword("Master password: ")
+			confirm := readPassword("Confirm password:   ")
+			if pass != confirm {
+				fmt.Println("Passwords don't match. Phrase will NOT be saved locally.")
+			} else if pass != "" {
+				enc, salt, e := encryptPhrase(phrase, pass)
+				if e != nil {
+					fmt.Printf("Encryption failed: %v\n", e)
+				} else {
+					cfg.PhraseEncrypted = enc
+					cfg.PhraseSalt = salt
+					fmt.Println("Recovery phrase encrypted and saved.")
+				}
 			}
 		}
 	}
@@ -232,13 +254,13 @@ func cmdWhoami() {
 	}
 }
 
-func cmdStatus() {
+func cmdStatus(args ...string) {
 	cfg, err := loadConfig()
 	if err != nil {
 		fatal("Not logged in. Run 'tessera login' first.")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	client, appKey, err := connectAPI(cfg)
@@ -250,39 +272,54 @@ func cmdStatus() {
 	if err != nil {
 		fatal("account: %v", err)
 	}
-	fmt.Printf("Ready:     %v\n", acct.Ready)
 
-	var total uint64
-	var count int
-	var cursor slabs.Cursor
-	for {
-		evs, err := client.ListObjects(ctx, appKey, cursor, 100)
-		if err != nil {
-			fatal("list: %v", err)
-		}
-		if len(evs) == 0 {
-			break
-		}
-		for _, ev := range evs {
-			if ev.Deleted {
-				continue
-			}
-			count++
-			if ev.Object != nil {
-				for _, ss := range ev.Object.Slabs {
-					total += uint64(ss.Length)
-				}
-			}
-		}
-		last := evs[len(evs)-1]
-		next := slabs.Cursor{Key: last.Key, After: last.UpdatedAt}
-		if sameCursor(cursor, next) {
-			break
-		}
-		cursor = next
+	sdk, cleanup, err := connectSDK(ctx, cfg)
+	if err != nil {
+		fatal("%v", err)
 	}
-	fmt.Printf("Files:     %d\n", count)
-	fmt.Printf("Total:     %s\n", formatBytes(total))
+	defer cleanup()
+	idx, err := rebuildIndex(ctx, NewRemote(sdk), cfg.AppID)
+	if err != nil {
+		fatal("index: %v", err)
+	}
+
+	roots, _ := listSyncRoots()
+	var pending int
+	for _, r := range roots {
+		st, err := loadSyncState(r.ID)
+		if err != nil {
+			continue
+		}
+		for _, e := range st.Entries {
+			if e.DeletedLocal || e.DeletedRemote {
+				pending++
+			}
+		}
+	}
+
+	if hasFlag(args, "--json") {
+		emitJSON(map[string]interface{}{
+			"ready":        acct.Ready,
+			"indexer":      cfg.IndexerURL,
+			"app_id":       cfg.AppID,
+			"files":        len(idx.Paths),
+			"bytes":        idx.TotalSize(),
+			"sync_folders": len(roots),
+			"pending_sync": pending,
+		})
+		return
+	}
+
+	fmt.Printf("Ready:     %v\n", acct.Ready)
+	fmt.Printf("Files:     %d\n", len(idx.Paths))
+	fmt.Printf("Total:     %s\n", formatBytes(idx.TotalSize()))
+	if len(roots) > 0 {
+		fmt.Printf("Synced:    %d folder(s)", len(roots))
+		if pending > 0 {
+			fmt.Printf(", %d change(s) pending — run 'tessera sync'", pending)
+		}
+		fmt.Println()
+	}
 }
 
 func sameCursor(a, b slabs.Cursor) bool {
@@ -306,42 +343,4 @@ func fatal(format string, args ...interface{}) {
 	}
 	fmt.Fprintf(os.Stderr, "ERROR: %s", msg)
 	os.Exit(1)
-}
-
-// findObject scans the account for an object whose metadata name matches.
-func findObject(ctx context.Context, sdk siastorage.SDK, name string) (siastorage.Object, error) {
-	var cursor slabs.Cursor
-	for {
-		evs, err := sdk.ObjectEvents(ctx, cursor, 100)
-		if err != nil {
-			return siastorage.Object{}, fmt.Errorf("list: %w", err)
-		}
-		if len(evs) == 0 {
-			break
-		}
-		for _, ev := range evs {
-			if ev.Deleted || ev.Object == nil {
-				continue
-			}
-			got := ev.Key.String()[:12] + "..."
-			if meta := ev.Object.Metadata(); len(meta) > 0 {
-				var m map[string]string
-				if json.Unmarshal(meta, &m) == nil {
-					if n, ok := m["name"]; ok && n != "" {
-						got = n
-					}
-				}
-			}
-			if got == name {
-				return *ev.Object, nil
-			}
-		}
-		last := evs[len(evs)-1]
-		next := slabs.Cursor{Key: last.Key, After: last.UpdatedAt}
-		if sameCursor(cursor, next) {
-			break
-		}
-		cursor = next
-	}
-	return siastorage.Object{}, fmt.Errorf("file not found: %s", name)
 }

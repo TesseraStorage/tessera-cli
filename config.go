@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -26,9 +27,31 @@ type Config struct {
 	AppKey          string `json:"app_key"`          // hex-encoded 32-byte seed
 	PhraseEncrypted string `json:"phrase_encrypted"` // AES-GCM encrypted, hex-encoded
 	PhraseSalt      string `json:"phrase_salt"`      // argon2 salt, hex-encoded
+
+	// VersionRetention is how many previous copies of a file to keep. 0 means
+	// no versions are retained (the old object is deleted on replace).
+	VersionRetention int `json:"version_retention,omitempty"`
+	// TrashRetentionDays is how long soft-deleted files stay recoverable.
+	// 0 means the 30 day default; a negative value disables trash entirely.
+	TrashRetentionDays int `json:"trash_retention_days,omitempty"`
+	// DefaultJobs limits parallel transfers (0 = the built-in default).
+	DefaultJobs int `json:"default_jobs,omitempty"`
+	// IndexerCostPerTBMonth is only used by cost forecasts; it lets an
+	// operator keep forecasts in step with real pricing.
+	IndexerCostPerTBMonth float64 `json:"indexer_cost_per_tb_month,omitempty"`
 }
 
+// configDir returns the directory holding credentials and state. The
+// TESSERA_HOME environment variable overrides the default ~/.tessera location,
+// which allows multiple accounts (or an isolated test sandbox) on one machine.
 func configDir() (string, error) {
+	if override := os.Getenv("TESSERA_HOME"); override != "" {
+		abs, err := filepath.Abs(override)
+		if err != nil {
+			return "", err
+		}
+		return abs, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("cannot find home directory: %w", err)
@@ -60,7 +83,29 @@ func loadConfig() (*Config, error) {
 	if cfg.IndexerURL == "" {
 		cfg.IndexerURL = defaultIndexer
 	}
+	// Migrate installs that were configured against the retired indexer host.
+	// The old host's certificate no longer matches, which surfaced as a
+	// confusing TLS error rather than an actionable message.
+	if migrated := migrateIndexerHost(&cfg); migrated {
+		_ = saveConfig(&cfg)
+	}
 	return &cfg, nil
+}
+
+// legacyIndexers maps retired indexer hosts to their replacement.
+var legacyIndexers = map[string]string{
+	"https://index.dithr.dev": defaultIndexer,
+	"http://index.dithr.dev":  defaultIndexer,
+}
+
+// migrateIndexerHost rewrites a retired indexer URL in place and reports
+// whether anything changed.
+func migrateIndexerHost(cfg *Config) bool {
+	if replacement, ok := legacyIndexers[strings.TrimRight(cfg.IndexerURL, "/")]; ok {
+		cfg.IndexerURL = replacement
+		return true
+	}
+	return false
 }
 
 func saveConfig(cfg *Config) error {
