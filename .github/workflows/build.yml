@@ -11,8 +11,28 @@ permissions:
   contents: write
 
 jobs:
+  # Fast gate: the unit suite covers the reconciliation table, deletion and
+  # conflict handling, so a failing test stops the matrix before four binaries
+  # are produced.
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
   build:
     name: ${{ matrix.target }}
+    needs: test
     runs-on: ubuntu-latest
     strategy:
       matrix:
