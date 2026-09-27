@@ -3,3 +3,4 @@
 /tessera.exe
 *.exe
 dist/
+tessera_build
