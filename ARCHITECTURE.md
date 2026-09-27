@@ -179,7 +179,35 @@ Mutating commands rebuild the index first. Acting on a stale cache produced
 "object not found" after work on another machine, which is exactly the kind of
 failure that erodes trust in a storage tool.
 
-## 9. Roadmap
+## 9. The background watcher
+
+`tessera sync` is a one-shot command, so nothing keeps a folder in step unless
+a watcher is running. The watcher is a per-user service:
+
+| platform | mechanism | definition |
+|---|---|---|
+| macOS | launchd user agent | `~/Library/LaunchAgents/io.tessera.watcher.plist` |
+| Linux | systemd user unit | `~/.config/systemd/user/tessera-watch.service` |
+| Windows | Scheduled Task at logon | Task `Tessera` |
+
+Design decisions worth recording:
+
+- **Nothing is installed without an explicit yes.** `service install` writes the
+  definition and then either prompts (`Keep this folder in sync automatically?
+  [Y/n]`) or, when stdin is not a terminal, prints the exact `--yes` command.
+  A CLI that silently registers a login item is a CLI people stop trusting.
+- **The activation command is real, not a suggestion.** For launchd the agent
+  must first be `bootout` (best effort) and then `bootstrap`ed; `kickstart`
+  alone fails on an agent launchd has never loaded. systemd needs no bootstrap
+  step. Windows uses `schtasks /create /sc onlogon`.
+- **`service status` reports running state, not file existence.** It queries
+  `launchctl print` or `systemctl --user is-active`, because a definition on
+  disk says nothing about whether sync is happening.
+- **Definitions are pure functions** (`plistContent`, `unitContent`,
+  `planService`) and the executor is injectable, so the exact installed content
+  and the exact commands are asserted in tests without mutating the host.
+
+## 10. Roadmap
 
 Ordered by value ÷ effort, with the reasoning for each.
 

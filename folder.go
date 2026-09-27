@@ -48,24 +48,28 @@ func cmdFolder(args []string) {
 
 func folderUsage() {
 	exe := filepath.Base(os.Args[0])
-	fmt.Printf(`Folder — a normal folder that stays in sync, like a cloud drive folder.
+	const usage = `Folder — a normal folder that stays in sync, like a cloud drive folder.
 
 Usage:
-  %s folder add [path]        Create/link a Tessera folder and start syncing
-        --as <remote-prefix>  Where it lives remotely (default: tessera/<name>)
+  %s folder add [path] [--as <remote-prefix>] [--install-service]
+        Create/link a Tessera folder and run a first sync.
+        --as               Where it lives remotely (default: tessera/<name>)
+        --install-service  Also install the background watcher, so the folder
+                           stays in sync without a terminal open
 
-  %s folder open              Open the folder in your file manager
-  %s folder status            Show sync state and recent activity
-  %s folder watch             Run the sync watcher in this terminal
-  %s folder remove <path>     Stop syncing (files are kept)
+  %s folder open [path]      Open the folder in your file manager
+  %s folder status           Show sync state and recent activity
+  %s folder watch            Keep syncing in this terminal (--interval, --verbose)
+  %s folder remove <path>    Stop syncing (files are kept)
 
 Drag files into the folder with Finder/Explorer and they upload. Files
 changed on another machine appear automatically. Deleting removes them
 everywhere.
 
-Tip: run 'tessera folder watch' in a terminal you keep open, or install it
-as a background service with 'tessera service install' (see README).
-`, exe, exe, exe, exe, exe)
+IMPORTANT: 'folder add' syncs once and then returns. Nothing watches the
+folder until you install the watcher, which it will offer to do.
+`
+	fmt.Printf(usage, exe, exe, exe, exe, exe)
 }
 
 // defaultFolderPath picks a sensible drop-in folder location.
@@ -107,7 +111,7 @@ func folderAdd(args []string) {
 	fmt.Println()
 
 	// First sync so the folder is immediately meaningful.
-	prune := runFolderFirstSync(cfg, args)
+	runFolderFirstSync(cfg, args)
 
 	fmt.Println()
 	if err := openPath(abs); err != nil {
@@ -115,11 +119,58 @@ func folderAdd(args []string) {
 	} else {
 		fmt.Println("Opened in your file manager — drag files in to upload them.")
 	}
-	if prune {
-		fmt.Println()
-		fmt.Println("Keep it in sync continuously with:")
-		fmt.Printf("  %s folder watch\n", filepath.Base(os.Args[0]))
+
+	// Be explicit: this command has now finished, so nothing is watching the
+	// folder. Claiming otherwise is how a sync tool loses people's trust.
+	fmt.Println()
+	fmt.Println("This folder has synced once. Nothing is watching it yet — files you")
+	fmt.Println("add now will only sync the next time a sync runs.")
+	fmt.Println()
+
+	if hasFlag(args, "--install-service") {
+		folderInstallService()
+		return
 	}
+
+	// Offer it directly when we can ask. A typed "yes" here is the difference
+	// between a folder that works and one that quietly stops syncing.
+	if yes, asked := promptYesNo("Keep this folder in sync automatically?", true); asked {
+		if yes {
+			folderInstallService()
+		} else {
+			fmt.Println()
+			fmt.Printf("  Sync on demand:   %s sync\n", filepath.Base(os.Args[0]))
+			fmt.Printf("  Set it up later:  %s service install --yes\n", filepath.Base(os.Args[0]))
+		}
+		return
+	}
+
+	// Non-interactive: never leave the user guessing what to run next.
+	fmt.Printf("  Keep it in sync:  %s service install --yes\n", filepath.Base(os.Args[0]))
+	fmt.Printf("  Or in this shell: %s folder watch\n", filepath.Base(os.Args[0]))
+	fmt.Printf("  (next time, add --install-service to do it in one step)\n")
+}
+
+// folderInstallService activates the background watcher from within
+// `folder add`, so a single command can leave the folder genuinely live.
+func folderInstallService() {
+	exe, err := watcherExecutable()
+	if err != nil {
+		fmt.Printf("\nCould not install the watcher: %v\n", err)
+		return
+	}
+	plan, err := planService(exe)
+	if err != nil {
+		fmt.Printf("\n%v\n", err)
+		fmt.Println("Your folder still syncs on demand with 'tessera sync'.")
+		return
+	}
+	if err := installService(exe, plan, true); err != nil {
+		fmt.Printf("\nCould not start the watcher: %v\n", err)
+		fmt.Println("Your folder still syncs on demand with 'tessera sync'.")
+		return
+	}
+	fmt.Println("Watcher installed and started — the folder is now live.")
 }
 
 // runFolderFirstSync performs an initial reconcile and reports anything that

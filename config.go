@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,29 +84,31 @@ func loadConfig() (*Config, error) {
 	if cfg.IndexerURL == "" {
 		cfg.IndexerURL = defaultIndexer
 	}
-	// Migrate installs that were configured against the retired indexer host.
-	// The old host's certificate no longer matches, which surfaced as a
-	// confusing TLS error rather than an actionable message.
-	if migrated := migrateIndexerHost(&cfg); migrated {
-		_ = saveConfig(&cfg)
+	// Anything not on the Tessera indexer host is rejected rather than silently
+	// used: a stale hostname produced an opaque TLS error, and pointing an
+	// account at a host it was not registered against is never what the user
+	// wants.
+	if !isTesseraIndexer(cfg.IndexerURL) {
+		return nil, fmt.Errorf("config %s points at %s, but this build only supports %s; run 'tessera login' to reconnect",
+			cp, cfg.IndexerURL, defaultIndexer)
 	}
 	return &cfg, nil
 }
 
-// legacyIndexers maps retired indexer hosts to their replacement.
-var legacyIndexers = map[string]string{
-	"https://index.dithr.dev": defaultIndexer,
-	"http://index.dithr.dev":  defaultIndexer,
-}
-
-// migrateIndexerHost rewrites a retired indexer URL in place and reports
-// whether anything changed.
-func migrateIndexerHost(cfg *Config) bool {
-	if replacement, ok := legacyIndexers[strings.TrimRight(cfg.IndexerURL, "/")]; ok {
-		cfg.IndexerURL = replacement
-		return true
+// isTesseraIndexer reports whether a URL is the supported indexer host.
+func isTesseraIndexer(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
 	}
-	return false
+	if u.Host == "" {
+		return false
+	}
+	want, err := url.Parse(defaultIndexer)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(u.Host, want.Host)
 }
 
 func saveConfig(cfg *Config) error {

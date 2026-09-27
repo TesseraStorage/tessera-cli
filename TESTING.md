@@ -29,6 +29,12 @@ These cover the parts where a mistake costs data:
 | `TestIgnoreRules` / `TestIgnoreFile` | Ignore semantics, including directory rules and negation |
 | `TestStateRoundTrip` | Sync state survives a save/load cycle, including the cursor |
 | `TestParseByteSize`, `TestFlagParsing`, `TestSameMTime` | CLI parsing and second-precision timestamp comparison |
+| `TestServiceDefinitionsAreBranded` | The service definitions carry no unrelated vendor name |
+| `TestPlistContent` / `TestUnitContent` | The launchd agent and systemd unit contain the required keys |
+| `TestPlanServicePathsAreAbsolute` | A definition is never written to a relative path |
+| `TestInstallServiceWritesDefinitionAndActivates` | Installing writes the definition and runs the platform command |
+| `TestInstallServiceWithoutActivationChangesNothing` | Without `--yes` no service is started |
+| `TestPromptYesNoNonInteractive` | A piped stdin is never prompted, so scripts cannot hang |
 
 ## 2. Test account
 
@@ -156,14 +162,21 @@ for f in json.load(sys.stdin)['files']:
 Some behaviour is easier to confirm by hand than to script:
 
 - [ ] `tessera folder add` creates a folder, syncs it and opens it in Finder/Explorer
+- [ ] `tessera folder add` asks "Keep this folder in sync automatically? [Y/n]"
+      and installs the watcher when answered yes (verified with a pty)
+- [ ] `tessera folder add | cat` does **not** prompt, and prints the `--yes` hint
+- [ ] `tessera service install` changes nothing; `--yes` installs and starts
+- [ ] `tessera service status` reports `Running: yes` only while it really runs
+- [ ] `tessera service uninstall --yes` removes it and the folder keeps its files
+- [ ] Tests leave `~/.tessera` untouched (no `sync/testroot` appears)
 - [ ] Dragging a file into the folder and running `tessera sync` uploads it
 - [ ] `tessera sync watch` reports changes and stops cleanly on Ctrl-C
 - [ ] Editing a large file mid-sync does not corrupt it (downloads are atomic)
 - [ ] `tessera list` shows real paths, not object ids
 - [ ] `tessera versions <path> --restore 1` restores an older copy
 - [ ] `TESSERA_HOME=/tmp/other tessera whoami` shows separate settings
-- [ ] Config migration: a config pointing at `https://index.dithr.dev` is
-      rewritten to `https://index.tessera.storage` on first use
+- [ ] A config pointing at an unsupported indexer host fails with an actionable
+      message instead of an opaque TLS error
 
 ## Bugs the end-to-end tests caught
 
@@ -187,7 +200,7 @@ now has a regression test:
 7. **Remote paths were used as root-relative paths**, so synced files landed in
    a wrong subfolder.
 8. **A retired indexer host produced an opaque TLS error** instead of a
-   migration; configs pointing at `index.dithr.dev` are now rewritten.
+   migration; an unsupported host is now rejected with a clear message.
 9. **Ignore rules were not applied to remote objects**, so a peer's junk could
    be materialised locally.
 10. **Deduplication stole the original path.** An object has exactly one

@@ -115,23 +115,90 @@ Prefer to just drag files in? `tessera folder add` creates a normal directory,
 registers it for sync and opens it in Finder/Explorer/your file manager.
 
 ```bash
-tessera folder add                  # ~/Tessera by default
+tessera folder add                          # ~/Tessera by default
 tessera folder add ~/Dropbox-ish --as tessera/drop
+tessera folder add --install-service        # set up and go live in one step
 tessera folder open
 tessera folder status
-tessera folder watch                # keep it in sync in this terminal
+tessera folder watch                        # keep it in sync in this terminal
 ```
 
-Keep the watcher running in a terminal, or install it as a background service:
+`folder add` syncs the folder **once** and then stops. A folder that is not
+watched only syncs when you run `tessera sync`, so it will offer:
+
+```
+Keep this folder in sync automatically? [Y/n]
+```
+
+Answering yes installs the background watcher for you. If you are piping output
+or running non-interactively it cannot ask, so pass `--install-service`, or set
+it up afterwards:
 
 ```bash
-tessera service install   # writes launchd/systemd definitions for review
-tessera service print     # just show the definitions
+tessera service install             # preview what will be installed
+tessera service install --yes       # actually install and start it
+tessera service uninstall --yes     # stop and remove it
+tessera service status              # installed? running?
 ```
+
+Without `--yes` nothing is changed — you get the exact commands that would run.
+`service print` shows the definitions without writing anything.
 
 Files are downloaded for real (like Dropbox's "available offline" mode) — this
 build does not mount a virtual filesystem, which keeps the single static binary
 and avoids kernel drivers.
+
+## Syncing a Mac folder to a Windows PC
+
+This is the part that trips people up, so here it is end to end.
+
+**First, both machines must be on the same account.** This is the step that
+actually matters:
+
+```bash
+# On the Mac: log in and SAVE THE 12 WORDS
+tessera login
+
+# On Windows: log in with that SAME recovery phrase
+tessera login "word1 word2 ... word12"
+```
+
+The app key is derived from the phrase, so the same phrase means the same
+account. A plain `tessera login` on the second machine generates a *new* phrase
+and a *separate account* — the two machines would never see each other's files,
+no matter how the folders are configured. (You can also set `TESSERA_PHRASE`.)
+
+**Then pair the folders using the same remote prefix:**
+
+```bash
+# Mac — the folder you want to share
+tessera folder add ~/Documents --as tessera/macos/Documents --install-service
+
+# Windows — where it should land locally
+tessera folder add C:\tessera\macos\Documents --as tessera/macos/Documents --install-service
+```
+
+The local paths differ (that is expected); the **remote prefix must match
+exactly**. Paths are always stored with `/` internally, so a folder created on
+Windows is addressable from macOS and vice versa.
+
+Check it worked:
+
+```bash
+tessera status          # Files: N — should match on both
+tessera sync status     # to upload / to fetch should both be 0
+```
+
+To verify the pairing before trusting it, add a file on the Mac and run
+`tessera sync` on Windows — it should appear.
+
+**The reverse direction works the same way.** To also push Windows documents to
+the Mac, add a second pair with a different prefix (for example
+`tessera/windows/Documents`) on both machines.
+
+> Windows paths in Git Bash or PowerShell: quote them if they contain spaces,
+> and prefer `C:\tessera\...` over a OneDrive-synced folder — two sync clients
+> watching one directory will fight over it.
 
 ## Commands
 
@@ -149,7 +216,8 @@ and avoids kernel drivers.
 | `fetch <url> [name]` | Download a shared file |
 | `sync add\|list\|status\|conflicts\|remove` | Manage folder sync |
 | `sync watch` | Continuous two-way sync |
-| `folder add\|open\|status\|watch\|remove` | The drop-in folder |
+| `folder add [--install-service]\|open\|status\|watch\|remove` | The drop-in folder |
+| `service install [--yes]\|uninstall\|status\|print\|start\|stop\|restart` | Background watcher |
 | `find <pattern> [--content]` | Search paths, or file contents |
 | `versions <path> [--restore <n>]` | List or restore retained versions (1 kept by default) |
 | `trash list\|restore\|empty\|rm` | Recover soft-deleted files |
