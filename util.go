@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,9 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"go.sia.tech/core/types"
+	"golang.org/x/term"
 )
 
 // hash256 is the SDK's 256-bit hash type, aliased so call sites stay short.
@@ -72,7 +75,10 @@ func positional(args []string) []string {
 	return out
 }
 
-// takesValue lists flags that are followed by a separate value.
+// takesValue lists the long flags that consume the following argument. Any new
+// flag with a separate value must be added here, or positional() will treat the
+// value as a positional argument. Boolean flags (--yes, --install-service,
+// --dry-run, --json) must NOT be listed.
 func takesValue(flag string) bool {
 	switch flag {
 	case "--as", "--root", "--interval", "--policy", "--jobs", "--max-rate", "--name", "--out", "--at", "--profile", "--retain", "--resolve":
@@ -186,6 +192,44 @@ func truncate(s string, max int) string {
 		return s[:max]
 	}
 	return s[:max-3] + "..."
+}
+
+// stdinIsTerminal reports whether it makes sense to ask the user a question.
+// A piped stdin (a script, or `tessera folder add | tee log`) must never be
+// prompted: the process would block on input that is never coming.
+func stdinIsTerminal() bool {
+	return term.IsTerminal(int(syscall.Stdin))
+}
+
+// promptYesNo asks a question and returns the answer. The second result reports
+// whether a prompt was actually shown, so callers can fall back to printed
+// instructions when running non-interactively.
+func promptYesNo(question string, dflt bool) (bool, bool) {
+	if !stdinIsTerminal() {
+		return false, false
+	}
+	suffix := " [y/N] "
+	if dflt {
+		suffix = " [Y/n] "
+	}
+	fmt.Print(question + suffix)
+
+	// Read a line rather than fmt.Scanln: a bare Enter (meaning "take the
+	// default") makes Scanln return an error, which would lose the default.
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	answer := strings.ToLower(strings.TrimSpace(line))
+	if err != nil && answer == "" {
+		fmt.Println()
+		return dflt, true
+	}
+	switch answer {
+	case "":
+		return dflt, true
+	case "y", "yes":
+		return true, true
+	default:
+		return false, true
+	}
 }
 
 // formatAge renders a timestamp as a coarse "how long ago" string.

@@ -12,6 +12,11 @@ import (
 // planning and scanning paths are exercised.
 func newTestEngine(t *testing.T, policy string) (*SyncEngine, string) {
 	t.Helper()
+	// Isolate config/state in a temp directory. Without this the engine's root
+	// id collides across tests and would write into the real ~/.tessera, which
+	// on a developer machine means the background watcher starts polling a
+	// folder that no longer exists.
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	cfg := &SyncConfig{
 		ID:             "testroot",
