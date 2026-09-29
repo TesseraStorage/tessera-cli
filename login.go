@@ -235,6 +235,50 @@ func cmdLogout() {
 	fmt.Println("Logged out. Local credentials removed.")
 }
 
+// cmdPhrase reveals the locally-saved recovery phrase, decrypted with the
+// master password set when it was originally saved during 'tessera login'.
+// This is the only local copy: the phrase itself is never sent to or
+// stored by the server, so if it wasn't saved (or the password is lost)
+// there is no recovery path other than the phrase the user wrote down.
+func cmdPhrase(args []string) {
+	pos := positional(args)
+	sub := "show"
+	if len(pos) > 0 {
+		sub = pos[0]
+	}
+	if hasFlag(args, "--help") || hasFlag(args, "-h") || sub != "show" {
+		fmt.Println("Usage: tessera phrase show   Reveal the locally-saved recovery phrase")
+		return
+	}
+
+	cfg, err := loadConfig()
+	if err != nil {
+		fatal("Not logged in. Run 'tessera login' first.")
+	}
+	if cfg.PhraseEncrypted == "" || cfg.PhraseSalt == "" {
+		fmt.Println("No recovery phrase is saved locally for this login.")
+		fmt.Println("(It was either not protected with a master password at login")
+		fmt.Println("time, or this identity was set up without one -- e.g. TESSERA_PHRASE.)")
+		return
+	}
+
+	password := readPassword("Master password: ")
+	phrase, err := decryptPhrase(cfg.PhraseEncrypted, cfg.PhraseSalt, password)
+	if err != nil {
+		fatal("wrong password, or the saved phrase is corrupted: %v", err)
+	}
+
+	fmt.Println()
+	fmt.Println(strings.Repeat("═", 54))
+	fmt.Println("  RECOVERY PHRASE")
+	fmt.Println(strings.Repeat("═", 54))
+	fmt.Printf("  %s\n", phrase)
+	fmt.Println(strings.Repeat("═", 54))
+	fmt.Println()
+	fmt.Println("Use this to connect another device/app to this same account")
+	fmt.Println("(e.g. Tessera Desktop's \"I already have an account\").")
+}
+
 func cmdWhoami() {
 	cfg, err := loadConfig()
 	if err != nil {

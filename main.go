@@ -100,6 +100,8 @@ func main() {
 		cmdService(args)
 	case "uninstall":
 		cmdUninstall(args)
+	case "phrase":
+		cmdPhrase(args)
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -151,11 +153,12 @@ More:
   %s service install|start|stop|status
                              Run the watcher as a background service
   %s uninstall               Remove the watcher, this binary, and (optionally) local state
+  %s phrase show             Reveal the locally-saved recovery phrase (master password)
 
 Indexer: https://index.tessera.storage
 Docs:    https://tessera.storage
 `, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe,
 		exe, exe, exe, exe, exe, exe,
 		exe, exe, exe, exe, exe, exe,
-		exe, exe, exe)
+		exe, exe, exe, exe)
 }
