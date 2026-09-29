@@ -98,6 +98,8 @@ func main() {
 		cmdConfig(args)
 	case "service":
 		cmdService(args)
+	case "uninstall":
+		cmdUninstall(args)
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -148,11 +150,12 @@ More:
   %s config [--json]         Show or change settings
   %s service install|start|stop|status
                              Run the watcher as a background service
+  %s uninstall               Remove the watcher, this binary, and (optionally) local state
 
 Indexer: https://index.tessera.storage
 Docs:    https://tessera.storage
 `, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe,
 		exe, exe, exe, exe, exe, exe,
 		exe, exe, exe, exe, exe, exe,
-		exe, exe)
+		exe, exe, exe)
 }
