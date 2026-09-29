@@ -196,6 +196,16 @@ func systemdUserUnitPath() (string, error) {
 // installed definition can be asserted in tests.
 func plistContent(exe string) string {
 	home, _ := os.UserHomeDir()
+	envBlock := ""
+	if th := os.Getenv("TESSERA_HOME"); th != "" {
+		// Installing while TESSERA_HOME is set (sandboxes, and any app that
+		// keeps its own isolated CLI state, e.g. an embedding desktop app)
+		// must carry that override into the service definition too --
+		// otherwise the installed watcher silently falls back to the
+		// default ~/.tessera and reports "Not logged in".
+		envBlock = "  <key>EnvironmentVariables</key>\n" +
+			"  <dict><key>TESSERA_HOME</key><string>" + th + "</string></dict>\n"
+	}
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -205,27 +215,32 @@ func plistContent(exe string) string {
   <array><string>%s</string><string>sync</string><string>watch</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>%s</string>
+%s  <key>StandardOutPath</key><string>%s</string>
   <key>StandardErrorPath</key><string>%s</string>
 </dict></plist>
-`, serviceLabel, exe,
+`, serviceLabel, exe, envBlock,
 		filepath.Join(home, ".tessera", "watch.log"),
 		filepath.Join(home, ".tessera", "watch.err"))
 }
 
 // unitContent renders the systemd user unit.
 func unitContent(exe string) string {
+	envLine := ""
+	if th := os.Getenv("TESSERA_HOME"); th != "" {
+		// See plistContent's comment -- same reasoning, systemd's syntax.
+		envLine = "Environment=TESSERA_HOME=" + th + "\n"
+	}
 	return fmt.Sprintf(`[Unit]
 Description=Tessera folder sync
 
 [Service]
 ExecStart=%s sync watch
-Restart=always
+%sRestart=always
 RestartSec=5
 
 [Install]
 WantedBy=default.target
-`, exe)
+`, exe, envLine)
 }
 
 // servicePlan is the resolved set of actions for this platform: where the
@@ -287,12 +302,19 @@ func planService(exe string) (servicePlan, error) {
 				"  then re-run: tessera service install --yes",
 		}, nil
 	case "windows":
+		tr := `"` + exe + `" sync watch`
+		if th := os.Getenv("TESSERA_HOME"); th != "" {
+			// schtasks has no native env-var field for /create; wrap the
+			// command so the scheduled run inherits the same override this
+			// install was run under. See plistContent's comment for why.
+			tr = `cmd /c "set TESSERA_HOME=` + th + `&& \"` + exe + `\" sync watch"`
+		}
 		return servicePlan{
 			Platform: "Scheduled Task (Windows)",
 			DefPath:  "Task Scheduler task \"" + serviceTask + "\"",
 			Content:  "",
 			InstallCmd: []string{"schtasks", "/create", "/f", "/tn", serviceTask, "/sc", "onlogon",
-				"/rl", "limited", "/tr", `"` + exe + `" sync watch`},
+				"/rl", "limited", "/tr", tr},
 			RemoveCmd: []string{"schtasks", "/delete", "/f", "/tn", serviceTask},
 		}, nil
 	default:
