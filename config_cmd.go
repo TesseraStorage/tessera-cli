@@ -27,6 +27,7 @@ const (
 //	tessera config --version-retention 5
 //	tessera config --trash-retention 14
 //	tessera config --default-jobs 4
+//	tessera config --billing-url https://tessera.storage/api/v1
 func cmdConfig(args []string) {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -73,6 +74,12 @@ func cmdConfig(args []string) {
 		cfg.IndexerURL = v
 		changed = true
 	}
+	if v, ok := flagValue(args, "--billing-url"); ok {
+		if err := applyBillingURL(cfg, v); err != nil {
+			fatal("%v", err)
+		}
+		changed = true
+	}
 
 	if changed {
 		if err := saveConfig(cfg); err != nil {
@@ -88,20 +95,25 @@ func cmdConfig(args []string) {
 
 	if hasFlag(args, "--json") {
 		emitJSON(map[string]interface{}{
-			"config_path":          p,
-			"indexer":              cfg.IndexerURL,
-			"app_id":               cfg.AppID,
-			"version_retention":    cfg.VersionRetention,
-			"trash_retention_days": cfg.TrashRetentionDays,
-			"default_jobs":         cfg.DefaultJobs,
-			"sync_folders":         len(roots),
-			"trashed_items":        len(trash.Entries),
+			"config_path":           p,
+			"indexer":               cfg.IndexerURL,
+			"billing_api_url":       cfg.BillingAPIURL,
+			"billing_session_set":   cfg.BillingSession != "",
+			"billing_agent_key_set": cfg.BillingAgentKey != "",
+			"app_id":                cfg.AppID,
+			"version_retention":     cfg.VersionRetention,
+			"trash_retention_days":  cfg.TrashRetentionDays,
+			"default_jobs":          cfg.DefaultJobs,
+			"sync_folders":          len(roots),
+			"trashed_items":         len(trash.Entries),
 		})
 		return
 	}
 
 	fmt.Printf("Config file:      %s\n", p)
 	fmt.Printf("Indexer:          %s\n", cfg.IndexerURL)
+	fmt.Printf("Billing API:      %s\n", cfg.BillingAPIURL)
+	fmt.Printf("Billing sign-in:  %s\n", describeBillingSignIn(cfg))
 	fmt.Printf("App ID:           %s\n", cfg.AppID)
 	fmt.Printf("Sync folders:     %d\n", len(roots))
 	fmt.Printf("Trashed items:    %d\n", len(trash.Entries))
@@ -113,6 +125,7 @@ func cmdConfig(args []string) {
 	fmt.Println("Change with: tessera config --version-retention 5")
 	fmt.Println("             tessera config --trash-retention 14")
 	fmt.Println("             tessera config --default-jobs 4")
+	fmt.Println("             tessera config --billing-url https://tessera.storage/api/v1")
 	fmt.Println()
 	fmt.Println("Per-folder options live in 'tessera sync list' and .tesseraignore.")
 }
@@ -144,6 +157,19 @@ func describeJobs(n int) string {
 		return "automatic"
 	}
 	return fmt.Sprintf("%d parallel transfer(s)", n)
+}
+
+// describeBillingSignIn reports how billing calls authenticate without ever
+// printing the credential itself.
+func describeBillingSignIn(cfg *Config) string {
+	switch {
+	case cfg.BillingAgentKey != "":
+		return "agent key (bearer)"
+	case cfg.BillingSession != "":
+		return "session (cookie)"
+	default:
+		return "not signed in"
+	}
 }
 
 // ---------------------------------------------------------------------------
