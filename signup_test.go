@@ -50,6 +50,9 @@ func TestSignupValueFlagsRegistered(t *testing.T) {
 			t.Errorf("takesValue(%q) = false; positional() would swallow its value", flag)
 		}
 	}
+	if takesValue("--force") {
+		t.Error("takesValue(--force) = true; --force is a boolean and must not consume a value")
+	}
 }
 
 // TestCmdSignupColdStart is the core promise: with no config file at all,
@@ -362,4 +365,61 @@ func TestCmdSignupPreservesExistingConfig(t *testing.T) {
 	if cfg.BillingAgentKey != "tsk_keep" {
 		t.Errorf("BillingAgentKey = %q, want the returned key", cfg.BillingAgentKey)
 	}
+}
+
+// TestSignupGuardAgainstOverwrite: a second signup without --force must not
+// create another account or touch the stored key; --force overwrites it and
+// prints the new key once.
+func TestSignupGuardAgainstOverwrite(t *testing.T) {
+	const overwriteMsg = "already signed up on this machine; pass --force to create a new agent account"
+	testConfigHome(t)
+	if err := saveConfig(&Config{IndexerURL: defaultIndexer, AppID: "app-1", BillingAgentKey: "tsk_old_key"}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("no force keeps the old key", func(t *testing.T) {
+		fake := &fakeSignupAPI{accountID: "AGNT-NEW", apiKey: "tsk_new_key"}
+		stubBillingClient(t, fake)
+
+		result, err := signup(nil)
+		if !errors.Is(err, errSignupKeyExists) {
+			t.Fatalf("signup error = %v (%T), want errSignupKeyExists", err, err)
+		}
+		if err.Error() != overwriteMsg {
+			t.Fatalf("error = %q, want %q", err.Error(), overwriteMsg)
+		}
+		if fake.calls != 0 {
+			t.Fatalf("CreateAgent calls = %d, want 0", fake.calls)
+		}
+		if result.APIKey != "" {
+			t.Errorf("failed signup returned a key: %+v", result)
+		}
+		cfg, lerr := loadConfig()
+		if lerr != nil {
+			t.Fatal(lerr)
+		}
+		if cfg.BillingAgentKey != "tsk_old_key" {
+			t.Fatalf("stored key = %q, want the old key untouched", cfg.BillingAgentKey)
+		}
+	})
+
+	t.Run("force proceeds and overwrites", func(t *testing.T) {
+		fake := &fakeSignupAPI{accountID: "AGNT-NEW", apiKey: "tsk_new_key"}
+		stubBillingClient(t, fake)
+
+		out := captureStdout(t, func() { cmdSignup([]string{"--force"}) })
+		if fake.calls != 1 {
+			t.Fatalf("CreateAgent calls = %d, want 1 with --force", fake.calls)
+		}
+		if got := strings.Count(out, "tsk_new_key"); got != 1 {
+			t.Fatalf("--force printed the new key %d times, want exactly once:\n%s", got, out)
+		}
+		cfg, lerr := loadConfig()
+		if lerr != nil {
+			t.Fatal(lerr)
+		}
+		if cfg.BillingAgentKey != "tsk_new_key" {
+			t.Fatalf("stored key = %q, want the new key after --force", cfg.BillingAgentKey)
+		}
+	})
 }
