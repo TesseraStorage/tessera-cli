@@ -161,8 +161,9 @@ func billingLogin(email, token string) error {
 
 // verifyBillingLogin exchanges token for a session, stores it in the 0600
 // config, then proves it works with GET /account. The account call uses a
-// config copy with the agent key cleared: newBillingAPI prefers a bearer when
-// one is stored, and the point here is to validate the new session.
+// config copy with the agent key cleared so the freshly verified session is
+// unambiguously the credential under test (a stored session already wins, but
+// this keeps the check explicit).
 func verifyBillingLogin(cfg *Config, token string) (map[string]any, error) {
 	session, err := newBillingClient(cfg).Verify(token)
 	if err != nil {

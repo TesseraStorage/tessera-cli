@@ -1,0 +1,171 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"strconv"
+)
+
+// cmdAccount shows the billing account dashboard.
+//
+//	tessera account [--json]
+//
+// GET /account is authenticated with whichever billing credential is stored: a
+// human session when one exists, otherwise an agent key. The human table names
+// the active credential but never prints either secret. period_end and
+// days_left are null for zero-burn accounts (moneyd dunning.py:171-175) and
+// render as an em dash. --json emits the server object unchanged plus a
+// non-secret credential tag, so scripts can tell which identity answered.
+func cmdAccount(args []string) {
+	acct, credential, err := fetchAccountSummary()
+	if err != nil {
+		fatal("%v", err)
+	}
+	if hasFlag(args, "--json") {
+		emitJSON(accountWithCredential(acct, credential))
+		return
+	}
+	printAccountTable(acct, credential)
+}
+
+// fetchAccountSummary loads the config, refuses to call the API without a
+// billing credential, and fetches GET /account. It returns the tag of the
+// credential authAuto used ("session" or "agent"). Split from cmdAccount so
+// the guidance paths stay testable without os.Exit.
+func fetchAccountSummary() (map[string]any, string, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// Cold start: no config file at all. Point at both ways to get a
+			// billing credential.
+			return nil, "", errNoBillingCredentials
+		}
+		return nil, "", fmt.Errorf("read config: %w", err)
+	}
+	credential := credentialLabel(cfg)
+	if credential == "" {
+		return nil, "", errNoBillingCredentials
+	}
+	acct, err := newBillingClient(cfg).Account()
+	if err != nil {
+		return nil, "", err
+	}
+	return acct, credential, nil
+}
+
+// credentialLabel names the stored credential authAuto selects: a saved human
+// session wins over an agent key (billing.go), and "" means neither is stored.
+func credentialLabel(cfg *Config) string {
+	switch {
+	case cfg.BillingSession != "":
+		return "session"
+	case cfg.BillingAgentKey != "":
+		return "agent"
+	default:
+		return ""
+	}
+}
+
+// credentialText is the human-readable form of a credentialLabel value.
+func credentialText(credential string) string {
+	if credential == "agent" {
+		return "agent key"
+	}
+	return credential
+}
+
+// accountWithCredential copies the server object and adds the credential tag
+// for --json. Server fields pass through untouched (balance_usd stays a string,
+// nulls stay null); the credential's value is never added.
+func accountWithCredential(acct map[string]any, credential string) map[string]any {
+	out := make(map[string]any, len(acct)+1)
+	for k, v := range acct {
+		out[k] = v
+	}
+	out["credential"] = credential
+	return out
+}
+
+// printAccountTable renders the human dashboard. Missing and null fields render
+// as an em dash rather than a Go formatting artifact.
+func printAccountTable(acct map[string]any, credential string) {
+	field := func(label, value string) {
+		fmt.Printf("  %-14s %s\n", label+":", dashIfEmpty(value))
+	}
+	balance := accountString(acct, "balance_usd")
+	if balance != "" {
+		balance = "$" + balance
+	}
+	field("Billing ID", accountString(acct, "billing_id"))
+	field("Kind", accountString(acct, "kind"))
+	field("Status", accountString(acct, "status"))
+	field("Balance", balance)
+	field("Plan", accountString(acct, "plan"))
+	field("Period ends", accountString(acct, "period_end"))
+	field("Allowance", accountBytes(acct, "allowance_egress_bytes"))
+	field("Egress used", accountBytes(acct, "egress_used_bytes"))
+	field("Days left", accountDaysLeft(acct))
+	field("Credential", credentialText(credential))
+	field("Top-up", accountString(acct, "topup_url"))
+}
+
+// dashIfEmpty renders missing/null fields as an em dash.
+func dashIfEmpty(s string) string {
+	if s == "" {
+		return "—"
+	}
+	return s
+}
+
+// accountBytes renders a byte-count field, or "" when it is absent.
+func accountBytes(acct map[string]any, key string) string {
+	n, ok := accountUint64(acct, key)
+	if !ok {
+		return ""
+	}
+	return formatBytes(n)
+}
+
+// accountDaysLeft renders days_left, which moneyd nulls when burn is zero.
+func accountDaysLeft(acct map[string]any) string {
+	if n, ok := accountUint64(acct, "days_left"); ok {
+		return strconv.FormatUint(n, 10)
+	}
+	return ""
+}
+
+// accountUint64 extracts a non-negative integer field. JSON numbers decode as
+// float64; quoted integers are accepted defensively (moneyd renders decimals
+// such as balance_usd as strings).
+func accountUint64(acct map[string]any, key string) (uint64, bool) {
+	v, ok := acct[key]
+	if !ok || v == nil {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case float64:
+		if n < 0 {
+			return 0, false
+		}
+		return uint64(n), true
+	case int:
+		if n < 0 {
+			return 0, false
+		}
+		return uint64(n), true
+	case int64:
+		if n < 0 {
+			return 0, false
+		}
+		return uint64(n), true
+	case string:
+		parsed, err := strconv.ParseUint(n, 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return parsed, true
+	default:
+		return 0, false
+	}
+}

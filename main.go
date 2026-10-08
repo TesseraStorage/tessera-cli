@@ -4,6 +4,7 @@
 //
 //	tessera login       Connect this machine to Tessera
 //	tessera signup      Create an agent account (API key shown once)
+//	tessera account     Show billing account, balance, and usage
 //	tessera logout      Remove local credentials
 //	tessera whoami      Show current account identity
 //	tessera status      Account info + total storage used
@@ -43,6 +44,8 @@ func main() {
 		cmdLogin(args)
 	case "signup":
 		cmdSignup(args)
+	case "account":
+		cmdAccount(args)
 	case "logout":
 		cmdLogout()
 	case "whoami":
@@ -159,6 +162,7 @@ More:
   %s phrase show             Reveal the locally-saved recovery phrase (master password)
 
 Billing:
+  %s account                 Show billing account, balance, and usage
   %s signup [--name <name>] [--contact-email <email>]
                              Create an agent account; the API key is shown once
   %s login --email <email> [--token <token>]
@@ -170,5 +174,5 @@ Docs:    https://tessera.storage
 `, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe,
 		exe, exe, exe, exe, exe, exe,
 		exe, exe, exe, exe, exe, exe,
-		exe, exe, exe, exe, exe, exe, exe)
+		exe, exe, exe, exe, exe, exe, exe, exe)
 }
