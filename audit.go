@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -131,7 +132,13 @@ func cmdAudit(args []string) {
 	}
 }
 
-// cmdUsage reports storage usage and a cost forecast.
+// redundancyFactor is how many network bytes each logical byte occupies with
+// the erasure coding the CLI requests (30 shards for every 10 data shards), so
+// the bytes billed on the network are roughly triple the logical size.
+const redundancyFactor = float64(dataShards+parityShards) / float64(dataShards)
+
+// cmdUsage reports storage usage, a cost forecast, and (with billing
+// credentials) the billing account section.
 func cmdUsage(args []string) {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -152,10 +159,21 @@ func cmdUsage(args []string) {
 		fatal("usage: %v", err)
 	}
 
-	byFolder := map[string]struct {
-		Count int
-		Bytes uint64
-	}{}
+	usageReport(args, cfg, idx)
+}
+
+// usageFolder is one folder row in the usage report.
+type usageFolder struct {
+	Files int
+	Bytes uint64
+}
+
+// collectUsageStorage buckets the index by folder and sums the logical bytes.
+// Folder names come from the owning sync root's remote prefix when it is
+// registered, the path's first segment otherwise, or an em dash for rootless
+// top-level files. This is the untouched storage half of `usage`.
+func collectUsageStorage(idx *Index) (map[string]usageFolder, uint64) {
+	byFolder := map[string]usageFolder{}
 	var total uint64
 	for _, e := range idx.Paths {
 		key := "—"
@@ -169,42 +187,90 @@ func cmdUsage(args []string) {
 			key = e.Path[:i]
 		}
 		v := byFolder[key]
-		v.Count++
+		v.Files++
 		v.Bytes += uint64(e.Size)
 		byFolder[key] = v
 		total += uint64(e.Size)
 	}
+	return byFolder, total
+}
 
-	// Erasure coding stores 30 shards for every 10 data shards, so the bytes
-	// billed on the network are roughly triple the logical size.
-	const redundancyFactor = float64(dataShards+parityShards) / float64(dataShards)
+// usageReport renders `usage`. The storage block always prints exactly as it
+// did before billing existed. When a billing credential is stored it appends
+// the account section (and, with --cost, the netted PAYG egress estimate);
+// a billing fetch failure degrades to a warning so the storage report — and
+// the command's exit status — stand alone. The no-credential --cost hint goes
+// to stderr so --json stdout stays parseable.
+func usageReport(args []string, cfg *Config, idx *Index) {
+	byFolder, total := collectUsageStorage(idx)
+	cost := hasFlag(args, "--cost")
+	hasBilling := credentialLabel(cfg) != ""
+
+	var billing map[string]any
+	var billingErr error
+	if hasBilling {
+		billing, billingErr = newBillingClient(cfg).Account()
+	}
 
 	if hasFlag(args, "--json") {
-		type row struct {
-			Folder string `json:"folder"`
-			Files  int    `json:"files"`
-			Bytes  uint64 `json:"bytes"`
+		out := usageStorageJSON(idx, total, byFolder)
+		switch {
+		case hasBilling && billingErr == nil:
+			out["billing"] = usageBillingJSON(billing, cost)
+		case hasBilling:
+			out["billing_error"] = billingErr.Error()
 		}
-		var rows []row
-		for k, v := range byFolder {
-			rows = append(rows, row{Folder: k, Files: v.Count, Bytes: v.Bytes})
+		if !hasBilling && cost {
+			usageCostHint()
 		}
-		sort.Slice(rows, func(i, j int) bool { return rows[i].Bytes > rows[j].Bytes })
-		emitJSON(map[string]interface{}{
-			"files":               len(idx.Paths),
-			"logical_bytes":       total,
-			"stored_bytes_approx": uint64(float64(total) * redundancyFactor),
-			"folders":             rows,
-		})
+		emitJSON(out)
 		return
 	}
 
+	printUsageStorage(idx, total, byFolder, hasFlag(args, "--by-folder"))
+	switch {
+	case hasBilling && billingErr != nil:
+		fmt.Println()
+		fmt.Println("Billing")
+		fmt.Println()
+		fmt.Printf("  unavailable:     %v\n", billingErr)
+	case hasBilling:
+		printUsageBilling(billing, cost)
+	case cost:
+		usageCostHint()
+	}
+}
+
+// usageStorageJSON is the storage half of `usage --json`; its four keys are the
+// pre-billing contract and must stay byte-compatible.
+func usageStorageJSON(idx *Index, total uint64, byFolder map[string]usageFolder) map[string]interface{} {
+	type row struct {
+		Folder string `json:"folder"`
+		Files  int    `json:"files"`
+		Bytes  uint64 `json:"bytes"`
+	}
+	var rows []row
+	for k, v := range byFolder {
+		rows = append(rows, row{Folder: k, Files: v.Files, Bytes: v.Bytes})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Bytes > rows[j].Bytes })
+	return map[string]interface{}{
+		"files":               len(idx.Paths),
+		"logical_bytes":       total,
+		"stored_bytes_approx": uint64(float64(total) * redundancyFactor),
+		"folders":             rows,
+	}
+}
+
+// printUsageStorage prints the storage block, unchanged from before the billing
+// section existed.
+func printUsageStorage(idx *Index, total uint64, byFolder map[string]usageFolder, byFolderTable bool) {
 	fmt.Printf("Storage usage\n\n")
 	fmt.Printf("  files:           %d\n", len(idx.Paths))
 	fmt.Printf("  logical size:    %s\n", formatBytes(total))
 	fmt.Printf("  network (≈%dx):  %s (10 data + 20 parity shards)\n", int(redundancyFactor), formatBytes(uint64(float64(total)*redundancyFactor)))
 
-	if hasFlag(args, "--by-folder") && len(byFolder) > 0 {
+	if byFolderTable && len(byFolder) > 0 {
 		fmt.Println()
 		fmt.Printf("  %-40s  %8s  %12s\n", "FOLDER", "FILES", "SIZE")
 		fmt.Println("  " + strings.Repeat("-", 64))
@@ -215,7 +281,7 @@ func cmdUsage(args []string) {
 		}
 		var rows []row
 		for k, v := range byFolder {
-			rows = append(rows, row{k, v.Count, v.Bytes})
+			rows = append(rows, row{k, v.Files, v.Bytes})
 		}
 		sort.Slice(rows, func(i, j int) bool { return rows[i].bytes > rows[j].bytes })
 		for _, r := range rows {
@@ -225,4 +291,98 @@ func cmdUsage(args []string) {
 	fmt.Println()
 	fmt.Println("  Note: Sia costs depend on your contracts and current host prices.")
 	fmt.Println("  Run 'tessera status' for account readiness.")
+}
+
+// Billing price card constants used by the --cost estimate.
+const (
+	// egressUSDPerTB is the PAYG egress rate from the price card.
+	egressUSDPerTB = 5.0
+	// decimalTBBytes is a decimal terabyte (1e12 bytes), the unit the price
+	// card prices in — not 2^40.
+	decimalTBBytes = 1e12
+	// egressEstimateLabel is the mandatory --cost disclaimer.
+	egressEstimateLabel = "estimate only; allowance netted; excludes plan fees/credits ($5/TB PAYG)"
+)
+
+// egressEstimateUSD returns the PAYG egress overage estimate formatted to
+// cents: billable = max(0, used − allowance), then billable / 1e12 × $5, the
+// price card's decimal-TB rate. An allowance that covers the usage yields
+// "0.00".
+func egressEstimateUSD(used, allowance uint64) string {
+	var billable uint64
+	if used > allowance {
+		billable = used - allowance
+	}
+	usd := float64(billable) / decimalTBBytes * egressUSDPerTB
+	return fmt.Sprintf("%.2f", usd)
+}
+
+// usageCostHint points at the two ways to get a billing credential. It is
+// printed only when --cost was requested with none stored, and goes to stderr
+// so it can never corrupt --json stdout.
+func usageCostHint() {
+	fmt.Fprintf(os.Stderr, "tessera usage --cost: %v\n", errNoBillingCredentials)
+}
+
+// usageBillingJSON copies the GET /account fields the usage section shows,
+// preserving the server's raw values (nulls included). These keys are additive
+// to the storage contract and appear only when a billing credential is stored;
+// --cost adds the estimate field.
+func usageBillingJSON(acct map[string]any, cost bool) map[string]any {
+	out := map[string]any{
+		"open_slabs":             acct["open_slabs"],
+		"egress_used_bytes":      acct["egress_used_bytes"],
+		"allowance_egress_bytes": acct["allowance_egress_bytes"],
+		"balance_usd":            acct["balance_usd"],
+		"period_end":             acct["period_end"],
+		"days_left":              acct["days_left"],
+	}
+	if cost {
+		used, _ := accountUint64(acct, "egress_used_bytes")
+		allowance, _ := accountUint64(acct, "allowance_egress_bytes")
+		out["egress_estimate_usd"] = egressEstimateUSD(used, allowance)
+	}
+	return out
+}
+
+// printUsageBilling renders the appended billing section. Missing and null
+// fields render as an em dash; --cost appends the netted PAYG egress estimate
+// with its exact disclaimer label.
+func printUsageBilling(acct map[string]any, cost bool) {
+	fmt.Println()
+	fmt.Println("Billing")
+	fmt.Println()
+	field := func(label, value string) {
+		fmt.Printf("  %-16s %s\n", label+":", dashIfEmpty(value))
+	}
+	if slabs, ok := accountUint64(acct, "open_slabs"); ok {
+		field("open slabs", strconv.FormatUint(slabs, 10))
+	} else {
+		field("open slabs", "")
+	}
+	used := accountBytes(acct, "egress_used_bytes")
+	allowance := accountBytes(acct, "allowance_egress_bytes")
+	switch {
+	case used != "" && allowance != "":
+		field("egress used", fmt.Sprintf("%s of %s allowance", used, allowance))
+	case used != "":
+		field("egress used", used)
+	case allowance != "":
+		field("egress used", fmt.Sprintf("— of %s allowance", allowance))
+	default:
+		field("egress used", "")
+	}
+	balance := accountString(acct, "balance_usd")
+	if balance != "" {
+		balance = "$" + balance
+	}
+	field("balance", balance)
+	field("period ends", accountString(acct, "period_end"))
+	field("days left", accountDaysLeft(acct))
+	if cost {
+		usedN, _ := accountUint64(acct, "egress_used_bytes")
+		allowanceN, _ := accountUint64(acct, "allowance_egress_bytes")
+		field("egress estimate", "$"+egressEstimateUSD(usedN, allowanceN))
+		fmt.Printf("    %s\n", egressEstimateLabel)
+	}
 }
