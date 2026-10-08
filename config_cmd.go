@@ -68,10 +68,9 @@ func cmdConfig(args []string) {
 		changed = true
 	}
 	if v, ok := flagValue(args, "--indexer"); ok {
-		if !strings.HasPrefix(v, "http") {
-			fatal("--indexer expects an http(s) URL")
+		if err := applyIndexerURL(cfg, v); err != nil {
+			fatal("%v", err)
 		}
-		cfg.IndexerURL = v
 		changed = true
 	}
 	if v, ok := flagValue(args, "--billing-url"); ok {
@@ -128,6 +127,21 @@ func cmdConfig(args []string) {
 	fmt.Println("             tessera config --billing-url https://tessera.storage/api/v1")
 	fmt.Println()
 	fmt.Println("Per-folder options live in 'tessera sync list' and .tesseraignore.")
+}
+
+// applyIndexerURL validates raw with the same rule loadConfig enforces
+// (isTesseraIndexer) and only then stores it on cfg. cmdConfig calls fatal on
+// rejection, so without this check a non-Tessera host would be saved and every
+// later command would fail to load the config at all. It is separate from
+// cmdConfig so the rule is testable without os.Exit; nothing is changed when
+// raw is rejected. A package-level var (precedent: serviceCommand) keeps the
+// seam replaceable in tests.
+var applyIndexerURL = func(cfg *Config, raw string) error {
+	if !isTesseraIndexer(raw) {
+		return fmt.Errorf("--indexer expects the Tessera indexer URL (%s)", defaultIndexer)
+	}
+	cfg.IndexerURL = raw
+	return nil
 }
 
 func describeVersions(n int) string {

@@ -32,6 +32,12 @@ import (
 	"path/filepath"
 )
 
+// statusCommand is the `status` dispatch seam (precedent: serviceCommand):
+// main passes the command arguments through it so `status --json` reaches
+// cmdStatus's JSON branch. Tests replace it to observe the arguments without
+// cmdStatus's network calls.
+var statusCommand = cmdStatus
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -63,7 +69,7 @@ func main() {
 	case "whoami":
 		cmdWhoami()
 	case "status":
-		cmdStatus()
+		statusCommand(args...)
 	case "list", "ls":
 		cmdList(args)
 	case "upload", "put":
