@@ -293,13 +293,26 @@ func TestHTTPBillingAuthSelection(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	t.Run("bearer wins when an agent key is set", func(t *testing.T) {
+	t.Run("session wins when both credentials are set", func(t *testing.T) {
 		api := &httpBilling{base: srv.URL, client: srv.Client(), session: "cookie-value", agentKey: "tsk_key"}
 		if _, err := api.Account(); err != nil {
 			t.Fatal(err)
 		}
 		if lastPath != "/account" {
 			t.Fatalf("path = %q, want /account", lastPath)
+		}
+		if lastAuth != "" {
+			t.Fatalf("Authorization = %q, want none: a stored session must win over the agent key", lastAuth)
+		}
+		if lastCookie != "cookie-value" {
+			t.Fatalf("cookie = %q, want the session cookie", lastCookie)
+		}
+	})
+
+	t.Run("agent key when only a bearer is set", func(t *testing.T) {
+		api := &httpBilling{base: srv.URL, client: srv.Client(), agentKey: "tsk_key"}
+		if _, err := api.Account(); err != nil {
+			t.Fatal(err)
 		}
 		if lastAuth != "Bearer tsk_key" {
 			t.Fatalf("Authorization = %q, want the bearer key", lastAuth)
@@ -665,7 +678,9 @@ func TestAgentKeyUnaffectedBy401(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := &Config{IndexerURL: defaultIndexer, BillingAPIURL: srv.URL, BillingSession: "keep-me", BillingAgentKey: "tsk_key"}
+	// Agent-only: with no session stored, a 401 is an ordinary bearer error,
+	// never the session-expiry signal.
+	cfg := &Config{IndexerURL: defaultIndexer, BillingAPIURL: srv.URL, BillingAgentKey: "tsk_key"}
 	if err := saveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -682,7 +697,76 @@ func TestAgentKeyUnaffectedBy401(t *testing.T) {
 	if lerr != nil {
 		t.Fatal(lerr)
 	}
-	if reloaded.BillingSession != "keep-me" {
-		t.Fatalf("a bearer 401 cleared the session: %q", reloaded.BillingSession)
+	if reloaded.BillingAgentKey != "tsk_key" {
+		t.Fatalf("a bearer 401 dropped the agent key: %q", reloaded.BillingAgentKey)
+	}
+	if reloaded.BillingSession != "" {
+		t.Fatalf("BillingSession = %q, want none", reloaded.BillingSession)
+	}
+}
+
+// TestSession401ClearsAndFallsBackToAgentKey is the fallback half of the
+// precedence ruling: the stored session is used first; when the server rejects
+// it the dead cookie is dropped in memory and in the config, so the next
+// authAuto call (same client or a fresh one built from the config) uses the
+// stored agent key instead of replaying the cookie.
+func TestSession401ClearsAndFallsBackToAgentKey(t *testing.T) {
+	testConfigHome(t)
+	var auths, cookies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auths = append(auths, r.Header.Get("Authorization"))
+		cookie := ""
+		if c, err := r.Cookie(sessionCookieName); err == nil {
+			cookie = c.Value
+		}
+		cookies = append(cookies, cookie)
+		w.Header().Set("Content-Type", "application/json")
+		if len(auths) == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"detail":{"error":"unauthorized"}}`)
+			return
+		}
+		fmt.Fprint(w, `{"billing_id":"TESS-9"}`)
+	}))
+	defer srv.Close()
+
+	cfg := &Config{IndexerURL: defaultIndexer, BillingAPIURL: srv.URL, BillingSession: "sess-dead", BillingAgentKey: "tsk_live"}
+	if err := saveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	api := newBillingAPI(cfg)
+	if _, err := api.Account(); !errors.Is(err, errSessionExpired) {
+		t.Fatalf("first Account() error = %v (%T), want errSessionExpired", err, err)
+	}
+	if cookies[0] != "sess-dead" || auths[0] != "" {
+		t.Fatalf("first call sent cookie=%q auth=%q, want the stored session", cookies[0], auths[0])
+	}
+	saved, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.BillingSession != "" {
+		t.Fatalf("dead session still stored: %q", saved.BillingSession)
+	}
+
+	// Same client: the rejected session was dropped in memory too.
+	acct, err := api.Account()
+	if err != nil {
+		t.Fatalf("second Account() call: %v", err)
+	}
+	if acct["billing_id"] != "TESS-9" {
+		t.Fatalf("second Account() = %#v", acct)
+	}
+	if len(auths) != 2 || auths[1] != "Bearer tsk_live" || cookies[1] != "" {
+		t.Fatalf("second call sent cookie=%q auth=%q, want the agent key", cookies[1], auths[1])
+	}
+
+	// A fresh client built from the reloaded config behaves the same.
+	fresh := newBillingAPI(saved)
+	if _, err := fresh.Account(); err != nil {
+		t.Fatalf("fresh client Account(): %v", err)
+	}
+	if len(auths) != 3 || auths[2] != "Bearer tsk_live" || cookies[2] != "" {
+		t.Fatalf("fresh client sent cookie=%q auth=%q, want the agent key", cookies[2], auths[2])
 	}
 }

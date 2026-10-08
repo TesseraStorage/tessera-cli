@@ -160,13 +160,14 @@ func describeJobs(n int) string {
 }
 
 // describeBillingSignIn reports how billing calls authenticate without ever
-// printing the credential itself.
+// printing the credential itself. A stored session wins over an agent key, the
+// same precedence newBillingAPI applies.
 func describeBillingSignIn(cfg *Config) string {
 	switch {
-	case cfg.BillingAgentKey != "":
-		return "agent key (bearer)"
 	case cfg.BillingSession != "":
 		return "session (cookie)"
+	case cfg.BillingAgentKey != "":
+		return "agent key (bearer)"
 	default:
 		return "not signed in"
 	}

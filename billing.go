@@ -109,8 +109,10 @@ var _ billingAPI = (*httpBilling)(nil)
 
 // newBillingAPI builds the moneyd client for cfg. The TESSERA_BILLING_URL
 // environment variable overrides the configured base for development and
-// tests. Protected calls authenticate with the agent key as a bearer token
-// when one is set, otherwise with the saved session cookie.
+// tests. Protected calls authenticate with the saved session cookie when one is
+// set, otherwise with the agent key as a bearer token: a stored session (an
+// explicit human login) wins over an agent key, and a 401 clears the session
+// so later calls fall back to the key.
 func newBillingAPI(cfg *Config) *httpBilling {
 	base := defaultBillingURL
 	if cfg != nil && cfg.BillingAPIURL != "" {
@@ -156,23 +158,25 @@ type authMode int
 
 const (
 	authNone   authMode = iota // public endpoint
-	authAuto                   // bearer when set, else the session cookie
+	authAuto                   // session cookie when set, else the bearer key
 	authCookie                 // the session cookie (an explicit override allowed)
 )
 
 // do sends req and reads the (bounded) response body. A 401 on a
 // cookie-authenticated request is the session-expiry signal: the dead session
-// is cleared from the config and errSessionExpired is returned so callers can
-// print the login guidance. Bearer callers get the plain billingError.
+// is dropped in this client and in the config, and errSessionExpired is
+// returned so callers can print the login guidance. A later authAuto call then
+// falls back to an agent key when one is stored. Bearer callers get the plain
+// billingError.
 func (b *httpBilling) do(req *http.Request, mode authMode, sessionOverride string) (*http.Response, []byte, error) {
 	cookieUsed := false
 	switch mode {
 	case authAuto:
-		if b.agentKey != "" {
-			req.Header.Set("Authorization", "Bearer "+b.agentKey)
-		} else if b.session != "" {
+		if b.session != "" {
 			req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: b.session})
 			cookieUsed = true
+		} else if b.agentKey != "" {
+			req.Header.Set("Authorization", "Bearer "+b.agentKey)
 		} else {
 			return nil, nil, errNoBillingCredentials
 		}
@@ -199,6 +203,10 @@ func (b *httpBilling) do(req *http.Request, mode authMode, sessionOverride strin
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if cookieUsed && resp.StatusCode == http.StatusUnauthorized {
+			// Drop the dead session here as well as in the config so later
+			// calls on this client use a fallback credential (an agent key)
+			// instead of replaying the rejected cookie.
+			b.session = ""
 			clearBillingSession()
 			return resp, data, errSessionExpired
 		}
