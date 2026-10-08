@@ -6,6 +6,7 @@
 //	tessera signup      Create an agent account (API key shown once)
 //	tessera account     Show billing account, balance, and usage
 //	tessera topup       Add funds (NOWPayments invoice or x402 USDC)
+//	tessera promo       Redeem a promo code
 //	tessera logout      Remove local credentials
 //	tessera whoami      Show current account identity
 //	tessera status      Account info + total storage used
@@ -52,6 +53,11 @@ func main() {
 			usageError("topup <amount> [--x402] [--pay-currency <asset>] [--payment <base64 X-PAYMENT>]")
 		}
 		cmdTopup(args)
+	case "promo":
+		if len(positional(args)) < 1 {
+			usageError("promo <code>")
+		}
+		cmdPromo(args)
 	case "logout":
 		cmdLogout()
 	case "whoami":
@@ -159,7 +165,8 @@ More:
   %s versions <path>         List retained versions
   %s trash list|restore|empty|rm <path>
   %s audit [path]            Verify durability of stored data
-  %s usage [--by-folder]     Storage usage and cost forecast
+  %s usage [--by-folder] [--cost]
+                             Storage usage, billing account, and egress estimate
   %s index --rebuild         Rebuild the local metadata index
   %s config [--json]         Show or change settings
   %s service install|start|stop|status
@@ -178,11 +185,12 @@ Billing:
   %s login --email <email> [--token <token>]
                              Sign in with a magic link (billing session)
   %s login --billing-logout  End the billing session (agent key untouched)
+  %s promo <code>            Redeem a promo code
 
 Indexer: https://index.tessera.storage
 Docs:    https://tessera.storage
 `, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe,
 		exe, exe, exe, exe, exe, exe,
 		exe, exe, exe, exe, exe, exe,
-		exe, exe, exe, exe, exe, exe, exe, exe, exe, exe)
+		exe, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe)
 }
