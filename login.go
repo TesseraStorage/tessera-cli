@@ -348,13 +348,27 @@ func agentStorageRegistration(cfg *Config) bool {
 		(cfg.AppID == "" || cfg.AppKey == "")
 }
 
+// agentRegister performs the plain-login agent registration. The GET /account
+// lookup is best-effort only: it lets a post-mint failure name the billing
+// account, and any failure falls back to "(unknown)" without blocking
+// registration. Split out of cmdLogin so tests can drive the failure paths
+// without os.Exit.
+func agentRegister(cfg *Config, phraseArg string) error {
+	billingID := ""
+	if acct, err := newBillingClient(cfg).Account(); err == nil {
+		billingID = accountString(acct, "billing_id")
+	}
+	return registerStorageIdentity(cfg, phraseArg, billingID)
+}
+
 // wrapRegistrationIncomplete annotates a failure that happened after POST
 // /credentials minted a storage identity. The one-time connect key lived only
 // in the process, so the account is left with an identity that was never
 // linked; the message says exactly that so the operator knows what state the
 // account is in. The underlying error stays retrievable for errors.Is/As, and
-// the connect key is never part of either error. billingID is "" only on the
-// agent path, which fetches no account data.
+// the connect key is never part of either error. billingID is "" when no
+// account data was available (the agent-path lookup is best-effort); it then
+// renders as "(unknown)".
 func wrapRegistrationIncomplete(err error, billingID string) error {
 	if billingID == "" {
 		billingID = "(unknown)"
@@ -558,10 +572,8 @@ func cmdLogin(args []string) {
 	// A stored billing agent key with no storage identity yet: `signup` then
 	// `login` registers headlessly, without a browser (spec §6.3.4). A config
 	// without billing credentials keeps the legacy flow below unchanged.
-	// Unlike the magic-link path, no /account data was fetched here, so a
-	// post-mint failure can only report the account as unknown.
 	if cfg, err := loadConfig(); err == nil && agentStorageRegistration(cfg) {
-		if err := registerStorageIdentity(cfg, argPhrase, ""); err != nil {
+		if err := agentRegister(cfg, argPhrase); err != nil {
 			fatal("%v", err)
 		}
 		return

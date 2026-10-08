@@ -1000,6 +1000,103 @@ func TestBillingLoginMintFailuresSkipRegister(t *testing.T) {
 	}
 }
 
+// TestAgentRegisterFailureNamesFetchedAccount: the agent path makes a
+// best-effort GET /account before minting, so a post-mint failure names the
+// billing account instead of "(unknown)".
+func TestAgentRegisterFailureNamesFetchedAccount(t *testing.T) {
+	testConfigHome(t)
+	t.Setenv("TESSERA_PHRASE", "")
+	fake := &fakeLoginAPI{connectKey: "ck_agent", account: map[string]any{"billing_id": "TESS-77"}}
+	builder, _ := stubHeadlessRegistration(t, fake)
+	registerErr := errors.New("indexer unreachable")
+	builder.registerErr = registerErr
+	cfg := &Config{IndexerURL: defaultIndexer, BillingAPIURL: defaultBillingURL, BillingAgentKey: "tsk_agent"}
+	if err := saveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	err := agentRegister(cfg, "")
+	if err == nil {
+		t.Fatal("agentRegister with a failing Register = nil, want the annotated error")
+	}
+	for _, want := range []string{"registration incomplete", "TESS-77", "minted but not completed", "contact support"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+	if !errors.Is(err, registerErr) {
+		t.Errorf("error %v does not wrap the underlying failure", err)
+	}
+	if strings.Contains(err.Error(), "ck_agent") {
+		t.Errorf("error leaked the connect key: %v", err)
+	}
+	saved, lerr := loadConfig()
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if saved.AppID != "" || saved.AppKey != "" {
+		t.Fatalf("partial app credentials persisted: app_id %q app_key %q", saved.AppID, saved.AppKey)
+	}
+}
+
+// TestAgentRegisterAccountLookupFallback: the account lookup is best-effort —
+// a failure renders as "(unknown)" in the failure note and never blocks
+// registration.
+func TestAgentRegisterAccountLookupFallback(t *testing.T) {
+	t.Run("failure note says unknown", func(t *testing.T) {
+		testConfigHome(t)
+		t.Setenv("TESSERA_PHRASE", "")
+		fake := &fakeLoginAPI{connectKey: "ck_agent", accountErr: errors.New("account endpoint down")}
+		builder, _ := stubHeadlessRegistration(t, fake)
+		builder.registerErr = errors.New("indexer unreachable")
+		cfg := &Config{IndexerURL: defaultIndexer, BillingAPIURL: defaultBillingURL, BillingAgentKey: "tsk_agent"}
+		if err := saveConfig(cfg); err != nil {
+			t.Fatal(err)
+		}
+
+		err := agentRegister(cfg, "")
+		if err == nil {
+			t.Fatal("agentRegister = nil, want the annotated failure")
+		}
+		for _, want := range []string{"registration incomplete", "(unknown)", "minted but not completed", "contact support"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q missing %q", err, want)
+			}
+		}
+		if builder.registerCalls != 1 {
+			t.Errorf("Register calls = %d, want 1: a failed lookup must not block registration", builder.registerCalls)
+		}
+	})
+
+	t.Run("lookup failure does not block success", func(t *testing.T) {
+		testConfigHome(t)
+		t.Setenv("TESSERA_PHRASE", "")
+		fake := &fakeLoginAPI{connectKey: "ck_agent", accountErr: errors.New("account endpoint down")}
+		builder, _ := stubHeadlessRegistration(t, fake)
+		cfg := &Config{IndexerURL: defaultIndexer, BillingAPIURL: defaultBillingURL, BillingAgentKey: "tsk_agent"}
+		if err := saveConfig(cfg); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := agentRegister(cfg, ""); err != nil {
+			t.Fatalf("agentRegister with a failed account lookup: %v", err)
+		}
+		if builder.requestCalls != 1 || builder.registerCalls != 1 {
+			t.Errorf("builder request %d, register %d; want 1/1", builder.requestCalls, builder.registerCalls)
+		}
+		if fake.activateCalls != 1 {
+			t.Errorf("activate calls = %d, want 1", fake.activateCalls)
+		}
+		saved, lerr := loadConfig()
+		if lerr != nil {
+			t.Fatal(lerr)
+		}
+		if saved.AppID == "" || saved.AppKey == "" || saved.BillingAgentKey != "tsk_agent" {
+			t.Fatalf("registration did not complete: app_id %q app_key %q agent %q", saved.AppID, saved.AppKey, saved.BillingAgentKey)
+		}
+	})
+}
+
 // TestBillingLoginRegistrationNoPromptNonTerminal is the mutation check for the
 // stdin gate: without a terminal, the optional master-password prompt must not
 // run (so a scripted login cannot hang), and no phrase is encrypted.
