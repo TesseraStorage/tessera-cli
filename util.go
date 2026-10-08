@@ -196,8 +196,10 @@ func truncate(s string, max int) string {
 
 // stdinIsTerminal reports whether it makes sense to ask the user a question.
 // A piped stdin (a script, or `tessera folder add | tee log`) must never be
-// prompted: the process would block on input that is never coming.
-func stdinIsTerminal() bool {
+// prompted: the process would block on input that is never coming. It is a var
+// so tests can pin the answer; the billing registration gates its optional
+// master-password prompt on it.
+var stdinIsTerminal = func() bool {
 	return term.IsTerminal(int(syscall.Stdin))
 }
 
