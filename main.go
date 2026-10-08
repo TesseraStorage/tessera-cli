@@ -161,11 +161,14 @@ More:
 Billing:
   %s signup [--name <name>] [--contact-email <email>]
                              Create an agent account; the API key is shown once
+  %s login --email <email> [--token <token>]
+                             Sign in with a magic link (billing session)
+  %s login --billing-logout  End the billing session (agent key untouched)
 
 Indexer: https://index.tessera.storage
 Docs:    https://tessera.storage
 `, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe,
 		exe, exe, exe, exe, exe, exe,
 		exe, exe, exe, exe, exe, exe,
-		exe, exe, exe, exe, exe)
+		exe, exe, exe, exe, exe, exe, exe)
 }
