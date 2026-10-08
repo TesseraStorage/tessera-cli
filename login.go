@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -78,7 +79,220 @@ func openBrowser(url string) error {
 	}
 }
 
+// loadOrInitConfig returns the saved config, or a fresh default one when no
+// file exists yet: the magic-link path must work on a cold install, like
+// signup. A config that exists but cannot be read is an error — billing login
+// must not silently replace it.
+func loadOrInitConfig() (*Config, error) {
+	cfg, err := loadConfig()
+	if err == nil {
+		return cfg, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+	return &Config{IndexerURL: defaultIndexer, BillingAPIURL: defaultBillingURL}, nil
+}
+
+// billingLoginFlags resolves the billing flags before the legacy flow runs.
+// billing is false when neither --email nor --billing-logout is present: plain
+// `tessera login` then takes the unchanged legacy path. --billing-logout wins
+// when both are given. Malformed pairs are rejected here rather than silently
+// falling through to the interactive legacy prompt.
+func billingLoginFlags(args []string) (email, token string, logout, billing bool, err error) {
+	if hasFlag(args, "--billing-logout") {
+		return "", "", true, true, nil
+	}
+	if !hasFlag(args, "--email") {
+		if hasFlag(args, "--token") {
+			return "", "", false, true, errors.New("--token requires --email — usage: tessera login --email <email> --token <token>")
+		}
+		return "", "", false, false, nil
+	}
+	email, ok := flagValue(args, "--email")
+	if !ok || email == "" {
+		return "", "", false, true, errors.New("--email requires an email address — usage: tessera login --email <email> [--token <token>]")
+	}
+	if hasFlag(args, "--token") {
+		token, ok = flagValue(args, "--token")
+		if !ok || token == "" {
+			return "", "", false, true, errors.New("--token requires the token from the sign-in link — usage: tessera login --email <email> --token <token>")
+		}
+	}
+	return email, token, false, true, nil
+}
+
+// billingLogin runs `login --email [--token]`. Without a token it requests a
+// magic link (which stores nothing). With a token it exchanges the link for a
+// session — skipping the magic-link request, so the per-email cooldown is
+// never touched — saves the session, validates it with GET /account and prints
+// a short summary.
+func billingLogin(email, token string) error {
+	cfg, err := loadOrInitConfig()
+	if err != nil {
+		return err
+	}
+
+	if token == "" {
+		if err := newBillingClient(cfg).MagicLink(email); err != nil {
+			return err
+		}
+		printMagicLinkSent(email)
+		return nil
+	}
+
+	acct, err := verifyBillingLogin(cfg, token)
+	if err != nil {
+		return loginHint(err)
+	}
+	printBillingAccountSummary(acct)
+	return nil
+}
+
+// verifyBillingLogin exchanges token for a session, stores it in the 0600
+// config, then proves it works with GET /account. The account call uses a
+// config copy with the agent key cleared: newBillingAPI prefers a bearer when
+// one is stored, and the point here is to validate the new session.
+func verifyBillingLogin(cfg *Config, token string) (map[string]any, error) {
+	session, err := newBillingClient(cfg).Verify(token)
+	if err != nil {
+		return nil, err
+	}
+	cfg.BillingSession = session
+	if err := saveConfig(cfg); err != nil {
+		return nil, fmt.Errorf("save session: %w", err)
+	}
+	vc := *cfg
+	vc.BillingAgentKey = ""
+	return newBillingClient(&vc).Account()
+}
+
+// loginHint turns /auth/verify's flat 401 invalid_token into the fix: request
+// a fresh link. Everything else passes through unchanged, including the
+// client's session-expiry error for a stored cookie that the server rejected.
+func loginHint(err error) error {
+	var be *billingError
+	if errors.As(err, &be) && be.Code == "invalid_token" {
+		return fmt.Errorf("the sign-in link is invalid, expired or already used — request a new one with 'tessera login --email <your email>' (%w)", err)
+	}
+	return err
+}
+
+// billingLogout revokes the stored session server-side (best effort — an
+// unreachable or already-dead session must not leave the local copy behind)
+// and then clears billing_session. An agent key is never touched.
+func billingLogout() error {
+	cfg, err := loadOrInitConfig()
+	if err != nil {
+		return err
+	}
+	if cfg.BillingSession == "" {
+		fmt.Println("No billing session is stored; nothing to log out.")
+		return nil
+	}
+	if err := newBillingClient(cfg).Logout(cfg.BillingSession); err != nil {
+		fmt.Printf("Server-side revoke failed — clearing the local session anyway: %v\n", err)
+	}
+	cfg.BillingSession = ""
+	if err := saveConfig(cfg); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+	fmt.Println("Signed out. The local billing session was cleared; an agent key, if any, is untouched.")
+	return nil
+}
+
+// printMagicLinkSent prints the two-step instruction. The token is in the
+// emailed link; nothing is stored until the verify step succeeds.
+func printMagicLinkSent(email string) {
+	fmt.Println("Magic link requested.")
+	fmt.Println()
+	fmt.Printf("If %s has a billing account, a sign-in link is on its way.\n", email)
+	fmt.Println("Check your inbox, then run:")
+	fmt.Println()
+	fmt.Printf("  tessera login --email %s --token <token>\n", email)
+	fmt.Println()
+	fmt.Println("(<token> is the token value in the sign-in link moneyd emailed you.)")
+}
+
+// accountString extracts a displayable value from a GET /account map. Missing
+// and null fields (period_end and days_left are null when burn is zero) render
+// as "".
+func accountString(acct map[string]any, key string) string {
+	v, ok := acct[key]
+	if !ok || v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+// printBillingAccountSummary prints the short post-login summary. The full
+// dashboard is the `account` command; only fields present in the response are
+// shown, and no credential is ever echoed.
+func printBillingAccountSummary(acct map[string]any) {
+	fmt.Println("Signed in.")
+	fmt.Println()
+
+	id, kind := accountString(acct, "billing_id"), accountString(acct, "kind")
+	if id != "" && kind != "" {
+		id += " (" + kind + ")"
+	}
+	field := func(label, value string) {
+		if value != "" {
+			fmt.Printf("  %-10s %s\n", label+":", value)
+		}
+	}
+	field("Account", id)
+	field("Status", accountString(acct, "status"))
+	if bal := accountString(acct, "balance_usd"); bal != "" {
+		field("Balance", "$"+bal)
+	}
+	field("Plan", accountString(acct, "plan"))
+	field("Days left", accountString(acct, "days_left"))
+	fmt.Println()
+	fmt.Println("Session saved. Run 'tessera account' for the full dashboard.")
+	fmt.Println("Sign out with 'tessera login --billing-logout'.")
+}
+
+// cmdLogin connects this machine to Tessera.
+//
+//	tessera login                          legacy connect-key + browser flow
+//	tessera login --email <e>              request a magic-link sign-in link
+//	tessera login --email <e> --token <t>  exchange the link for a session
+//	tessera login --billing-logout         revoke and clear the billing session
+//
+// The billing paths use moneyd's /api/v1/auth endpoints. Production fronts
+// them with Cloudflare (spec §6.1/§10) and the CLI cannot solve a Cloudflare
+// challenge: before the first production login the operator must confirm
+// /api/v1/auth/* is reachable by a plain HTTP client (e.g.
+// `curl -i -X POST https://tessera.storage/api/v1/auth/magic-link
+// -H 'content-type: application/json' -d '{"email":"user@example.com"}'`
+// should answer 202) and, if it is not, add an access rule for it. That is an
+// operational precondition, not something this command can work around.
 func cmdLogin(args []string) {
+	// Billing flags dispatch before the legacy flow below. That ordering is
+	// required: the already-logged-in prompt there is an unguarded
+	// fmt.Scanln, so a scripted `login --email ...` or `login
+	// --billing-logout` must never reach it.
+	email, token, logout, billing, err := billingLoginFlags(args)
+	if err != nil {
+		fatal("%v", err)
+	}
+	if logout {
+		if err := billingLogout(); err != nil {
+			fatal("%v", err)
+		}
+		return
+	}
+	if billing {
+		if err := billingLogin(email, token); err != nil {
+			fatal("%v", err)
+		}
+		return
+	}
+
 	fmt.Println("Tessera CLI — Login")
 	fmt.Println()
 
