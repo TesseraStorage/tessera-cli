@@ -179,7 +179,46 @@ Mutating commands rebuild the index first. Acting on a stale cache produced
 "object not found" after work on another machine, which is exactly the kind of
 failure that erodes trust in a storage tool.
 
-## 9. The background watcher
+## 9. The billing client
+
+Billing commands share one small HTTP client (`billing.go`) speaking moneyd's
+public `/api/v1` surface. It is deliberately separate from the storage SDK: the
+two use different credentials and different failure modes.
+
+**Auth selection.** Both credentials live in the 0600 `~/.tessera/config.json`:
+
+| field | credential | how it is sent |
+|---|---|---|
+| `billing_session` | human magic-link login | `Cookie: tessera_session=…` |
+| `billing_agent_key` | agent `signup` (`tsk_…`) | `Authorization: Bearer …` |
+
+For authenticated calls a stored session **wins** over an agent key: an explicit
+human login must not be silently overridden by an earlier agent signup. Public
+endpoints (`/auth/magic-link`, `/auth/verify`, `/agents`) carry no credential.
+`tessera account` names which credential answered, and never prints it. The
+`TESSERA_BILLING_URL` environment variable overrides the configured base for
+development; the default is `https://tessera.storage/api/v1`.
+
+**Error shape.** moneyd serializes most failures as
+`{"detail":{"error":"code", …}}`, but two paths are flat: `/auth/verify`'s 401
+`{"error":"invalid_token"}` and the x402 `502 {"error":"settlement_pending", …}`.
+The client parses the code from either shape into a typed
+`billingError{Status, Code, Extra}` and preserves sibling fields (`minimum_usd`,
+`transaction`, `accepts`, …) in `Extra`, so commands can turn codes into
+actionable guidance instead of dumping JSON.
+
+**Sessions.** A 401 on a cookie-authenticated request is the expiry signal: the
+client clears `billing_session` locally and returns `errSessionExpired`, whose
+message tells the user to run `tessera login --email …`. When an agent key is
+also stored, the next call transparently falls back to it. Agent-key 401s are
+plain errors — there is nothing to clear. Credentials are never logged; `signup`
+is the single, documented exception that prints the one-time key.
+
+**Payments.** `topup` opens a NOWPayments invoice or, with `--x402`, fetches the
+payment challenge and submits a base64 `X-PAYMENT` the user signed with external
+wallet tooling. The CLI never holds a wallet or signing key.
+
+## 10. The background watcher
 
 `tessera sync` is a one-shot command, so nothing keeps a folder in step unless
 a watcher is running. The watcher is a per-user service:
@@ -207,7 +246,7 @@ Design decisions worth recording:
   `planService`) and the executor is injectable, so the exact installed content
   and the exact commands are asserted in tests without mutating the host.
 
-## 10. Roadmap
+## 11. Roadmap
 
 Ordered by value ÷ effort, with the reasoning for each.
 

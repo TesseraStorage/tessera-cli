@@ -205,8 +205,14 @@ the Mac, add a second pair with a different prefix (for example
 | Command | Description |
 |---|---|
 | `login [phrase]` | Connect this machine (browser approval). An optional recovery phrase makes the account reproducible. |
+| `login --email <e> [--token <t>]` | Billing sign-in with a magic link: request it, then complete with the emailed token |
+| `login --billing-logout` | End the billing session (an agent key, if any, is untouched) |
+| `signup [--name <n>] [--contact-email <e>] [--json] [--force]` | Create an agent billing account; the API key is shown once |
 | `logout` | Remove local credentials from `~/.tessera/` |
 | `whoami` | Show current account identity |
+| `account [--json]` | Billing account dashboard (status, balance, allowance, active credential) |
+| `topup <amount> [--pay-currency <asset>] [--x402 [--payment <b64>]]` | Add funds: a NOWPayments invoice, or an externally signed x402 USDC payment |
+| `promo <code>` | Redeem a promo code on the billing account |
 | `status` | Account ready state + file count + total storage |
 | `list [prefix]` | Files with real paths, sizes and dates |
 | `upload <path> [--as <remote>]` | Upload a file **or a whole folder** |
@@ -222,14 +228,77 @@ the Mac, add a second pair with a different prefix (for example
 | `versions <path> [--restore <n>]` | List or restore retained versions (1 kept by default) |
 | `trash list\|restore\|empty\|rm` | Recover soft-deleted files |
 | `audit [path] [--verify]` | Check redundancy and integrity |
-| `usage [--by-folder]` | Storage usage and a redundancy-adjusted total |
+| `usage [--by-folder] [--cost] [--json]` | Storage usage; with billing credentials a billing section, and `--cost` adds the netted egress estimate |
 | `index --rebuild` | Rebuild the local metadata index |
 | `config` | Show or change settings |
 | `service install\|status\|print` | Background watcher definitions |
 | `help` | Show help |
 
-Add `--json` to `list`, `status`, `find`, `sync`, `usage`, `config`, `index`
-and `audit` for scripting.
+Add `--json` to `list`, `status`, `find`, `sync`, `usage`, `config`, `index`,
+`audit`, and `account` for scripting. `signup --json` prints the account id and
+its one-time API key.
+
+## Billing and agent accounts
+
+The CLI can create and manage a billing account on its own. `signup` opens an
+agent account without a browser; `login --email` signs a human in with a magic
+link. Both credentials are stored locally and never printed again.
+
+```bash
+# Create an agent account. The tsk_… API key is printed exactly once.
+tessera signup --name build-box --contact-email ops@example.com
+tessera signup --json               # {"account_id": "…", "api_key": "…"} for scripts
+tessera signup --force              # replace an existing agent key with a new account
+
+# Human sign-in with a magic link (stores a session cookie, not a key)
+tessera login --email you@example.com
+tessera login --email you@example.com --token <token>   # completes the sign-in
+tessera login --billing-logout      # ends the session; an agent key is untouched
+
+# Dashboard, top-ups and promos
+tessera account                     # billing id, status, balance, allowance, credential
+tessera account --json
+tessera topup 25                    # NOWPayments hosted invoice
+tessera topup 25 --pay-currency btc
+tessera topup 25 --x402             # print the challenge to sign externally
+tessera topup 25 --payment <base64 X-PAYMENT>   # submit the signed authorization
+tessera promo WELCOME10
+tessera usage --cost                # billing section + netted egress estimate
+```
+
+**One account, two credentials.** A stored `billing_session` (a human login)
+wins over a `billing_agent_key`; `tessera account` prints which credential is
+active. If the server rejects the session with a 401, the CLI clears it locally
+and says *session expired — run `tessera login --email …`*; the next command
+falls back to the stored agent key, if there is one.
+
+**Login finishes setup.** A completed magic-link login (or a plain
+`tessera login` when only an agent key is stored) registers this machine's
+storage identity headlessly when the account does not have one yet: the CLI
+mints a one-time connect key, approves the connection itself, derives the app
+key from a recovery phrase (generated and printed once unless `TESSERA_PHRASE`
+or a phrase argument supplies one), and activates the link. If the account
+already has an identity, it says so and points at restoring it from the
+recovery phrase. `signup` alone does not mint storage credentials.
+
+**The signup key is shown once.** `signup` deliberately prints the new API key
+one time, with a store-it warning, because moneyd never shows it again. No other
+command echoes it. A second `signup` refuses to overwrite the stored key unless
+you pass `--force`.
+
+**Signing stays external.** `topup --x402` prints the payment challenge
+(network, asset, pay-to address, atomic amount, challenge nonce and timeout)
+and stops. You sign the EIP-3009 authorization with your own wallet tooling and
+hand the base64 payload back through `--payment`; the CLI never holds a wallet
+or signing key. `topup` has no `--json` yet — its output is human-readable.
+
+**`usage` gained a billing section.** Without billing credentials the storage
+output is exactly what it always was. With a credential, `usage` appends a
+Billing block (open slabs, egress used vs allowance, balance, days left) and
+`--cost` adds a PAYG egress estimate that nets the allowance
+(`max(0, used − allowance) × $5/TB`, decimal TB) and is labelled an estimate.
+`usage --json` gains additive `billing` keys (or `billing_error`) only when
+billing config exists; the old keys are unchanged.
 
 ## Safety
 
@@ -272,6 +341,9 @@ Set `TESSERA_HOME` to use a different directory (useful for several accounts).
 ```json
 {
   "indexer_url": "https://index.tessera.storage",
+  "billing_api_url": "https://tessera.storage/api/v1",  // moneyd API base
+  "billing_session": "...",        // tessera_session cookie (human login) — local secret
+  "billing_agent_key": "tsk_...",  // agent API key — local secret
   "app_id": "...",
   "app_key": "...",
   "phrase_encrypted": "...",       // optional — AES-GCM with Argon2id key
@@ -282,10 +354,15 @@ Set `TESSERA_HOME` to use a different directory (useful for several accounts).
 }
 ```
 
+`billing_session` and `billing_agent_key` are local secrets: the file is written
+`0600`, the values are never logged or echoed by any command (except the
+one-time `signup` print), and the file must never be committed or shared.
+
 ```bash
 tessera config --version-retention 5   # keep 5 previous versions per file
 tessera config --trash-retention 14
 tessera config --default-jobs 4
+tessera config --billing-url https://tessera.storage/api/v1
 ```
 
 Recovery phrase encryption is optional — you'll be asked on login. If enabled,
@@ -302,8 +379,7 @@ Without it, you must keep the 12 words yourself.
 ## Building from source
 
 ```bash
-go mod tidy
-go build -o tessera .
+go build -mod=vendor -o tessera .   # vendor/ is committed; no checkouts needed
 ```
 
 Requires Go 1.26+.
@@ -312,23 +388,26 @@ Run the tests (they cover the reconciliation table, ignore rules, path
 normalisation and metadata encoding, and need no network access):
 
 ```bash
-go test ./...
+go test -mod=vendor ./...
 ```
+
+Re-vendoring (a maintainer action, after either Sia fork changes) needs both
+fork checkouts; see `TESTING.md` §2 for the exact procedure.
 
 ## Cross-compiling for release
 
 ```bash
 # Linux (x86_64)
-GOOS=linux GOARCH=amd64 go build -o tessera-linux-amd64 .
+GOOS=linux GOARCH=amd64 go build -mod=vendor -o tessera-linux-amd64 .
 
 # macOS Intel
-GOOS=darwin GOARCH=amd64 go build -o tessera-darwin-amd64 .
+GOOS=darwin GOARCH=amd64 go build -mod=vendor -o tessera-darwin-amd64 .
 
 # macOS Apple Silicon
-GOOS=darwin GOARCH=arm64 go build -o tessera-darwin-arm64 .
+GOOS=darwin GOARCH=arm64 go build -mod=vendor -o tessera-darwin-arm64 .
 
 # Windows (x86_64)
-GOOS=windows GOARCH=amd64 go build -o tessera-windows-amd64.exe .
+GOOS=windows GOARCH=amd64 go build -mod=vendor -o tessera-windows-amd64.exe .
 ```
 
 The resulting binaries are **statically linked** — no dependencies needed. Ship

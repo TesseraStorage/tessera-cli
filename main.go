@@ -171,8 +171,8 @@ More:
   %s versions <path>         List retained versions
   %s trash list|restore|empty|rm <path>
   %s audit [path]            Verify durability of stored data
-  %s usage [--by-folder] [--cost]
-                             Storage usage, billing account, and egress estimate
+  %s usage [--by-folder] [--cost] [--json]
+                             Storage usage; --cost adds the netted egress estimate
   %s index --rebuild         Rebuild the local metadata index
   %s config [--json]         Show or change settings
   %s service install|start|stop|status
@@ -181,12 +181,12 @@ More:
   %s phrase show             Reveal the locally-saved recovery phrase (master password)
 
 Billing:
-  %s account                 Show billing account, balance, and usage
+  %s account [--json]        Show billing account, balance, and usage
   %s topup <amount> [--x402] [--pay-currency <asset>]
                              Add funds: NOWPayments invoice, or an x402 USDC challenge
   %s topup <amount> --payment <base64 X-PAYMENT>
                              Submit a signed x402 authorization to settle
-  %s signup [--name <name>] [--contact-email <email>]
+  %s signup [--name <name>] [--contact-email <email>] [--force] [--json]
                              Create an agent account; the API key is shown once
   %s login --email <email> [--token <token>]
                              Sign in with a magic link (billing session)
