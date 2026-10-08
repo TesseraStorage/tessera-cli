@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	defaultIndexer = "https://index.tessera.storage"
-	configDirName  = ".tessera"
-	configFileName = "config.json"
+	defaultIndexer    = "https://index.tessera.storage"
+	defaultBillingURL = "https://tessera.storage/api/v1"
+	configDirName     = ".tessera"
+	configFileName    = "config.json"
 )
 
 // Config stores persistent credentials.
@@ -40,6 +41,13 @@ type Config struct {
 	// IndexerCostPerTBMonth is only used by cost forecasts; it lets an
 	// operator keep forecasts in step with real pricing.
 	IndexerCostPerTBMonth float64 `json:"indexer_cost_per_tb_month,omitempty"`
+
+	// BillingAPIURL is the moneyd API base (…/api/v1). BillingSession holds
+	// the tessera_session cookie for human logins; BillingAgentKey holds an
+	// agent's tsk_… bearer key. Both secrets live only in this 0600 file.
+	BillingAPIURL   string `json:"billing_api_url,omitempty"`
+	BillingSession  string `json:"billing_session,omitempty"`
+	BillingAgentKey string `json:"billing_agent_key,omitempty"`
 }
 
 // configDir returns the directory holding credentials and state. The
@@ -84,6 +92,12 @@ func loadConfig() (*Config, error) {
 	if cfg.IndexerURL == "" {
 		cfg.IndexerURL = defaultIndexer
 	}
+	// Missing billing settings are not an error: configs written before the
+	// billing fields existed keep working with the default API base and no
+	// stored credentials.
+	if cfg.BillingAPIURL == "" {
+		cfg.BillingAPIURL = defaultBillingURL
+	}
 	// Anything not on the Tessera indexer host is rejected rather than silently
 	// used: a stale hostname produced an opaque TLS error, and pointing an
 	// account at a host it was not registered against is never what the user
@@ -111,6 +125,35 @@ func isTesseraIndexer(raw string) bool {
 	return strings.EqualFold(u.Host, want.Host)
 }
 
+// isBillingURL reports whether a URL may be used as the billing API base:
+// https everywhere, or plain http only for loopback hosts (127.0.0.1 and
+// localhost), so a session or agent key is never sent in clear over a network.
+func isBillingURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return true
+	case "http":
+		host := u.Hostname()
+		return host == "127.0.0.1" || strings.EqualFold(host, "localhost")
+	}
+	return false
+}
+
+// applyBillingURL validates raw and stores it on cfg. It is separate from
+// cmdConfig so the validation rule is testable without os.Exit; nothing is
+// changed when raw is rejected.
+func applyBillingURL(cfg *Config, raw string) error {
+	if !isBillingURL(raw) {
+		return fmt.Errorf("--billing-url expects an https URL (http is allowed only for 127.0.0.1 or localhost)")
+	}
+	cfg.BillingAPIURL = strings.TrimRight(raw, "/")
+	return nil
+}
+
 func saveConfig(cfg *Config) error {
 	dir, err := configDir()
 	if err != nil {
@@ -125,6 +168,9 @@ func saveConfig(cfg *Config) error {
 	}
 	if cfg.IndexerURL == "" {
 		cfg.IndexerURL = defaultIndexer
+	}
+	if cfg.BillingAPIURL == "" {
+		cfg.BillingAPIURL = defaultBillingURL
 	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
