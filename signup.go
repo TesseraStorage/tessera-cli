@@ -19,9 +19,13 @@ type signupResult struct {
 	APIKey    string
 }
 
+// errSignupKeyExists stops a second signup from silently replacing the only
+// locally stored agent key; --force opts in to a new account.
+var errSignupKeyExists = errors.New("already signed up on this machine; pass --force to create a new agent account")
+
 // cmdSignup creates a new agent account and stores its one-time API key.
 //
-//	tessera signup [--name <name>] [--contact-email <email>] [--json]
+//	tessera signup [--name <name>] [--contact-email <email>] [--force] [--json]
 //
 // The API key is the account's only credential and moneyd hands it out once,
 // so this is the one command that deliberately prints a secret: exactly once,
@@ -61,6 +65,11 @@ func signup(args []string) (signupResult, error) {
 		// config file. saveConfig fills in the URLs too, but setting them
 		// here keeps the in-memory copy the client sees consistent.
 		cfg = &Config{IndexerURL: defaultIndexer, BillingAPIURL: defaultBillingURL}
+	}
+	if cfg.BillingAgentKey != "" && !hasFlag(args, "--force") {
+		// Overwriting the stored key would strand the account it belongs to:
+		// moneyd shows the key once, so a fresh signup loses the old one.
+		return signupResult{}, errSignupKeyExists
 	}
 	return createAgentAccount(newBillingClient(cfg), cfg, name, contactEmail)
 }
