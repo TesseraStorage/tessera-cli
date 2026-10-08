@@ -20,7 +20,7 @@ import (
 func cmdAccount(args []string) {
 	acct, credential, err := fetchAccountSummary()
 	if err != nil {
-		fatal("%v", err)
+		fatal("%s", describeBillingError(err))
 	}
 	if hasFlag(args, "--json") {
 		emitJSON(accountWithCredential(acct, credential))
@@ -87,13 +87,37 @@ func accountWithCredential(acct map[string]any, credential string) map[string]an
 	return out
 }
 
+// accountBalanceUSD renders balance_usd for the human tables. FastAPI sends a
+// JSON number: it is formatted to exactly two decimals, so 7.5 renders as
+// 7.50 and large balances never fall into scientific notation. A quoted
+// decimal is a legacy/defensive shape and passes through as sent; missing and
+// null fields render as "".
+func accountBalanceUSD(acct map[string]any, key string) string {
+	v, ok := acct[key]
+	if !ok || v == nil {
+		return ""
+	}
+	switch n := v.(type) {
+	case float64:
+		return strconv.FormatFloat(n, 'f', 2, 64)
+	case int:
+		return strconv.FormatFloat(float64(n), 'f', 2, 64)
+	case int64:
+		return strconv.FormatFloat(float64(n), 'f', 2, 64)
+	case string:
+		return n
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
 // printAccountTable renders the human dashboard. Missing and null fields render
 // as an em dash rather than a Go formatting artifact.
 func printAccountTable(acct map[string]any, credential string) {
 	field := func(label, value string) {
 		fmt.Printf("  %-14s %s\n", label+":", dashIfEmpty(value))
 	}
-	balance := accountString(acct, "balance_usd")
+	balance := accountBalanceUSD(acct, "balance_usd")
 	if balance != "" {
 		balance = "$" + balance
 	}

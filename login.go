@@ -69,8 +69,10 @@ func connectAPI(cfg *Config) (*indexdapp.Client, types.PrivateKey, error) {
 	return client, appKey, nil
 }
 
-// openBrowser tries to open url in the default browser.
-func openBrowser(url string) error {
+// openBrowser tries to open url in the default browser. It is a package-level
+// var so command tests can keep the legacy flow desktop-free (precedent:
+// stdinIsTerminal, approveConnectURL).
+var openBrowser = func(url string) error {
 	switch runtime.GOOS {
 	case "linux":
 		return exec.Command("xdg-open", url).Start()
@@ -130,8 +132,10 @@ func billingLoginFlags(args []string) (email, token string, logout, billing bool
 // magic link (which stores nothing). With a token it exchanges the link for a
 // session — skipping the magic-link request, so the per-email cooldown is
 // never touched — saves the session, validates it with GET /account and prints
-// a short summary.
-func billingLogin(email, token string) error {
+// a short summary. phrase is the positional recovery phrase, passed through to
+// the headless storage registration when one has to be minted ("" lets the
+// registration flow fall back to TESSERA_PHRASE, then a fresh random phrase).
+func billingLogin(email, token, phrase string) error {
 	cfg, err := loadOrInitConfig()
 	if err != nil {
 		return err
@@ -154,7 +158,7 @@ func billingLogin(email, token string) error {
 		// Authenticated but no storage identity yet: register one headlessly.
 		// The billing id comes from the /account data fetched just above, so a
 		// post-mint failure can name the account it stranded.
-		return registerStorageIdentity(cfg, "", accountString(acct, "billing_id"))
+		return registerStorageIdentity(cfg, phrase, accountString(acct, "billing_id"))
 	}
 	return nil
 }
@@ -257,7 +261,7 @@ func printBillingAccountSummary(acct map[string]any) {
 	}
 	field("Account", id)
 	field("Status", accountString(acct, "status"))
-	if bal := accountString(acct, "balance_usd"); bal != "" {
+	if bal := accountBalanceUSD(acct, "balance_usd"); bal != "" {
 		field("Balance", "$"+bal)
 	}
 	field("Plan", accountString(acct, "plan"))
@@ -337,8 +341,11 @@ var approveConnectURL = func(ctx context.Context, responseURL, connectKey string
 
 // errIdentityExists is the 409 from POST /credentials: the billing account
 // already has a non-revoked storage identity (spec §6.3.1). One active
-// identity is allowed per account, so there is nothing to mint or reuse.
-var errIdentityExists = errors.New("identity_exists: this billing account already has a storage identity — it is already registered; restore it with the recovery phrase from the original registration if this machine lost its config")
+// identity is allowed per account, so there is nothing to mint — and this CLI
+// cannot re-derive the existing app key on a new machine (the recovery phrase
+// alone does not restore it), so the guidance is the config file that holds
+// the identity, or support.
+var errIdentityExists = errors.New("identity_exists: this billing account already has a storage identity — reuse ~/.tessera/config.json from the machine that registered it, or contact support")
 
 // agentStorageRegistration reports whether plain `tessera login` should run the
 // headless agent registration instead of the legacy browser flow: a billing
@@ -523,7 +530,7 @@ func promptProtectPhrase(cfg *Config, phrase string) {
 //	tessera login                          legacy connect-key + browser flow
 //	tessera login <phrase>                 legacy flow with a supplied phrase
 //	tessera login --email <e>              request a magic-link sign-in link
-//	tessera login --email <e> --token <t>  exchange the link and register headlessly
+//	tessera login --email <e> --token <t> [phrase]  exchange the link and register headlessly
 //	tessera login --billing-logout         revoke and clear the billing session
 //
 // The billing paths use moneyd's /api/v1/auth endpoints. Production fronts
@@ -535,6 +542,17 @@ func promptProtectPhrase(cfg *Config, phrase string) {
 // should answer 202) and, if it is not, add an access rule for it. That is an
 // operational precondition, not something this command can work around.
 func cmdLogin(args []string) {
+	// A seed phrase supplied up front makes the resulting app key
+	// deterministic, which is what the test key documented in TESTING.md
+	// relies on. It is also useful for restoring an existing account. It is
+	// resolved before the billing dispatch so `login --email <e> --token <t>
+	// "<words>"` uses the supplied phrase for the headless storage
+	// registration exactly like the agent path and TESSERA_PHRASE.
+	phraseArg := ""
+	if pos := positional(args); len(pos) > 0 {
+		phraseArg = pos[0]
+	}
+
 	// Billing flags dispatch before the legacy flow below. That ordering is
 	// required: the already-logged-in prompt there is an unguarded
 	// fmt.Scanln, so a scripted `login --email ...` or `login
@@ -550,19 +568,12 @@ func cmdLogin(args []string) {
 		return
 	}
 	if billing {
-		if err := billingLogin(email, token); err != nil {
+		if err := billingLogin(email, token, phraseArg); err != nil {
 			fatal("%v", err)
 		}
 		return
 	}
 
-	// A seed phrase supplied up front makes the resulting app key
-	// deterministic, which is what the test key documented in TESTING.md
-	// relies on. It is also useful for restoring an existing account.
-	phraseArg := ""
-	if pos := positional(args); len(pos) > 0 {
-		phraseArg = pos[0]
-	}
 	// The headless agent path resolves TESSERA_PHRASE itself (like the legacy
 	// flow below), so it receives only an explicitly supplied phrase.
 	argPhrase := phraseArg
@@ -583,8 +594,11 @@ func cmdLogin(args []string) {
 	fmt.Println("Tessera CLI — Login")
 	fmt.Println()
 
-	cfg, err := loadConfig()
-	if err == nil && cfg.AppKey != "" {
+	prev, err := loadConfig()
+	if err == nil && prev.AppKey != "" {
+		if prev.BillingSession != "" || prev.BillingAgentKey != "" {
+			fmt.Println("Note: this re-login keeps your billing credentials and billing API URL.")
+		}
 		fmt.Print("Already logged in. Log out first? [y/N] ")
 		var a string
 		fmt.Scanln(&a)
@@ -597,9 +611,17 @@ func cmdLogin(args []string) {
 	appID := siastorage.GenerateAppID()
 	indexer := defaultIndexer
 
-	cfg = &Config{
+	// The reset replaces the storage identity only. The billing fields are not
+	// part of the legacy connect flow, so dropping them here would silently
+	// sign the user out of billing (and lose a custom billing_api_url).
+	cfg := &Config{
 		IndexerURL: indexer,
 		AppID:      appID.String(),
+	}
+	if err == nil {
+		cfg.BillingAPIURL = prev.BillingAPIURL
+		cfg.BillingSession = prev.BillingSession
+		cfg.BillingAgentKey = prev.BillingAgentKey
 	}
 
 	fmt.Printf("Indexer:  %s\n", indexer)
@@ -611,12 +633,7 @@ func cmdLogin(args []string) {
 
 	// Step 1 — request connection
 	fmt.Print("Starting connection... ")
-	builder := siastorage.NewBuilder(indexer, siastorage.AppMetadata{
-		ID:          appID,
-		Name:        "Tessera CLI",
-		Description: "Tessera command-line client",
-		ServiceURL:  indexer,
-	})
+	builder := newSDKBuilder(indexer, appID)
 
 	respURL, err := builder.RequestConnection(ctx)
 	if err != nil {

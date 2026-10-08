@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"reflect"
 	"strings"
@@ -484,6 +485,40 @@ func TestUsageBillingUnavailable(t *testing.T) {
 	if got["files"] != float64(2) {
 		t.Fatalf("storage keys changed after a billing failure: %#v", got)
 	}
+}
+
+// TestUsageBilling401Guidance: with an agent key the server rejects, the human
+// billing section and the --json billing_error both carry the shared sign-in
+// guidance (signup/login, and `signup --force` for a revoked agent key)
+// instead of a bare billing API error.
+func TestUsageBilling401Guidance(t *testing.T) {
+	testConfigHome(t)
+	fake := &fakeUsageAPI{err: parseBillingError(http.StatusUnauthorized, []byte(`{"detail":{"error":"unauthorized"}}`))}
+	stubBillingClient(t, fake)
+	cfg := &Config{
+		IndexerURL:      defaultIndexer,
+		BillingAPIURL:   defaultBillingURL,
+		BillingAgentKey: "tsk_secret",
+	}
+
+	stdout, _ := captureOutput(t, func() { usageReport(nil, cfg, usageTestIndex()) })
+	if !strings.Contains(stdout, "unavailable") {
+		t.Fatalf("billing failure not surfaced:\n%s", stdout)
+	}
+	assertSignInGuidance(t, "usage", stdout)
+	assertNoSecrets(t, stdout, "tsk_secret")
+
+	stdout, _ = captureOutput(t, func() { usageReport([]string{"--json"}, cfg, usageTestIndex()) })
+	var got map[string]any
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("usage --json is not JSON: %v\n%s", err, stdout)
+	}
+	msg, _ := got["billing_error"].(string)
+	if msg == "" {
+		t.Fatalf("billing_error missing: %#v", got)
+	}
+	assertSignInGuidance(t, "usage --json", msg)
+	assertNoSecrets(t, stdout, "tsk_secret")
 }
 
 // TestUsageFlagsAreBooleans guards the positional() trap: usage's flags take no

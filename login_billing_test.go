@@ -214,7 +214,7 @@ func TestBillingLoginEmailTokenStoresSessionAndValidates(t *testing.T) {
 				accountCookie = c.Value
 			}
 			accountAuth = r.Header.Get("Authorization")
-			fmt.Fprint(w, `{"billing_id":"TESS-42","kind":"human","status":"active","balance_usd":"7.50","plan":"payg","days_left":29}`)
+			fmt.Fprint(w, `{"billing_id":"TESS-42","kind":"human","status":"active","balance_usd":7.5,"plan":"payg","days_left":29}`)
 		default:
 			t.Errorf("unexpected request path %s (login must not POST /auth/magic-link with --token)", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -234,7 +234,7 @@ func TestBillingLoginEmailTokenStoresSessionAndValidates(t *testing.T) {
 	}
 
 	var loginErr error
-	out := captureStdout(t, func() { loginErr = billingLogin("user@example.com", "tok-1") })
+	out := captureStdout(t, func() { loginErr = billingLogin("user@example.com", "tok-1", "") })
 	if loginErr != nil {
 		t.Fatalf("billingLogin: %v", loginErr)
 	}
@@ -297,7 +297,7 @@ func TestBillingLoginSessionExpiryClearsAndGuides(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("TESSERA_BILLING_URL", srv.URL)
 
-	err := billingLogin("user@example.com", "tok")
+	err := billingLogin("user@example.com", "tok", "")
 	if !errors.Is(err, errSessionExpired) {
 		t.Fatalf("billingLogin error = %v (%T), want errSessionExpired", err, err)
 	}
@@ -326,7 +326,7 @@ func TestBillingLoginInvalidTokenGuidance(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("TESSERA_BILLING_URL", srv.URL)
 
-	err := billingLogin("user@example.com", "stale-token")
+	err := billingLogin("user@example.com", "stale-token", "")
 	if err == nil {
 		t.Fatal("billingLogin with an invalid token = nil, want an error")
 	}
@@ -694,7 +694,7 @@ func TestBillingLoginRegistersHeadless(t *testing.T) {
 	stubApproveConnectURL(t, &rec, nil)
 
 	var loginErr error
-	out := captureStdout(t, func() { loginErr = billingLogin("user@example.com", "tok-1") })
+	out := captureStdout(t, func() { loginErr = billingLogin("user@example.com", "tok-1", "") })
 	if loginErr != nil {
 		t.Fatalf("billingLogin: %v", loginErr)
 	}
@@ -774,12 +774,51 @@ func TestBillingLoginHonorsEnvPhrase(t *testing.T) {
 	builder, _ := stubHeadlessRegistration(t, fake)
 
 	var loginErr error
-	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok") })
+	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok", "") })
 	if loginErr != nil {
 		t.Fatalf("billingLogin: %v", loginErr)
 	}
 	if builder.phrase != phrase {
 		t.Fatalf("register phrase = %q, want the TESSERA_PHRASE value", builder.phrase)
+	}
+	if strings.Contains(out, phrase) {
+		t.Errorf("a supplied phrase must not be echoed:\n%s", out)
+	}
+	saved, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.AppKey == "" || saved.AppID == "" {
+		t.Fatal("app credentials were not persisted")
+	}
+}
+
+// TestCmdLoginEmailTokenUsesPositionalPhrase: `login --email <e> --token <t>
+// "<words>"` must use the supplied positional phrase for the headless storage
+// registration (the README promise), exactly like TESSERA_PHRASE — not silently
+// ignore it and mint a fresh random phrase.
+func TestCmdLoginEmailTokenUsesPositionalPhrase(t *testing.T) {
+	testConfigHome(t)
+	t.Setenv("TESSERA_PHRASE", "")
+	const phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+	fake := &fakeLoginAPI{session: "sess-1", account: map[string]any{"billing_id": "TESS-1"}}
+	builder, _ := stubHeadlessRegistration(t, fake)
+
+	out := captureStdout(t, func() {
+		cmdLogin([]string{"--email", "u@example.com", "--token", "tok", phrase})
+	})
+
+	if builder.registerCalls != 1 {
+		t.Fatalf("Register calls = %d, want 1", builder.registerCalls)
+	}
+	if builder.phrase != phrase {
+		t.Fatalf("register phrase = %q, want the supplied positional phrase", builder.phrase)
+	}
+	if strings.Contains(out, "RECOVERY PHRASE — SAVE THESE 12 WORDS") {
+		t.Errorf("a supplied phrase must not trigger the fresh-phrase banner:\n%s", out)
+	}
+	if !strings.Contains(out, "Using the recovery phrase you supplied") {
+		t.Errorf("supplied-phrase note missing from output:\n%s", out)
 	}
 	if strings.Contains(out, phrase) {
 		t.Errorf("a supplied phrase must not be echoed:\n%s", out)
@@ -807,7 +846,7 @@ func TestBillingLoginSkipsRegistrationWhenRegistered(t *testing.T) {
 	}
 
 	var loginErr error
-	_ = captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok") })
+	_ = captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok", "") })
 	if loginErr != nil {
 		t.Fatalf("billingLogin: %v", loginErr)
 	}
@@ -834,17 +873,20 @@ func TestBillingLoginIdentityExistsGuides(t *testing.T) {
 	builder, rec := stubHeadlessRegistration(t, fake)
 
 	var loginErr error
-	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok") })
+	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok", "") })
 	if loginErr == nil {
 		t.Fatal("billingLogin with 409 identity_exists = nil, want guidance")
 	}
 	if !errors.Is(loginErr, errIdentityExists) {
 		t.Fatalf("error = %v (%T), want errIdentityExists", loginErr, loginErr)
 	}
-	for _, want := range []string{"identity_exists", "already", "recovery phrase"} {
+	for _, want := range []string{"identity_exists", "already", "config.json", "contact support"} {
 		if !strings.Contains(loginErr.Error(), want) {
 			t.Errorf("guidance %q missing from error: %v", want, loginErr)
 		}
+	}
+	if strings.Contains(loginErr.Error(), "recovery phrase") {
+		t.Errorf("guidance still points at the recovery-phrase restore this CLI cannot perform: %v", loginErr)
 	}
 	if builder.requestCalls != 0 || len(rec.calls) != 0 {
 		t.Fatalf("registration continued after 409: request %d, approvals %d", builder.requestCalls, len(rec.calls))
@@ -871,7 +913,7 @@ func TestBillingLoginActivateAlreadyLinkedSucceeds(t *testing.T) {
 	builder, _ := stubHeadlessRegistration(t, fake)
 
 	var loginErr error
-	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok") })
+	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok", "") })
 	if loginErr != nil {
 		t.Fatalf("billingLogin: %v", loginErr)
 	}
@@ -904,7 +946,7 @@ func TestBillingLoginRegisterFailureAnnotatesMintedState(t *testing.T) {
 	builder.registerErr = registerErr
 
 	var loginErr error
-	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok") })
+	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok", "") })
 	if loginErr == nil {
 		t.Fatal("billingLogin with a failing Register = nil, want the annotated error")
 	}
@@ -964,7 +1006,7 @@ func TestBillingLoginMintFailuresSkipRegister(t *testing.T) {
 			}
 
 			var loginErr error
-			_ = captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok") })
+			_ = captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok", "") })
 			if loginErr == nil {
 				t.Fatal("billingLogin = nil, want the annotated failure")
 			}
@@ -1115,7 +1157,7 @@ func TestBillingLoginRegistrationNoPromptNonTerminal(t *testing.T) {
 	stubApproveConnectURL(t, rec, nil)
 
 	var loginErr error
-	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok") })
+	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok", "") })
 	if loginErr != nil {
 		t.Fatalf("billingLogin: %v", loginErr)
 	}
@@ -1151,7 +1193,7 @@ func TestBillingLoginRegistrationPromptsOnTerminal(t *testing.T) {
 	stubStdin(t, "n\n")
 
 	var loginErr error
-	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok") })
+	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok", "") })
 	if loginErr != nil {
 		t.Fatalf("billingLogin: %v", loginErr)
 	}
@@ -1245,6 +1287,85 @@ func TestCmdLoginAgentKeyRegistersHeadless(t *testing.T) {
 	if saved.BillingSession != "" {
 		t.Fatalf("session = %q, want none", saved.BillingSession)
 	}
+}
+
+// TestLegacyLoginPreservesBillingFields: the legacy completion path rebuilds
+// the config around a new storage identity; the stored billing fields — a
+// custom billing_api_url included — must survive, both on a first login and on
+// a re-login past the already-logged-in guard prompt, which must say so.
+func TestLegacyLoginPreservesBillingFields(t *testing.T) {
+	const phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
+	run := func(t *testing.T, existingAppKey bool) string {
+		t.Helper()
+		testConfigHome(t)
+		t.Setenv("TESSERA_PHRASE", "")
+		appKey := ""
+		if existingAppKey {
+			appKey = strings.Repeat("cd", 32)
+		}
+		if err := saveConfig(&Config{
+			IndexerURL:      defaultIndexer,
+			BillingAPIURL:   "https://billing.example.com/api/v1",
+			BillingSession:  "sess-live",
+			BillingAgentKey: "tsk_keep",
+			AppID:           "app-old",
+			AppKey:          appKey,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		builder := &fakeRegistrationBuilder{
+			respURL: "https://index.example/auth/connect/req-1",
+			app:     &fakeRegisteredSDK{key: types.GeneratePrivateKey()},
+		}
+		stubSDKBuilder(t, builder)
+		origBrowser := openBrowser
+		openBrowser = func(string) error { return nil }
+		t.Cleanup(func() { openBrowser = origBrowser })
+		if existingAppKey {
+			stubStdin(t, "y\n")
+		}
+
+		out := captureStdout(t, func() { cmdLogin([]string{phrase}) })
+
+		if builder.requestCalls != 1 || builder.waitCalls != 1 || builder.registerCalls != 1 {
+			t.Fatalf("legacy builder calls = request %d, wait %d, register %d; want 1/1/1",
+				builder.requestCalls, builder.waitCalls, builder.registerCalls)
+		}
+		if builder.phrase != phrase {
+			t.Fatalf("register phrase = %q, want the positional phrase", builder.phrase)
+		}
+		saved, err := loadConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if saved.BillingAPIURL != "https://billing.example.com/api/v1" ||
+			saved.BillingSession != "sess-live" || saved.BillingAgentKey != "tsk_keep" {
+			t.Fatalf("billing config lost across the legacy login reset: %+v", saved)
+		}
+		if saved.AppID == "" || saved.AppKey == "" {
+			t.Fatalf("storage identity not persisted: app_id %q app_key %q", saved.AppID, saved.AppKey)
+		}
+		return out
+	}
+
+	t.Run("first login", func(t *testing.T) {
+		out := run(t, false)
+		if !strings.Contains(out, "Logged in.") {
+			t.Errorf("completion notice missing:\n%s", out)
+		}
+	})
+
+	t.Run("re-login keeps billing and says so", func(t *testing.T) {
+		out := run(t, true)
+		if !strings.Contains(out, "Already logged in") {
+			t.Errorf("already-logged-in guard prompt missing:\n%s", out)
+		}
+		if !strings.Contains(out, "keeps your billing credentials") {
+			t.Errorf("guard prompt does not note the preserved billing fields:\n%s", out)
+		}
+	})
 }
 
 // TestPhrasePrintHelpers pins the extracted legacy banner text: the legacy

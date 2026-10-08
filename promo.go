@@ -113,7 +113,7 @@ func describePromoError(err error) string {
 	case be.Status == http.StatusConflict && be.Code == "promo_invalid":
 		return "promo_invalid — that is not a valid promo code"
 	case be.Status == http.StatusUnauthorized:
-		return fmt.Sprintf("authentication failed — run 'tessera signup' or 'tessera login' to get billing credentials (%s)", be)
+		return describeBillingError(err)
 	}
 	return err.Error()
 }

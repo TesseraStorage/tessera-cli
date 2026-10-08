@@ -278,8 +278,9 @@ storage identity headlessly when the account does not have one yet: the CLI
 mints a one-time connect key, approves the connection itself, derives the app
 key from a recovery phrase (generated and printed once unless `TESSERA_PHRASE`
 or a phrase argument supplies one), and activates the link. If the account
-already has an identity, it says so and points at restoring it from the
-recovery phrase. `signup` alone does not mint storage credentials.
+already has an identity, it says so and points at reusing
+`~/.tessera/config.json` from the machine that registered it (or contacting
+support). `signup` alone does not mint storage credentials.
 
 **The signup key is shown once.** `signup` deliberately prints the new API key
 one time, with a store-it warning, because moneyd never shows it again. No other
