@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"runtime"
@@ -146,6 +150,10 @@ func billingLogin(email, token string) error {
 		return loginHint(err)
 	}
 	printBillingAccountSummary(acct)
+	if cfg.AppID == "" || cfg.AppKey == "" {
+		// Authenticated but no storage identity yet: register one headlessly.
+		return registerStorageIdentity(cfg, "")
+	}
 	return nil
 }
 
@@ -256,11 +264,233 @@ func printBillingAccountSummary(acct map[string]any) {
 	fmt.Println("Sign out with 'tessera login --billing-logout'.")
 }
 
+// registrationBuilder is the subset of siastorage.Builder the headless
+// registration flow drives. The concrete builder is wrapped by
+// sdkBuilderAdapter; newSDKBuilder is a package-level seam so tests can run the
+// flow network-free (precedent: serviceCommand, newBillingClient).
+type registrationBuilder interface {
+	RequestConnection(ctx context.Context) (string, error)
+	WaitForApproval(ctx context.Context) error
+	Register(ctx context.Context, mnemonic string) (registeredApp, error)
+}
+
+// registeredApp is what Builder.Register hands back: the derived app key plus
+// Close. *siastorage.SDK implements it.
+type registeredApp interface {
+	AppKey() types.PrivateKey
+	Close() error
+}
+
+// sdkBuilderAdapter adapts *siastorage.Builder to registrationBuilder; only
+// Register needs wrapping because its result type is narrowed.
+type sdkBuilderAdapter struct {
+	*siastorage.Builder
+}
+
+func (a sdkBuilderAdapter) Register(ctx context.Context, mnemonic string) (registeredApp, error) {
+	sdk, err := a.Builder.Register(ctx, mnemonic)
+	if err != nil {
+		return nil, err
+	}
+	return sdk, nil
+}
+
+// newSDKBuilder builds the SDK connection builder for a chosen app ID.
+var newSDKBuilder = func(indexerURL string, appID types.Hash256) registrationBuilder {
+	return sdkBuilderAdapter{siastorage.NewBuilder(indexerURL, siastorage.AppMetadata{
+		ID:          appID,
+		Name:        "Tessera CLI",
+		Description: "Tessera command-line client",
+		ServiceURL:  indexerURL,
+	})}
+}
+
+// approveConnectURL completes the headless approval a browser tab normally
+// performs: POST {"approve":true} to the SDK's response URL with the connect
+// key as the Basic auth password (empty username, per indexd /auth/connect).
+// The key travels only in the Authorization header; it is never printed.
+var approveConnectURL = func(ctx context.Context, responseURL, connectKey string) error {
+	body, err := json.Marshal(map[string]bool{"approve": true})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, responseURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("approve connection request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth("", connectKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("approve connection request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("approve connection request: HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// errIdentityExists is the 409 from POST /credentials: the billing account
+// already has a non-revoked storage identity (spec §6.3.1). One active
+// identity is allowed per account, so there is nothing to mint or reuse.
+var errIdentityExists = errors.New("identity_exists: this billing account already has a storage identity — it is already registered; restore it with the recovery phrase from the original registration if this machine lost its config")
+
+// agentStorageRegistration reports whether plain `tessera login` should run the
+// headless agent registration instead of the legacy browser flow: a billing
+// agent key is stored, there is no human session, and no usable app
+// credentials exist yet.
+func agentStorageRegistration(cfg *Config) bool {
+	return cfg.BillingAgentKey != "" && cfg.BillingSession == "" &&
+		(cfg.AppID == "" || cfg.AppKey == "")
+}
+
+// registerStorageIdentity performs the headless storage registration of spec
+// §6.3: mint a one-time connect key with the billing credential, approve the
+// SDK connection request with it, register the app key derived from the
+// recovery phrase, persist app_id/app_key exactly like the legacy flow, then
+// activate the link so the account leaves the fail-closed window (§6.3.6).
+//
+// The connect key is never printed. phraseArg "" generates and prints a fresh
+// phrase (TESSERA_PHRASE is honored like the legacy flow). cfg must already
+// carry the authenticated billing credential; it is saved on success.
+func registerStorageIdentity(cfg *Config, phraseArg string) error {
+	if cfg.BillingSession == "" && cfg.BillingAgentKey == "" {
+		return errNoBillingCredentials
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// Mint with the credential the user just authenticated as: when a session
+	// is stored, keep a possibly different agent key out of this call.
+	bc := *cfg
+	if bc.BillingSession != "" {
+		bc.BillingAgentKey = ""
+	}
+	connectKey, err := newBillingClient(&bc).Credentials()
+	if err != nil {
+		var be *billingError
+		if errors.As(err, &be) && be.Code == "identity_exists" {
+			return errIdentityExists
+		}
+		return err
+	}
+	// connectKey stays in memory: single-use, sent only in the Basic header
+	// below, never printed or persisted.
+
+	appID := siastorage.GenerateAppID()
+	builder := newSDKBuilder(cfg.IndexerURL, appID)
+
+	respURL, err := builder.RequestConnection(ctx)
+	if err != nil {
+		return fmt.Errorf("connection request failed: %w", err)
+	}
+	if err := approveConnectURL(ctx, respURL, connectKey); err != nil {
+		return err
+	}
+	if err := builder.WaitForApproval(ctx); err != nil {
+		return fmt.Errorf("wait failed: %w\n  (did the approval go through?)", err)
+	}
+
+	phrase := phraseArg
+	if phrase == "" {
+		phrase = os.Getenv("TESSERA_PHRASE")
+	}
+	if phrase == "" {
+		phrase = siastorage.NewSeedPhrase()
+		printRecoveryPhrase(phrase)
+	} else {
+		printSuppliedPhraseNote()
+	}
+
+	sdk, err := builder.Register(ctx, phrase)
+	if err != nil {
+		return fmt.Errorf("registration failed: %w", err)
+	}
+	appKey := sdk.AppKey()
+	sdk.Close()
+
+	cfg.AppID = appID.String()
+	cfg.AppKey = hex.EncodeToString([]byte(appKey))
+
+	// Optional local encryption of the phrase, exactly like the legacy flow;
+	// non-interactive logins skip the prompt entirely.
+	if phraseArg == "" && stdinIsTerminal() {
+		promptProtectPhrase(cfg, phrase)
+	}
+	if err := saveConfig(cfg); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+
+	if err := newBillingClient(&bc).Activate(); err != nil {
+		// A reconcile tick may have linked the identity between Register and
+		// activate; already_registered is the desired end state.
+		var be *billingError
+		if !(errors.As(err, &be) && be.Code == "already_registered") {
+			return fmt.Errorf("registered and saved, but activation failed: %w — the identity links on the next billing tick", err)
+		}
+	}
+
+	fmt.Println()
+	fmt.Printf("App ID:   %s\n", cfg.AppID)
+	fmt.Printf("Indexer:  %s\n", cfg.IndexerURL)
+	fmt.Println("Storage identity linked — the account is ready to use.")
+	return nil
+}
+
+// printRecoveryPhrase prints the one-time banner for a freshly generated
+// recovery phrase, shared by the legacy and headless registration flows.
+func printRecoveryPhrase(phrase string) {
+	fmt.Println(strings.Repeat("═", 54))
+	fmt.Println("  RECOVERY PHRASE — SAVE THESE 12 WORDS")
+	fmt.Println("  They are the ONLY way to recover your account.")
+	fmt.Println("  We do not store them.")
+	fmt.Println(strings.Repeat("═", 54))
+	fmt.Printf("  %s\n", phrase)
+	fmt.Println(strings.Repeat("═", 54))
+	fmt.Println()
+}
+
+// printSuppliedPhraseNote explains that a caller-supplied phrase was used
+// instead of a freshly generated one.
+func printSuppliedPhraseNote() {
+	fmt.Println("Using the recovery phrase you supplied — the app key is derived")
+	fmt.Println("from it, so this account is reproducible on any machine.")
+	fmt.Println()
+}
+
+// promptProtectPhrase is the legacy optional master-password encryption of the
+// recovery phrase; the billing flow calls it only when stdin is a terminal.
+func promptProtectPhrase(cfg *Config, phrase string) {
+	fmt.Print("Protect recovery phrase with a master password? [Y/n] ")
+	var protect string
+	fmt.Scanln(&protect)
+	if strings.ToLower(protect) != "n" {
+		pass := readPassword("Master password: ")
+		confirm := readPassword("Confirm password:   ")
+		if pass != confirm {
+			fmt.Println("Passwords don't match. Phrase will NOT be saved locally.")
+		} else if pass != "" {
+			enc, salt, e := encryptPhrase(phrase, pass)
+			if e != nil {
+				fmt.Printf("Encryption failed: %v\n", e)
+			} else {
+				cfg.PhraseEncrypted = enc
+				cfg.PhraseSalt = salt
+				fmt.Println("Recovery phrase encrypted and saved.")
+			}
+		}
+	}
+}
+
 // cmdLogin connects this machine to Tessera.
 //
 //	tessera login                          legacy connect-key + browser flow
+//	tessera login <phrase>                 legacy flow with a supplied phrase
 //	tessera login --email <e>              request a magic-link sign-in link
-//	tessera login --email <e> --token <t>  exchange the link for a session
+//	tessera login --email <e> --token <t>  exchange the link and register headlessly
 //	tessera login --billing-logout         revoke and clear the billing session
 //
 // The billing paths use moneyd's /api/v1/auth endpoints. Production fronts
@@ -293,9 +523,6 @@ func cmdLogin(args []string) {
 		return
 	}
 
-	fmt.Println("Tessera CLI — Login")
-	fmt.Println()
-
 	// A seed phrase supplied up front makes the resulting app key
 	// deterministic, which is what the test key documented in TESTING.md
 	// relies on. It is also useful for restoring an existing account.
@@ -303,9 +530,25 @@ func cmdLogin(args []string) {
 	if pos := positional(args); len(pos) > 0 {
 		phraseArg = pos[0]
 	}
+	// The headless agent path resolves TESSERA_PHRASE itself (like the legacy
+	// flow below), so it receives only an explicitly supplied phrase.
+	argPhrase := phraseArg
 	if env := os.Getenv("TESSERA_PHRASE"); phraseArg == "" && env != "" {
 		phraseArg = env
 	}
+
+	// A stored billing agent key with no storage identity yet: `signup` then
+	// `login` registers headlessly, without a browser (spec §6.3.4). A config
+	// without billing credentials keeps the legacy flow below unchanged.
+	if cfg, err := loadConfig(); err == nil && agentStorageRegistration(cfg) {
+		if err := registerStorageIdentity(cfg, argPhrase); err != nil {
+			fatal("%v", err)
+		}
+		return
+	}
+
+	fmt.Println("Tessera CLI — Login")
+	fmt.Println()
 
 	cfg, err := loadConfig()
 	if err == nil && cfg.AppKey != "" {
@@ -372,20 +615,11 @@ func cmdLogin(args []string) {
 		phrase = siastorage.NewSeedPhrase()
 		fmt.Println("approved!")
 		fmt.Println()
-		fmt.Println(strings.Repeat("═", 54))
-		fmt.Println("  RECOVERY PHRASE — SAVE THESE 12 WORDS")
-		fmt.Println("  They are the ONLY way to recover your account.")
-		fmt.Println("  We do not store them.")
-		fmt.Println(strings.Repeat("═", 54))
-		fmt.Printf("  %s\n", phrase)
-		fmt.Println(strings.Repeat("═", 54))
-		fmt.Println()
+		printRecoveryPhrase(phrase)
 	} else {
 		fmt.Println("approved!")
 		fmt.Println()
-		fmt.Println("Using the recovery phrase you supplied — the app key is derived")
-		fmt.Println("from it, so this account is reproducible on any machine.")
-		fmt.Println()
+		printSuppliedPhraseNote()
 	}
 
 	sdk, err := builder.Register(ctx, phrase)
@@ -400,25 +634,7 @@ func cmdLogin(args []string) {
 	// Optional: encrypt phrase locally. Skipped when the phrase was supplied
 	// on the command line, since the caller already has it.
 	if phraseArg == "" {
-		fmt.Print("Protect recovery phrase with a master password? [Y/n] ")
-		var protect string
-		fmt.Scanln(&protect)
-		if strings.ToLower(protect) != "n" {
-			pass := readPassword("Master password: ")
-			confirm := readPassword("Confirm password:   ")
-			if pass != confirm {
-				fmt.Println("Passwords don't match. Phrase will NOT be saved locally.")
-			} else if pass != "" {
-				enc, salt, e := encryptPhrase(phrase, pass)
-				if e != nil {
-					fmt.Printf("Encryption failed: %v\n", e)
-				} else {
-					cfg.PhraseEncrypted = enc
-					cfg.PhraseSalt = salt
-					fmt.Println("Recovery phrase encrypted and saved.")
-				}
-			}
-		}
+		promptProtectPhrase(cfg, phrase)
 	}
 
 	if err := saveConfig(cfg); err != nil {

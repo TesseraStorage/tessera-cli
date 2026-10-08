@@ -2,21 +2,26 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"go.sia.tech/core/types"
 )
 
 // fakeLoginAPI implements billingAPI for the billing login flows. The embedded
 // nil interface satisfies every other method and panics if a flow calls one,
 // which is itself part of the assertion: login only speaks magic-link, verify,
-// account and logout.
+// account, logout, and the registration pair credentials/activate.
 type fakeLoginAPI struct {
 	billingAPI
 	magicCalls  int
@@ -31,6 +36,12 @@ type fakeLoginAPI struct {
 	logoutCalls int
 	logoutSess  string
 	logoutErr   error
+
+	credentialsCalls int
+	connectKey       string
+	credentialsErr   error
+	activateCalls    int
+	activateErr      error
 }
 
 func (f *fakeLoginAPI) MagicLink(email string) error {
@@ -53,6 +64,16 @@ func (f *fakeLoginAPI) Logout(session string) error {
 	f.logoutCalls++
 	f.logoutSess = session
 	return f.logoutErr
+}
+
+func (f *fakeLoginAPI) Credentials() (string, error) {
+	f.credentialsCalls++
+	return f.connectKey, f.credentialsErr
+}
+
+func (f *fakeLoginAPI) Activate() error {
+	f.activateCalls++
+	return f.activateErr
 }
 
 // TestLoginValueFlagsRegistered guards the positional() trap the plan calls
@@ -436,5 +457,610 @@ func TestBillingLogoutWithoutSession(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, configFileName)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("logout wrote a config (stat err=%v)", err)
+	}
+}
+
+// --- headless registration after billing auth -----------------------------
+
+// fakeRegisteredSDK is the registeredApp a fake builder hands back.
+type fakeRegisteredSDK struct {
+	key    types.PrivateKey
+	closed bool
+}
+
+func (f *fakeRegisteredSDK) AppKey() types.PrivateKey { return f.key }
+func (f *fakeRegisteredSDK) Close() error             { f.closed = true; return nil }
+
+// fakeRegistrationBuilder implements registrationBuilder, capturing the SDK
+// calls the headless flow makes.
+type fakeRegistrationBuilder struct {
+	appID         types.Hash256
+	respURL       string
+	requestCalls  int
+	requestErr    error
+	waitCalls     int
+	waitErr       error
+	registerCalls int
+	registerErr   error
+	phrase        string
+	app           registeredApp
+}
+
+func (f *fakeRegistrationBuilder) RequestConnection(context.Context) (string, error) {
+	f.requestCalls++
+	return f.respURL, f.requestErr
+}
+
+func (f *fakeRegistrationBuilder) WaitForApproval(context.Context) error {
+	f.waitCalls++
+	return f.waitErr
+}
+
+func (f *fakeRegistrationBuilder) Register(_ context.Context, mnemonic string) (registeredApp, error) {
+	f.registerCalls++
+	f.phrase = mnemonic
+	if f.registerErr != nil {
+		return nil, f.registerErr
+	}
+	return f.app, nil
+}
+
+// stubSDKBuilder swaps the builder seam for fake and records the app ID the
+// flow chose.
+func stubSDKBuilder(t *testing.T, fake *fakeRegistrationBuilder) {
+	t.Helper()
+	orig := newSDKBuilder
+	newSDKBuilder = func(_ string, appID types.Hash256) registrationBuilder {
+		fake.appID = appID
+		return fake
+	}
+	t.Cleanup(func() { newSDKBuilder = orig })
+}
+
+type approveCall struct {
+	responseURL string
+	connectKey  string
+}
+
+type approveRecorder struct {
+	calls []approveCall
+}
+
+// stubApproveConnectURL swaps the approval seam and records each call.
+func stubApproveConnectURL(t *testing.T, rec *approveRecorder, err error) {
+	t.Helper()
+	orig := approveConnectURL
+	approveConnectURL = func(_ context.Context, responseURL, connectKey string) error {
+		rec.calls = append(rec.calls, approveCall{responseURL, connectKey})
+		return err
+	}
+	t.Cleanup(func() { approveConnectURL = orig })
+}
+
+// stubStdinTerminal pins the interactive-stdin gate so the prompt assertions do
+// not depend on how the test binary's stdin is wired.
+func stubStdinTerminal(t *testing.T, terminal bool) {
+	t.Helper()
+	orig := stdinIsTerminal
+	stdinIsTerminal = func() bool { return terminal }
+	t.Cleanup(func() { stdinIsTerminal = orig })
+}
+
+// stubStdin replaces os.Stdin with a pipe holding input, so the optional
+// master-password prompt can be driven without a real terminal.
+func stubStdin(t *testing.T, input string) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	if _, err := io.WriteString(w, input); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+	w.Close()
+	orig := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() {
+		os.Stdin = orig
+		r.Close()
+	})
+}
+
+// stubHeadlessRegistration installs a fake billing client and a fake builder
+// around the registration flow. stdin is pinned to "not a terminal" and the
+// approval is stubbed; tests assert on the returned builder and recorder.
+func stubHeadlessRegistration(t *testing.T, fake *fakeLoginAPI) (*fakeRegistrationBuilder, *approveRecorder) {
+	t.Helper()
+	stubStdinTerminal(t, false)
+	stubBillingClient(t, fake)
+	builder := &fakeRegistrationBuilder{
+		respURL: "https://index.example/auth/connect/req-1",
+		app:     &fakeRegisteredSDK{key: types.GeneratePrivateKey()},
+	}
+	stubSDKBuilder(t, builder)
+	rec := &approveRecorder{}
+	stubApproveConnectURL(t, rec, nil)
+	return builder, rec
+}
+
+// TestApproveConnectURL is the exact wire contract for the headless browser
+// step: POST to the SDK's response URL, connect key as the Basic password
+// (empty username), body {"approve":true}, and the key never echoed in errors.
+func TestApproveConnectURL(t *testing.T) {
+	var method, path, user, pass, body, contentType string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		user, pass, _ = r.BasicAuth()
+		b, _ := io.ReadAll(r.Body)
+		body = string(b)
+		contentType = r.Header.Get("Content-Type")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	if err := approveConnectURL(context.Background(), srv.URL+"/auth/connect/req-7", "ck_secret"); err != nil {
+		t.Fatalf("approveConnectURL: %v", err)
+	}
+	if method != http.MethodPost || path != "/auth/connect/req-7" {
+		t.Fatalf("request = %s %s, want POST /auth/connect/req-7", method, path)
+	}
+	if user != "" || pass != "ck_secret" {
+		t.Fatalf("Basic auth = (%q, %q), want (\"\", the connect key)", user, pass)
+	}
+	if body != `{"approve":true}` {
+		t.Fatalf("body = %q, want the approve payload", body)
+	}
+	if !strings.HasPrefix(contentType, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", contentType)
+	}
+
+	t.Run("non-2xx", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "nope", http.StatusBadRequest)
+		}))
+		defer srv.Close()
+		err := approveConnectURL(context.Background(), srv.URL+"/auth/connect/req-8", "ck_secret")
+		if err == nil {
+			t.Fatal("approveConnectURL on a 400 = nil, want an error")
+		}
+		if !strings.Contains(err.Error(), "400") {
+			t.Errorf("error = %q, want the status", err)
+		}
+		if strings.Contains(err.Error(), "ck_secret") {
+			t.Errorf("error leaked the connect key: %v", err)
+		}
+	})
+}
+
+// TestBillingLoginRegistersHeadless drives the whole human path against a fake
+// moneyd: verify → account → credentials (session cookie, never the stored
+// agent key) → SDK connection → headless approval → register with a fresh
+// phrase → persist app_id/app_key → activate (after the config was saved).
+// The connect key and session must never reach stdout.
+func TestBillingLoginRegistersHeadless(t *testing.T) {
+	testConfigHome(t)
+	t.Setenv("TESSERA_PHRASE", "")
+	stubStdinTerminal(t, false)
+
+	var paths, auths, cookies []string
+	var activateSawSaved bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		auths = append(auths, r.Header.Get("Authorization"))
+		if c, err := r.Cookie(sessionCookieName); err == nil {
+			cookies = append(cookies, c.Value)
+		} else {
+			cookies = append(cookies, "")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/auth/verify":
+			http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "sess-captured", Path: "/"})
+			fmt.Fprint(w, `{}`)
+		case "/account":
+			fmt.Fprint(w, `{"billing_id":"TESS-42","kind":"human","status":"active","balance_usd":"7.50","plan":"payg","days_left":29}`)
+		case "/credentials":
+			fmt.Fprint(w, `{"connect_key":"ck_secret","quota":"plan-pending"}`)
+		case "/credentials/activate":
+			// Activation is step 5: the app credentials must already be on
+			// disk when moneyd links the identity (spec §6.3.6).
+			if saved, err := loadConfig(); err == nil && saved.AppID != "" && saved.AppKey != "" {
+				activateSawSaved = true
+			}
+			fmt.Fprint(w, `{"linked":true}`)
+		default:
+			t.Errorf("unexpected request path %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("TESSERA_BILLING_URL", srv.URL)
+
+	if err := saveConfig(&Config{
+		IndexerURL:      defaultIndexer,
+		BillingAPIURL:   defaultBillingURL,
+		BillingAgentKey: "tsk_agent",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	key := types.GeneratePrivateKey()
+	builder := &fakeRegistrationBuilder{
+		respURL: "http://index.example/auth/connect/req-1",
+		app:     &fakeRegisteredSDK{key: key},
+	}
+	stubSDKBuilder(t, builder)
+	var rec approveRecorder
+	stubApproveConnectURL(t, &rec, nil)
+
+	var loginErr error
+	out := captureStdout(t, func() { loginErr = billingLogin("user@example.com", "tok-1") })
+	if loginErr != nil {
+		t.Fatalf("billingLogin: %v", loginErr)
+	}
+
+	wantPaths := []string{"/auth/verify", "/account", "/credentials", "/credentials/activate"}
+	if strings.Join(paths, ",") != strings.Join(wantPaths, ",") {
+		t.Fatalf("paths = %v, want %v", paths, wantPaths)
+	}
+	for i, p := range paths {
+		if p != "/credentials" && p != "/credentials/activate" {
+			continue
+		}
+		if auths[i] != "" {
+			t.Errorf("%s Authorization = %q, want none: the just-verified session wins over the stored agent key", p, auths[i])
+		}
+		if cookies[i] != "sess-captured" {
+			t.Errorf("%s cookie = %q, want the just-verified session", p, cookies[i])
+		}
+	}
+	if !activateSawSaved {
+		t.Error("activate ran before app_id/app_key were persisted")
+	}
+	if builder.requestCalls != 1 || builder.waitCalls != 1 || builder.registerCalls != 1 {
+		t.Fatalf("builder calls = request %d, wait %d, register %d; want 1/1/1",
+			builder.requestCalls, builder.waitCalls, builder.registerCalls)
+	}
+	if sdk, ok := builder.app.(*fakeRegisteredSDK); !ok || !sdk.closed {
+		t.Error("the registered SDK was not closed")
+	}
+	if len(rec.calls) != 1 || rec.calls[0].responseURL != builder.respURL || rec.calls[0].connectKey != "ck_secret" {
+		t.Fatalf("approvals = %+v, want one for %s with the minted connect key", rec.calls, builder.respURL)
+	}
+	if len(strings.Fields(builder.phrase)) != 12 {
+		t.Fatalf("register phrase = %q, want a generated 12-word phrase", builder.phrase)
+	}
+	if n := strings.Count(out, builder.phrase); n != 1 {
+		t.Errorf("generated phrase appears %d times in output, want exactly once:\n%s", n, out)
+	}
+	if n := strings.Count(out, "RECOVERY PHRASE — SAVE THESE 12 WORDS"); n != 1 {
+		t.Errorf("recovery banner appears %d times, want exactly once", n)
+	}
+	for _, secret := range []string{"ck_secret", "sess-captured", "tsk_agent"} {
+		if strings.Contains(out, secret) {
+			t.Errorf("output leaked %q:\n%s", secret, out)
+		}
+	}
+	if !strings.Contains(out, "Storage identity linked") {
+		t.Errorf("final activation state missing from output:\n%s", out)
+	}
+
+	saved, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.AppID == "" || saved.AppID != builder.appID.String() {
+		t.Fatalf("saved AppID = %q, builder got %q", saved.AppID, builder.appID.String())
+	}
+	if want := hex.EncodeToString([]byte(key)); saved.AppKey != want {
+		t.Fatalf("saved AppKey = %q, want the registered key %q", saved.AppKey, want)
+	}
+	if saved.BillingSession != "sess-captured" || saved.BillingAgentKey != "tsk_agent" {
+		t.Fatalf("billing credentials changed: session %q agent key %q", saved.BillingSession, saved.BillingAgentKey)
+	}
+	if saved.PhraseEncrypted != "" || saved.PhraseSalt != "" {
+		t.Error("phrase was encrypted although stdin is not a terminal")
+	}
+}
+
+// TestBillingLoginHonorsEnvPhrase: a caller-supplied TESSERA_PHRASE is used
+// verbatim (like the legacy flow) and is not echoed — only the app key is
+// persisted.
+func TestBillingLoginHonorsEnvPhrase(t *testing.T) {
+	testConfigHome(t)
+	const phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+	t.Setenv("TESSERA_PHRASE", phrase)
+	fake := &fakeLoginAPI{session: "sess-1", account: map[string]any{"billing_id": "TESS-1"}}
+	builder, _ := stubHeadlessRegistration(t, fake)
+
+	var loginErr error
+	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok") })
+	if loginErr != nil {
+		t.Fatalf("billingLogin: %v", loginErr)
+	}
+	if builder.phrase != phrase {
+		t.Fatalf("register phrase = %q, want the TESSERA_PHRASE value", builder.phrase)
+	}
+	if strings.Contains(out, phrase) {
+		t.Errorf("a supplied phrase must not be echoed:\n%s", out)
+	}
+	saved, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.AppKey == "" || saved.AppID == "" {
+		t.Fatal("app credentials were not persisted")
+	}
+}
+
+// TestBillingLoginSkipsRegistrationWhenRegistered: an account that already has
+// app_id/app_key keeps them; the registration endpoints are never called.
+func TestBillingLoginSkipsRegistrationWhenRegistered(t *testing.T) {
+	testConfigHome(t)
+	fake := &fakeLoginAPI{session: "sess-1", account: map[string]any{"billing_id": "TESS-1"}}
+	builder, rec := stubHeadlessRegistration(t, fake)
+	if err := saveConfig(&Config{
+		IndexerURL: defaultIndexer, BillingAPIURL: defaultBillingURL,
+		AppID: "app-1", AppKey: strings.Repeat("ab", 32),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var loginErr error
+	_ = captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok") })
+	if loginErr != nil {
+		t.Fatalf("billingLogin: %v", loginErr)
+	}
+	if fake.credentialsCalls != 0 || fake.activateCalls != 0 {
+		t.Fatalf("registration endpoints called for a registered account: credentials %d, activate %d",
+			fake.credentialsCalls, fake.activateCalls)
+	}
+	if builder.requestCalls != 0 || len(rec.calls) != 0 {
+		t.Fatalf("SDK registration ran for a registered account: request %d, approvals %d",
+			builder.requestCalls, len(rec.calls))
+	}
+}
+
+// TestBillingLoginIdentityExistsGuides: POST /credentials 409 identity_exists
+// becomes recovery guidance; no builder call, no activation, no connect key.
+func TestBillingLoginIdentityExistsGuides(t *testing.T) {
+	testConfigHome(t)
+	fake := &fakeLoginAPI{
+		session:        "sess-1",
+		account:        map[string]any{"billing_id": "TESS-1"},
+		connectKey:     "ck_never_minted",
+		credentialsErr: &billingError{Status: 409, Code: "identity_exists"},
+	}
+	builder, rec := stubHeadlessRegistration(t, fake)
+
+	var loginErr error
+	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok") })
+	if loginErr == nil {
+		t.Fatal("billingLogin with 409 identity_exists = nil, want guidance")
+	}
+	if !errors.Is(loginErr, errIdentityExists) {
+		t.Fatalf("error = %v (%T), want errIdentityExists", loginErr, loginErr)
+	}
+	for _, want := range []string{"identity_exists", "already", "recovery phrase"} {
+		if !strings.Contains(loginErr.Error(), want) {
+			t.Errorf("guidance %q missing from error: %v", want, loginErr)
+		}
+	}
+	if builder.requestCalls != 0 || len(rec.calls) != 0 {
+		t.Fatalf("registration continued after 409: request %d, approvals %d", builder.requestCalls, len(rec.calls))
+	}
+	if fake.activateCalls != 0 {
+		t.Fatalf("activate calls = %d, want 0 after 409", fake.activateCalls)
+	}
+	if strings.Contains(out, "ck_never_minted") {
+		t.Errorf("output leaked a connect key:\n%s", out)
+	}
+}
+
+// TestBillingLoginActivateAlreadyLinkedSucceeds: a reconcile tick may link the
+// identity between Register and activate; the server then answers 409
+// already_registered, which is the desired end state, not a failure.
+func TestBillingLoginActivateAlreadyLinkedSucceeds(t *testing.T) {
+	testConfigHome(t)
+	fake := &fakeLoginAPI{
+		session:     "sess-1",
+		account:     map[string]any{"billing_id": "TESS-1"},
+		connectKey:  "ck_1",
+		activateErr: &billingError{Status: 409, Code: "already_registered"},
+	}
+	builder, _ := stubHeadlessRegistration(t, fake)
+
+	var loginErr error
+	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok") })
+	if loginErr != nil {
+		t.Fatalf("billingLogin: %v", loginErr)
+	}
+	if builder.registerCalls != 1 || fake.activateCalls != 1 {
+		t.Fatalf("register %d, activate %d; want 1/1", builder.registerCalls, fake.activateCalls)
+	}
+	saved, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.AppKey == "" {
+		t.Error("app key was not persisted before the benign activate 409")
+	}
+	if !strings.Contains(out, "Storage identity linked") {
+		t.Errorf("success state missing from output:\n%s", out)
+	}
+}
+
+// TestBillingLoginRegistrationNoPromptNonTerminal is the mutation check for the
+// stdin gate: without a terminal, the optional master-password prompt must not
+// run (so a scripted login cannot hang), and no phrase is encrypted.
+func TestBillingLoginRegistrationNoPromptNonTerminal(t *testing.T) {
+	testConfigHome(t)
+	t.Setenv("TESSERA_PHRASE", "")
+	fake := &fakeLoginAPI{session: "sess-1", account: map[string]any{}}
+	stubStdinTerminal(t, false)
+	stubBillingClient(t, fake)
+	builder := &fakeRegistrationBuilder{
+		respURL: "https://index.example/auth/connect/req-1",
+		app:     &fakeRegisteredSDK{key: types.GeneratePrivateKey()},
+	}
+	stubSDKBuilder(t, builder)
+	rec := &approveRecorder{}
+	stubApproveConnectURL(t, rec, nil)
+
+	var loginErr error
+	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok") })
+	if loginErr != nil {
+		t.Fatalf("billingLogin: %v", loginErr)
+	}
+	for _, banned := range []string{"Protect recovery phrase", "Master password"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("non-terminal registration showed %q:\n%s", banned, out)
+		}
+	}
+	saved, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.PhraseEncrypted != "" || saved.PhraseSalt != "" {
+		t.Error("phrase was encrypted on a non-terminal login")
+	}
+}
+
+// TestBillingLoginRegistrationPromptsOnTerminal: with a terminal the legacy
+// optional encryption prompt still runs (here answered "n"), proving the gate
+// only suppresses it non-interactively.
+func TestBillingLoginRegistrationPromptsOnTerminal(t *testing.T) {
+	testConfigHome(t)
+	fake := &fakeLoginAPI{session: "sess-1", account: map[string]any{}}
+	stubBillingClient(t, fake)
+	builder := &fakeRegistrationBuilder{
+		respURL: "https://index.example/auth/connect/req-1",
+		app:     &fakeRegisteredSDK{key: types.GeneratePrivateKey()},
+	}
+	stubSDKBuilder(t, builder)
+	rec := &approveRecorder{}
+	stubApproveConnectURL(t, rec, nil)
+	stubStdinTerminal(t, true)
+	stubStdin(t, "n\n")
+
+	var loginErr error
+	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok") })
+	if loginErr != nil {
+		t.Fatalf("billingLogin: %v", loginErr)
+	}
+	if !strings.Contains(out, "Protect recovery phrase with a master password? [Y/n]") {
+		t.Errorf("interactive prompt missing from output:\n%s", out)
+	}
+	saved, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.PhraseEncrypted != "" || saved.PhraseSalt != "" {
+		t.Error(`answering "n" must not save an encrypted phrase`)
+	}
+}
+
+// TestAgentStorageRegistration pins the plain-login dispatch predicate: only a
+// billing agent key with no session and no usable app credentials opts into
+// the headless agent path; everything else keeps the legacy browser flow.
+func TestAgentStorageRegistration(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  *Config
+		want bool
+	}{
+		{"no billing config", &Config{}, false},
+		{"session only", &Config{BillingSession: "s"}, false},
+		{"agent key only", &Config{BillingAgentKey: "tsk_x"}, true},
+		{"agent key with app credentials", &Config{BillingAgentKey: "tsk_x", AppID: "a", AppKey: "k"}, false},
+		{"agent key with a partial app id", &Config{BillingAgentKey: "tsk_x", AppID: "a"}, true},
+		{"agent key with a partial app key", &Config{BillingAgentKey: "tsk_x", AppKey: "k"}, true},
+		{"session and agent key", &Config{BillingSession: "s", BillingAgentKey: "tsk_x"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := agentStorageRegistration(tc.cfg); got != tc.want {
+				t.Fatalf("agentStorageRegistration(%+v) = %v, want %v", tc.cfg, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCmdLoginAgentKeyRegistersHeadless is the agent path (spec §6.3.4): with
+// only billing_agent_key stored, plain `tessera login` registers headlessly
+// instead of starting the legacy browser connection, and the key survives.
+func TestCmdLoginAgentKeyRegistersHeadless(t *testing.T) {
+	testConfigHome(t)
+	t.Setenv("TESSERA_PHRASE", "")
+	fake := &fakeLoginAPI{connectKey: "ck_agent"}
+	builder, rec := stubHeadlessRegistration(t, fake)
+	key := builder.app.(*fakeRegisteredSDK).key
+	if err := saveConfig(&Config{
+		IndexerURL:      defaultIndexer,
+		BillingAPIURL:   defaultBillingURL,
+		BillingAgentKey: "tsk_agent",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() { cmdLogin(nil) })
+
+	if fake.credentialsCalls != 1 || fake.activateCalls != 1 {
+		t.Fatalf("credentials %d, activate %d; want 1/1", fake.credentialsCalls, fake.activateCalls)
+	}
+	if builder.requestCalls != 1 || builder.registerCalls != 1 {
+		t.Fatalf("builder request %d, register %d; want 1/1", builder.requestCalls, builder.registerCalls)
+	}
+	if len(rec.calls) != 1 || rec.calls[0].connectKey != "ck_agent" {
+		t.Fatalf("approvals = %+v, want one with the agent-minted connect key", rec.calls)
+	}
+	if strings.Contains(out, "A browser tab") || strings.Contains(out, "Tessera CLI — Login") {
+		t.Errorf("plain login with an agent key took the legacy browser flow:\n%s", out)
+	}
+	for _, secret := range []string{"ck_agent", "tsk_agent"} {
+		if strings.Contains(out, secret) {
+			t.Errorf("output leaked %q:\n%s", secret, out)
+		}
+	}
+	saved, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.AppID == "" || saved.AppID != builder.appID.String() {
+		t.Fatalf("saved AppID = %q, builder got %q", saved.AppID, builder.appID.String())
+	}
+	if want := hex.EncodeToString([]byte(key)); saved.AppKey != want {
+		t.Fatalf("saved AppKey = %q, want %q", saved.AppKey, want)
+	}
+	if saved.BillingAgentKey != "tsk_agent" {
+		t.Fatalf("agent key = %q, want it untouched", saved.BillingAgentKey)
+	}
+	if saved.BillingSession != "" {
+		t.Fatalf("session = %q, want none", saved.BillingSession)
+	}
+}
+
+// TestPhrasePrintHelpers pins the extracted legacy banner text: the legacy
+// login flow and the headless registration share these helpers, so their bytes
+// must not drift.
+func TestPhrasePrintHelpers(t *testing.T) {
+	bar := strings.Repeat("═", 54)
+	out := captureStdout(t, func() { printRecoveryPhrase("one two three") })
+	want := bar + "\n" +
+		"  RECOVERY PHRASE — SAVE THESE 12 WORDS\n" +
+		"  They are the ONLY way to recover your account.\n" +
+		"  We do not store them.\n" +
+		bar + "\n" +
+		"  one two three\n" +
+		bar + "\n\n"
+	if out != want {
+		t.Errorf("printRecoveryPhrase output:\n%q\nwant:\n%q", out, want)
+	}
+
+	out = captureStdout(t, func() { printSuppliedPhraseNote() })
+	want = "Using the recovery phrase you supplied — the app key is derived\n" +
+		"from it, so this account is reproducible on any machine.\n\n"
+	if out != want {
+		t.Errorf("printSuppliedPhraseNote output:\n%q\nwant:\n%q", out, want)
 	}
 }
