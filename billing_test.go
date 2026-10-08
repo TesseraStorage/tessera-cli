@@ -44,6 +44,18 @@ func testConfigHome(t *testing.T) string {
 	return home
 }
 
+// assertSignInGuidance fails unless msg is the shared billing 401 guidance:
+// signup/login pointers plus the revoked-agent-key recovery, with the API
+// error it explains still attached.
+func assertSignInGuidance(t *testing.T, source, msg string) {
+	t.Helper()
+	for _, want := range []string{"tessera signup", "tessera login", "signup --force", "HTTP 401"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("%s guidance %q missing %q", source, msg, want)
+		}
+	}
+}
+
 func TestParseBillingError(t *testing.T) {
 	t.Run("nested detail.error preserves siblings", func(t *testing.T) {
 		be := parseBillingError(409, []byte(`{"detail":{"error":"below_asset_minimum","minimum_usd":"10.00"}}`))

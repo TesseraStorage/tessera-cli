@@ -14,11 +14,12 @@ import (
 // accountServerJSON mirrors moneyd's GET /account projection
 // (dataplane/moneyd/routers/account.py): all 13 fields, with period_end and
 // days_left null when the account has nothing to burn (dunning.py:171-175).
+// balance_usd is the JSON number FastAPI sends, not a quoted decimal.
 const accountServerJSON = `{
   "billing_id": "TESS-000000000042",
   "kind": "human",
   "status": "active",
-  "balance_usd": "7.50",
+  "balance_usd": 7.5,
   "plan": "payg",
   "period_end": null,
   "included_storage_bytes": 0,
@@ -143,6 +144,44 @@ func TestPrintAccountTableNulls(t *testing.T) {
 	}
 }
 
+// TestAccountBalanceFormatting pins the human balance rendering for FastAPI's
+// numeric balance_usd: exactly two decimals, and never scientific notation for
+// large values. A quoted decimal is a legacy/defensive shape passed through.
+func TestAccountBalanceFormatting(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		v    any
+		want string
+	}{
+		{"numeric fraction", 7.5, "7.50"},
+		{"numeric integer", float64(7), "7.00"},
+		{"numeric zero", float64(0), "0.00"},
+		{"large value avoids scientific notation", 1e21, "1000000000000000000000.00"},
+		{"quoted decimal passes through", "7.50", "7.50"},
+		{"missing", nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			acct := map[string]any{}
+			if tc.v != nil {
+				acct["balance_usd"] = tc.v
+			}
+			if got := accountBalanceUSD(acct, "balance_usd"); got != tc.want {
+				t.Fatalf("accountBalanceUSD(%#v) = %q, want %q", tc.v, got, tc.want)
+			}
+		})
+	}
+
+	// The rendered table must carry the cents form and never "e+".
+	acct := map[string]any{"billing_id": "TESS-1", "balance_usd": 1e21}
+	out := captureStdout(t, func() { printAccountTable(acct, "agent") })
+	if !strings.Contains(out, "$1000000000000000000000.00") {
+		t.Errorf("large balance missing the cents form:\n%s", out)
+	}
+	if strings.Contains(out, "e+") || strings.Contains(out, "E+") {
+		t.Errorf("large balance rendered in scientific notation:\n%s", out)
+	}
+}
+
 // TestCmdAccountHumanTable drives the command end-to-end through the fake:
 // identity, balance, plan, byte formatting, days left, the active credential,
 // and the top-up URL, with no secret anywhere in the output.
@@ -217,8 +256,8 @@ func TestCmdAccountShowsAgentCredential(t *testing.T) {
 }
 
 // TestCmdAccountJSONVerbatim pins the --json contract: every server field is
-// passed through unchanged (balance_usd stays the string "7.50"; nulls stay
-// null) plus exactly one added credential tag, and no secret appears.
+// passed through unchanged (balance_usd stays the server's number 7.5; nulls
+// stay null) plus exactly one added credential tag, and no secret appears.
 func TestCmdAccountJSONVerbatim(t *testing.T) {
 	testConfigHome(t)
 	server := accountObject(t, accountServerJSON)
@@ -254,8 +293,8 @@ func TestCmdAccountJSONVerbatim(t *testing.T) {
 	if got["credential"] != "session" {
 		t.Errorf("credential = %v, want session (a stored session wins over the agent key)", got["credential"])
 	}
-	if _, ok := got["balance_usd"].(string); !ok {
-		t.Errorf("balance_usd = %#v, want the server's string form preserved", got["balance_usd"])
+	if bal, ok := got["balance_usd"].(float64); !ok || bal != 7.5 {
+		t.Errorf("balance_usd = %#v, want the server's number 7.5 preserved verbatim", got["balance_usd"])
 	}
 	if got["period_end"] != nil {
 		t.Errorf("period_end = %#v, want the server's null preserved", got["period_end"])
@@ -324,6 +363,38 @@ func TestAccountGuidanceWithoutBillingConfig(t *testing.T) {
 			t.Fatalf("Account calls = %d, want 0 without credentials", fake.calls)
 		}
 	})
+}
+
+// TestAccount401Guidance: a stored agent key the server rejects (the sessionless
+// 401) must not surface as a bare billing API error; the command renders the
+// shared sign-in guidance, including the `signup --force` path for a revoked
+// key. fetchAccountSummary is the seam cmdAccount renders, so the test stays
+// exit-free.
+func TestAccount401Guidance(t *testing.T) {
+	testConfigHome(t)
+	fake := &fakeAccountAPI{err: parseBillingError(http.StatusUnauthorized, []byte(`{"detail":{"error":"unauthorized"}}`))}
+	stubAccountClient(t, fake)
+	if err := saveConfig(&Config{
+		IndexerURL:      defaultIndexer,
+		BillingAPIURL:   defaultBillingURL,
+		BillingAgentKey: "tsk_secret",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := fetchAccountSummary()
+	if err == nil {
+		t.Fatal("fetchAccountSummary with a 401 = nil, want the API error")
+	}
+	if fake.calls != 1 {
+		t.Fatalf("Account calls = %d, want 1", fake.calls)
+	}
+	msg := describeBillingError(err)
+	if msg == err.Error() {
+		t.Fatalf("401 rendered bare: %q", msg)
+	}
+	assertSignInGuidance(t, "account", msg)
+	assertNoSecrets(t, msg, "tsk_secret")
 }
 
 // TestAccountSessionExpiryGuidance is the real-client end-to-end: a stored

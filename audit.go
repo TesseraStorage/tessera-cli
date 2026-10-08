@@ -218,7 +218,7 @@ func usageReport(args []string, cfg *Config, idx *Index) {
 		case hasBilling && billingErr == nil:
 			out["billing"] = usageBillingJSON(billing, cost)
 		case hasBilling:
-			out["billing_error"] = billingErr.Error()
+			out["billing_error"] = describeBillingError(billingErr)
 		}
 		if !hasBilling && cost {
 			usageCostHint()
@@ -233,7 +233,7 @@ func usageReport(args []string, cfg *Config, idx *Index) {
 		fmt.Println()
 		fmt.Println("Billing")
 		fmt.Println()
-		fmt.Printf("  unavailable:     %v\n", billingErr)
+		fmt.Printf("  unavailable:     %s\n", describeBillingError(billingErr))
 	case hasBilling:
 		printUsageBilling(billing, cost)
 	case cost:
@@ -372,7 +372,7 @@ func printUsageBilling(acct map[string]any, cost bool) {
 	default:
 		field("egress used", "")
 	}
-	balance := accountString(acct, "balance_usd")
+	balance := accountBalanceUSD(acct, "balance_usd")
 	if balance != "" {
 		balance = "$" + balance
 	}

@@ -165,13 +165,17 @@ func printX402Challenge(req topupRequest, be *billingError) error {
 	if !ok {
 		return fmt.Errorf("x402 challenge is missing accepts: %v", be)
 	}
+	nonce, err := topupChallengeNonce(accept)
+	if err != nil {
+		return fmt.Errorf("x402 challenge is missing the payment nonce: %w (%v)", err, be)
+	}
 	fmt.Println("x402 payment required — sign an EIP-3009 TransferWithAuthorization.")
 	fmt.Println()
 	fmt.Printf("  Network:          %s\n", topupField(accept, "network"))
 	fmt.Printf("  Asset:            %s\n", topupField(accept, "asset"))
 	fmt.Printf("  Pay to:           %s\n", topupField(accept, "payTo"))
 	fmt.Printf("  Amount (atomic):  %s\n", topupField(accept, "amount"))
-	fmt.Printf("  Challenge nonce:  %s\n", topupChallengeNonce(accept))
+	fmt.Printf("  Challenge nonce:  %s\n", nonce)
 	fmt.Printf("  Max timeout:      %s seconds\n", topupField(accept, "maxTimeoutSeconds"))
 	fmt.Println()
 	fmt.Println("Build and sign the authorization externally (your signing key never")
@@ -202,13 +206,16 @@ func printX402Settled(resp map[string]any) {
 }
 
 // topupChallengeNonce reads the server-issued challenge nonce from
-// accepts[0].extra.x402ChallengeNonce.
-func topupChallengeNonce(accept map[string]any) string {
-	extra, ok := accept["extra"].(map[string]any)
-	if !ok {
-		return "—"
+// accepts[0].extra.x402ChallengeNonce. A missing or empty nonce is an error:
+// without it there is nothing the external signer can bind, and printing a
+// half-valid challenge invites signing a document the server will reject.
+func topupChallengeNonce(accept map[string]any) (string, error) {
+	extra, _ := accept["extra"].(map[string]any)
+	nonce, _ := extra["x402ChallengeNonce"].(string)
+	if nonce == "" {
+		return "", errors.New("accepts[0].extra.x402ChallengeNonce is missing or empty")
 	}
-	return topupField(extra, "x402ChallengeNonce")
+	return nonce, nil
 }
 
 // firstX402Accept returns accepts[0] from a PaymentRequired document preserved
@@ -263,7 +270,7 @@ func describeTopupError(err error) string {
 	case be.Status == http.StatusPaymentRequired:
 		return fmt.Sprintf("x402 refused the payment: %s", dashIfEmpty(be.Code))
 	case be.Status == http.StatusUnauthorized:
-		return fmt.Sprintf("authentication failed — run 'tessera signup' or 'tessera login' to get billing credentials (%s)", be)
+		return describeBillingError(err)
 	}
 	return err.Error()
 }

@@ -189,6 +189,13 @@ func TestRunPromoErrorOutcomes(t *testing.T) {
 	})
 }
 
+// TestPromo401SignInGuidance pins the shared 401 renderer on promo: a rejected
+// bearer key gets the signup/login pointer and the `signup --force` recovery.
+func TestPromo401SignInGuidance(t *testing.T) {
+	err := parseBillingError(http.StatusUnauthorized, []byte(`{"detail":{"error":"unauthorized"}}`))
+	assertSignInGuidance(t, "promo", describePromoError(err))
+}
+
 // TestPromoClientGuidance: no config file and a config without billing
 // credentials both fail before any API call, with the signup/login pointer.
 func TestPromoClientGuidance(t *testing.T) {

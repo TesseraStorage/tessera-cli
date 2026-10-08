@@ -454,6 +454,48 @@ func TestRunTopupMalformedChallenge(t *testing.T) {
 	}
 }
 
+// TestTopup401SignInGuidance pins the shared 401 renderer on topup: a rejected
+// bearer key gets the signup/login pointer and the `signup --force` recovery.
+func TestTopup401SignInGuidance(t *testing.T) {
+	err := parseBillingError(http.StatusUnauthorized, []byte(`{"detail":{"error":"unauthorized"}}`))
+	assertSignInGuidance(t, "topup", describeTopupError(err))
+}
+
+// TestRunTopupChallengeMissingNonce: a 402 challenge whose accepts[0] carries
+// no x402ChallengeNonce (missing extra, missing key, or empty value) can never
+// be printed as signable; the command fails with a clear message naming the
+// field and prints nothing.
+func TestRunTopupChallengeMissingNonce(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"accept without extra", `{"x402Version":2,"accepts":[{"scheme":"exact","network":"base","amount":"5000000","payTo":"0xabc"}]}`},
+		{"extra without the nonce", `{"x402Version":2,"accepts":[{"scheme":"exact","network":"base","amount":"5000000","payTo":"0xabc","extra":{"name":"USDC"}}]}`},
+		{"empty nonce", `{"x402Version":2,"accepts":[{"scheme":"exact","network":"base","amount":"5000000","payTo":"0xabc","extra":{"x402ChallengeNonce":""}}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			be := parseBillingError(http.StatusPaymentRequired, []byte(tc.body))
+			if be.Code != "" {
+				t.Fatalf("test body parsed as a refusal (code %q), want a bare challenge", be.Code)
+			}
+			fake := &fakeTopupAPI{err: be}
+			var runErr error
+			out := captureStdout(t, func() { runErr = runTopup(fake, topupRequest{amount: "5", x402: true}) })
+			if runErr == nil {
+				t.Fatal("runTopup(challenge without a nonce) = nil, want an error")
+			}
+			if out != "" {
+				t.Fatalf("a half-valid challenge was printed:\n%s", out)
+			}
+			if msg := describeTopupError(runErr); !strings.Contains(msg, "x402ChallengeNonce") {
+				t.Fatalf("guidance = %q, want it to name the missing nonce field", msg)
+			}
+		})
+	}
+}
+
 // TestTopupClientGuidance: no config file and a config without billing
 // credentials both fail before any API call, with the signup/login pointer.
 func TestTopupClientGuidance(t *testing.T) {

@@ -47,6 +47,21 @@ func (e *billingError) Error() string {
 	return fmt.Sprintf("billing API error (HTTP %d): %s", e.Status, e.Code)
 }
 
+// describeBillingError renders a billing error for the command line. A 401 on
+// a bearer-authenticated call is a missing/rejected/revoked agent key, not the
+// session-expiry signal (a cookie 401 becomes errSessionExpired in do), so it
+// gets the shared sign-in guidance every billing command prints: sign up or
+// log in again, and a revoked agent key can only be replaced by a new agent
+// account via `signup --force`. Anything else passes through as the client
+// rendered it.
+func describeBillingError(err error) string {
+	var be *billingError
+	if errors.As(err, &be) && be.Status == http.StatusUnauthorized {
+		return fmt.Sprintf("authentication failed — run 'tessera signup' or 'tessera login' to sign in; if an agent key was revoked, run 'tessera signup --force' for a new agent account (%s)", be)
+	}
+	return err.Error()
+}
+
 // parseBillingError decodes either moneyd error shape. Siblings of the error
 // code are collected into Extra: nested detail fields and top-level fields
 // (other than error/detail) alike.
