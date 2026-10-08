@@ -890,6 +890,116 @@ func TestBillingLoginActivateAlreadyLinkedSucceeds(t *testing.T) {
 	}
 }
 
+// TestBillingLoginRegisterFailureAnnotatesMintedState: once /credentials has
+// minted an identity, a later failure must tell the operator the account state
+// — the identity exists but was never completed — naming the billing id from
+// the login flow, keeping the underlying error retrievable, printing the
+// phrase before the failure, and writing no partial app credentials locally.
+func TestBillingLoginRegisterFailureAnnotatesMintedState(t *testing.T) {
+	testConfigHome(t)
+	t.Setenv("TESSERA_PHRASE", "")
+	fake := &fakeLoginAPI{session: "sess-1", account: map[string]any{"billing_id": "TESS-42"}, connectKey: "ck_secret"}
+	builder, _ := stubHeadlessRegistration(t, fake)
+	registerErr := errors.New("indexer unreachable")
+	builder.registerErr = registerErr
+
+	var loginErr error
+	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok") })
+	if loginErr == nil {
+		t.Fatal("billingLogin with a failing Register = nil, want the annotated error")
+	}
+	for _, want := range []string{"registration incomplete", "TESS-42", "minted but not completed", "contact support"} {
+		if !strings.Contains(loginErr.Error(), want) {
+			t.Errorf("error %q missing %q", loginErr, want)
+		}
+	}
+	if !errors.Is(loginErr, registerErr) {
+		t.Errorf("error %v does not wrap the underlying failure", loginErr)
+	}
+	if strings.Contains(loginErr.Error(), "ck_secret") {
+		t.Errorf("error leaked the connect key: %v", loginErr)
+	}
+	// The phrase is shown before Register, so a failed registration can never
+	// lose it.
+	if len(strings.Fields(builder.phrase)) != 12 || !strings.Contains(out, builder.phrase) {
+		t.Errorf("generated phrase was not printed before the failure:\n%s", out)
+	}
+	saved, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.AppID != "" || saved.AppKey != "" {
+		t.Fatalf("partial app credentials persisted: app_id %q app_key %q", saved.AppID, saved.AppKey)
+	}
+	if saved.BillingSession != "sess-1" {
+		t.Fatalf("billing session = %q, want the successful login preserved", saved.BillingSession)
+	}
+}
+
+// TestBillingLoginMintFailuresSkipRegister: a failure before Register
+// (RequestConnection, headless approval or WaitForApproval) gets the same
+// account-state annotation, never calls Register and leaves no app credentials
+// behind.
+func TestBillingLoginMintFailuresSkipRegister(t *testing.T) {
+	cases := []struct {
+		name       string
+		requestErr error
+		approveErr error
+		waitErr    error
+	}{
+		{"request error", errors.New("indexer down"), nil, nil},
+		{"approve error", nil, errors.New("approve rejected"), nil},
+		{"wait error", nil, nil, errors.New("request expired")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			testConfigHome(t)
+			t.Setenv("TESSERA_PHRASE", "")
+			fake := &fakeLoginAPI{session: "sess-1", account: map[string]any{"billing_id": "TESS-42"}, connectKey: "ck_secret"}
+			builder, rec := stubHeadlessRegistration(t, fake)
+			builder.requestErr = tc.requestErr
+			builder.waitErr = tc.waitErr
+			if tc.approveErr != nil {
+				stubApproveConnectURL(t, rec, tc.approveErr)
+			}
+
+			var loginErr error
+			_ = captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok") })
+			if loginErr == nil {
+				t.Fatal("billingLogin = nil, want the annotated failure")
+			}
+			if !strings.Contains(loginErr.Error(), "registration incomplete") || !strings.Contains(loginErr.Error(), "TESS-42") {
+				t.Errorf("error %q is not annotated with the account state", loginErr)
+			}
+			underlying := tc.requestErr
+			if tc.approveErr != nil {
+				underlying = tc.approveErr
+			} else if tc.waitErr != nil {
+				underlying = tc.waitErr
+			}
+			if !errors.Is(loginErr, underlying) {
+				t.Errorf("error %v does not wrap the underlying failure", loginErr)
+			}
+			if strings.Contains(loginErr.Error(), "ck_secret") {
+				t.Errorf("error leaked the connect key: %v", loginErr)
+			}
+			if builder.registerCalls != 0 {
+				t.Errorf("Register calls = %d, want 0 after an earlier failure", builder.registerCalls)
+			}
+			if fake.activateCalls != 0 {
+				t.Errorf("activate calls = %d, want 0", fake.activateCalls)
+			}
+			saved, err := loadConfig()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if saved.AppID != "" || saved.AppKey != "" {
+				t.Fatalf("partial app credentials persisted: app_id %q app_key %q", saved.AppID, saved.AppKey)
+			}
+		})
+	}
+}
+
 // TestBillingLoginRegistrationNoPromptNonTerminal is the mutation check for the
 // stdin gate: without a terminal, the optional master-password prompt must not
 // run (so a scripted login cannot hang), and no phrase is encrypted.

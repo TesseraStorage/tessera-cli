@@ -152,7 +152,9 @@ func billingLogin(email, token string) error {
 	printBillingAccountSummary(acct)
 	if cfg.AppID == "" || cfg.AppKey == "" {
 		// Authenticated but no storage identity yet: register one headlessly.
-		return registerStorageIdentity(cfg, "")
+		// The billing id comes from the /account data fetched just above, so a
+		// post-mint failure can name the account it stranded.
+		return registerStorageIdentity(cfg, "", accountString(acct, "billing_id"))
 	}
 	return nil
 }
@@ -346,6 +348,20 @@ func agentStorageRegistration(cfg *Config) bool {
 		(cfg.AppID == "" || cfg.AppKey == "")
 }
 
+// wrapRegistrationIncomplete annotates a failure that happened after POST
+// /credentials minted a storage identity. The one-time connect key lived only
+// in the process, so the account is left with an identity that was never
+// linked; the message says exactly that so the operator knows what state the
+// account is in. The underlying error stays retrievable for errors.Is/As, and
+// the connect key is never part of either error. billingID is "" only on the
+// agent path, which fetches no account data.
+func wrapRegistrationIncomplete(err error, billingID string) error {
+	if billingID == "" {
+		billingID = "(unknown)"
+	}
+	return fmt.Errorf("registration incomplete: the storage identity for billing account %s was minted but not completed; contact support — %w", billingID, err)
+}
+
 // registerStorageIdentity performs the headless storage registration of spec
 // §6.3: mint a one-time connect key with the billing credential, approve the
 // SDK connection request with it, register the app key derived from the
@@ -353,9 +369,11 @@ func agentStorageRegistration(cfg *Config) bool {
 // activate the link so the account leaves the fail-closed window (§6.3.6).
 //
 // The connect key is never printed. phraseArg "" generates and prints a fresh
-// phrase (TESSERA_PHRASE is honored like the legacy flow). cfg must already
-// carry the authenticated billing credential; it is saved on success.
-func registerStorageIdentity(cfg *Config, phraseArg string) error {
+// phrase (TESSERA_PHRASE is honored like the legacy flow). billingID is the
+// GET /account billing_id when the caller fetched one ("" otherwise); any
+// failure after the connect key was minted is annotated with it. cfg must
+// already carry the authenticated billing credential; it is saved on success.
+func registerStorageIdentity(cfg *Config, phraseArg, billingID string) error {
 	if cfg.BillingSession == "" && cfg.BillingAgentKey == "" {
 		return errNoBillingCredentials
 	}
@@ -385,13 +403,13 @@ func registerStorageIdentity(cfg *Config, phraseArg string) error {
 
 	respURL, err := builder.RequestConnection(ctx)
 	if err != nil {
-		return fmt.Errorf("connection request failed: %w", err)
+		return wrapRegistrationIncomplete(fmt.Errorf("connection request failed: %w", err), billingID)
 	}
 	if err := approveConnectURL(ctx, respURL, connectKey); err != nil {
-		return err
+		return wrapRegistrationIncomplete(err, billingID)
 	}
 	if err := builder.WaitForApproval(ctx); err != nil {
-		return fmt.Errorf("wait failed: %w\n  (did the approval go through?)", err)
+		return wrapRegistrationIncomplete(fmt.Errorf("wait failed: %w\n  (did the approval go through?)", err), billingID)
 	}
 
 	phrase := phraseArg
@@ -407,7 +425,7 @@ func registerStorageIdentity(cfg *Config, phraseArg string) error {
 
 	sdk, err := builder.Register(ctx, phrase)
 	if err != nil {
-		return fmt.Errorf("registration failed: %w", err)
+		return wrapRegistrationIncomplete(fmt.Errorf("registration failed: %w", err), billingID)
 	}
 	appKey := sdk.AppKey()
 	sdk.Close()
@@ -421,7 +439,7 @@ func registerStorageIdentity(cfg *Config, phraseArg string) error {
 		promptProtectPhrase(cfg, phrase)
 	}
 	if err := saveConfig(cfg); err != nil {
-		return fmt.Errorf("save config: %w", err)
+		return wrapRegistrationIncomplete(fmt.Errorf("save config: %w", err), billingID)
 	}
 
 	if err := newBillingClient(&bc).Activate(); err != nil {
@@ -540,8 +558,10 @@ func cmdLogin(args []string) {
 	// A stored billing agent key with no storage identity yet: `signup` then
 	// `login` registers headlessly, without a browser (spec §6.3.4). A config
 	// without billing credentials keeps the legacy flow below unchanged.
+	// Unlike the magic-link path, no /account data was fetched here, so a
+	// post-mint failure can only report the account as unknown.
 	if cfg, err := loadConfig(); err == nil && agentStorageRegistration(cfg) {
-		if err := registerStorageIdentity(cfg, argPhrase); err != nil {
+		if err := registerStorageIdentity(cfg, argPhrase, ""); err != nil {
 			fatal("%v", err)
 		}
 		return
