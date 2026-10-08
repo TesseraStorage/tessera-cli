@@ -3,6 +3,7 @@
 // Commands:
 //
 //	tessera login       Connect this machine to Tessera
+//	tessera signup      Create an agent account (API key shown once)
 //	tessera logout      Remove local credentials
 //	tessera whoami      Show current account identity
 //	tessera status      Account info + total storage used
@@ -40,6 +41,8 @@ func main() {
 	switch cmd {
 	case "login":
 		cmdLogin(args)
+	case "signup":
+		cmdSignup(args)
 	case "logout":
 		cmdLogout()
 	case "whoami":
@@ -155,10 +158,14 @@ More:
   %s uninstall               Remove the watcher, this binary, and (optionally) local state
   %s phrase show             Reveal the locally-saved recovery phrase (master password)
 
+Billing:
+  %s signup [--name <name>] [--contact-email <email>]
+                             Create an agent account; the API key is shown once
+
 Indexer: https://index.tessera.storage
 Docs:    https://tessera.storage
 `, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe,
 		exe, exe, exe, exe, exe, exe,
 		exe, exe, exe, exe, exe, exe,
-		exe, exe, exe, exe)
+		exe, exe, exe, exe, exe)
 }
