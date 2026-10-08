@@ -5,6 +5,7 @@
 //	tessera login       Connect this machine to Tessera
 //	tessera signup      Create an agent account (API key shown once)
 //	tessera account     Show billing account, balance, and usage
+//	tessera topup       Add funds (NOWPayments invoice or x402 USDC)
 //	tessera logout      Remove local credentials
 //	tessera whoami      Show current account identity
 //	tessera status      Account info + total storage used
@@ -46,6 +47,11 @@ func main() {
 		cmdSignup(args)
 	case "account":
 		cmdAccount(args)
+	case "topup":
+		if len(positional(args)) < 1 {
+			usageError("topup <amount> [--x402] [--pay-currency <asset>] [--payment <base64 X-PAYMENT>]")
+		}
+		cmdTopup(args)
 	case "logout":
 		cmdLogout()
 	case "whoami":
@@ -163,6 +169,10 @@ More:
 
 Billing:
   %s account                 Show billing account, balance, and usage
+  %s topup <amount> [--x402] [--pay-currency <asset>]
+                             Add funds: NOWPayments invoice, or an x402 USDC challenge
+  %s topup <amount> --payment <base64 X-PAYMENT>
+                             Submit a signed x402 authorization to settle
   %s signup [--name <name>] [--contact-email <email>]
                              Create an agent account; the API key is shown once
   %s login --email <email> [--token <token>]
@@ -174,5 +184,5 @@ Docs:    https://tessera.storage
 `, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe,
 		exe, exe, exe, exe, exe, exe,
 		exe, exe, exe, exe, exe, exe,
-		exe, exe, exe, exe, exe, exe, exe, exe)
+		exe, exe, exe, exe, exe, exe, exe, exe, exe, exe)
 }
