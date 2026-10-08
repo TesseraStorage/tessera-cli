@@ -35,6 +35,35 @@ These cover the parts where a mistake costs data:
 | `TestInstallServiceWritesDefinitionAndActivates` | Installing writes the definition and runs the platform command |
 | `TestInstallServiceWithoutActivationChangesNothing` | Without `--yes` no service is started |
 | `TestPromptYesNoNonInteractive` | A piped stdin is never prompted, so scripts cannot hang |
+| `TestCmdSignupColdStart` / `TestSignupGuardAgainstOverwrite` | Cold-start signup persists a 0600 config, prints the key once, and only `--force` may replace it |
+| `TestCredentialLabel` / `TestSession401ClearsAndFallsBackToAgentKey` | Credential precedence: a stored session wins, and a rejected session falls back to the agent key |
+| `TestHTTPBillingErrorShapes` / `TestParseBillingError` | Both moneyd error shapes parse and preserve `Extra` fields |
+| `TestUsageStorageOutputUnchanged` / `TestUsageCostHuman` | The storage report is unchanged without billing config; `--cost` nets the allowance |
+
+### Billing commands (fake `billingAPI`, no network)
+
+The billing commands (`signup`, `login --email`, `account`, `topup`, `promo`,
+and the `usage` billing section) are tested without any network. Two patterns
+cover them:
+
+- **Command tests** replace the `newBillingClient` package var — the same
+  package-level seam style as `serviceCommand` and `statusCommand` — with an
+  in-memory fake that embeds `billingAPI` and implements only the method under
+  test. The embedded nil interface panics on any other call, so the fake also
+  pins which endpoint a command is allowed to speak to (see `fakeSignupAPI` in
+  `signup_test.go`, `fakeAccountAPI` in `account_test.go`). `t.Setenv` plus
+  `t.TempDir()` isolate the 0600 config, and assertions check its mode and JSON
+  keys, not just the printed text.
+- **Client-shape tests** run the real `httpBilling` client against an
+  `httptest` loopback server and assert the exact method, path, JSON body, and
+  the `Authorization` header or `tessera_session` cookie. Fakes must answer
+  errors in moneyd's real shapes: nested `{"detail":{"error":"…"}}` for most
+  routes, flat `{"error":"…"}` for `/auth/verify`'s 401 and the x402
+  `502 settlement_pending`.
+
+No test may dial `tessera.storage` or any non-loopback host — CI has no network.
+`TESSERA_BILLING_URL` exists for development and loopback tests only; it is
+never the production default.
 
 ## 2. Vendored Sia forks (no checkouts, no network)
 
@@ -60,6 +89,22 @@ go build -mod=vendor .
 
 `-mod=vendor` reads only `vendor/`; the absolute paths above never need to
 exist on a build runner (they do not exist on GitHub Actions).
+
+CI runs the same gates: the test job does `go vet -mod=vendor ./...` and
+`go test -mod=vendor ./...`, and the build matrix cross-compiles all four
+targets with `-mod=vendor` (linux-amd64, darwin-amd64, darwin-arm64,
+windows-amd64 — see `.github/workflows/build.yml`). The full local gate before a
+release adds `gofmt` and disables the test cache:
+
+```bash
+gofmt -l *.go                    # must print nothing
+go vet -mod=vendor ./...
+go test -mod=vendor -count=1 ./...
+GOOS=linux   GOARCH=amd64 go build -mod=vendor -o /tmp/tessera-linux-amd64 .
+GOOS=darwin  GOARCH=amd64 go build -mod=vendor -o /tmp/tessera-darwin-amd64 .
+GOOS=darwin  GOARCH=arm64 go build -mod=vendor -o /tmp/tessera-darwin-arm64 .
+GOOS=windows GOARCH=amd64 go build -mod=vendor -o /tmp/tessera-windows-amd64.exe .
+```
 
 ### Re-vendoring after a fork change
 
