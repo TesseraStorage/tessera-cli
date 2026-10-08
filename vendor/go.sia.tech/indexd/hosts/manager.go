@@ -1,0 +1,908 @@
+package hosts
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"math"
+	"net"
+	"strconv"
+	"sync"
+	"time"
+
+	proto4 "go.sia.tech/core/rhp/v4"
+	"go.sia.tech/core/types"
+	"go.sia.tech/coreutils/chain"
+	"go.sia.tech/coreutils/rhp/v4/quic"
+	"go.sia.tech/coreutils/rhp/v4/siamux"
+	"go.sia.tech/coreutils/syncer"
+	"go.sia.tech/coreutils/threadgroup"
+	"go.sia.tech/indexd/alerts"
+	"go.sia.tech/indexd/geoip"
+	"go.uber.org/zap"
+	"lukechampine.com/frand"
+)
+
+const (
+	announcementMaxAddressesPerProtocol = 2
+
+	pruneFrequency                  = time.Hour * 24
+	pruneMinConsecutiveScanFailures = 10
+	pruneMinDowntime                = time.Hour * 24 * 365 // 1 year
+
+	// stuckFrequency represents how often we check for stuck hosts and
+	// register an alert if there are any
+	stuckFrequency = time.Hour
+
+	scanThreads                    = 50
+	scanTimeout                    = time.Minute
+	scanIntervalOffsetHours        = 6
+	scanExponentialBackoffHours    = 8
+	scanExponentialBackoffMaxHours = 128
+)
+
+var (
+	errNodeOffline = errors.New("node is offline")
+
+	// ErrBadHost is returned when a host can't be interacted with due to being
+	// considered bad.
+	ErrBadHost = errors.New("host is bad")
+
+	alertStuckHostsID = alerts.RandomAlertID()
+
+	// badQUICPorts is the set of ports blocked by browsers for QUIC/WebTransport
+	// connections. Hosts announcing QUIC on these ports will be unreachable from
+	// browsers.
+	//
+	// https://fetch.spec.whatwg.org/#port-blocking
+	// https://searchfox.org/firefox-release/source/netwerk/base/nsIOService.cpp#122-206
+	badQUICPorts = map[int]struct{}{
+		1: {}, 7: {}, 9: {}, 11: {}, 13: {}, 15: {},
+		17: {}, 19: {}, 20: {}, 21: {}, 22: {}, 23: {},
+		25: {}, 37: {}, 42: {}, 43: {}, 53: {}, 69: {},
+		77: {}, 79: {}, 87: {}, 95: {}, 101: {}, 102: {},
+		103: {}, 104: {}, 109: {}, 110: {}, 111: {}, 113: {},
+		115: {}, 117: {}, 119: {}, 123: {}, 135: {}, 137: {},
+		139: {}, 143: {}, 161: {}, 179: {}, 389: {}, 427: {},
+		465: {}, 512: {}, 513: {}, 514: {}, 515: {}, 526: {},
+		530: {}, 531: {}, 532: {}, 540: {}, 548: {}, 554: {},
+		556: {}, 563: {}, 587: {}, 601: {}, 636: {}, 989: {},
+		990: {}, 993: {}, 995: {}, 1719: {}, 1720: {}, 1723: {},
+		2049: {}, 3659: {}, 4045: {}, 4190: {}, 5060: {}, 5061: {},
+		6000: {}, 6566: {}, 6665: {}, 6666: {}, 6667: {}, 6668: {},
+		6669: {}, 6679: {}, 6697: {}, 10080: {},
+	}
+)
+
+// IsBadQUICAddress reports whether the given address is a QUIC address
+// announced on a port blocked by browsers for QUIC/WebTransport.
+func IsBadQUICAddress(na chain.NetAddress) bool {
+	if na.Protocol != quic.Protocol {
+		return false
+	}
+	_, portStr, err := net.SplitHostPort(na.Address)
+	if err != nil {
+		return true
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return true
+	}
+	_, ok := badQUICPorts[port]
+	return ok
+}
+
+type (
+	// A HostClient provides methods to interact with a host over RHP4.
+	HostClient interface {
+		// Prices returns a valid price table for the host with the given public key.
+		// The prices returned may be cached, but must be valid for at least a short
+		// period of time.
+		Prices(ctx context.Context, hostKey types.PublicKey) (proto4.HostPrices, error)
+	}
+
+	// HostManager manages the host announcements.
+	HostManager struct {
+		announcementMaxAge time.Duration
+		scanFrequency      time.Duration
+		scanInterval       time.Duration
+
+		onlineChecker OnlineChecker
+		hosts         HostClient
+		resolver      Resolver
+		scanner       Scanner
+		locator       Locator
+		store         Store
+		alerter       AlertsManager
+
+		triggerHostScanningChan       chan struct{}
+		triggerForcedHostScanningChan chan struct{}
+
+		tg  *threadgroup.ThreadGroup
+		log *zap.Logger
+	}
+
+	// HostStats contains various statistics about a single host.
+	HostStats struct {
+		AccountUsage        types.Currency         `json:"accountUsage"`
+		ActiveContractsSize int64                  `json:"activeContractsSize"`
+		LockedAllowance     types.Currency         `json:"lockedAllowance"`
+		RemainingAllowance  types.Currency         `json:"remainingAllowance"`
+		PublicKey           types.PublicKey        `json:"publicKey"`
+		LostSectors         int64                  `json:"lostSectors"`
+		UnpinnedSectors     int64                  `json:"unpinnedSectors"`
+		TotalUsage          types.Currency         `json:"totalUsage"`
+		ProtocolVersion     proto4.ProtocolVersion `json:"protocolVersion"`
+		Release             string                 `json:"release"`
+		Scans               int64                  `json:"scans"`
+		ScansFailed         int64                  `json:"scansFailed"`
+		Blocked             bool                   `json:"blocked"`
+		BlockedReasons      []string               `json:"blockedReasons"`
+		StuckSince          *time.Time             `json:"stuckSince,omitempty"`
+		Usable              bool                   `json:"usable"`
+		GoodForUpload       bool                   `json:"goodForUpload"`
+	}
+
+	// OnlineChecker defines an interface to check whether the indexer is online. It's
+	// used to ensure hosts aren't punished for failing a scan if the indexer is
+	// offline.
+	OnlineChecker interface {
+		IsOnline() bool
+	}
+
+	// Resolver defines an interface to resolve hostnames.
+	Resolver interface {
+		LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
+	}
+
+	// Scanner defines an interface to scan hosts.
+	Scanner interface {
+		ScanSiamux(context.Context, types.PublicKey, string) (proto4.HostSettings, error)
+		ScanQuic(context.Context, types.PublicKey, string) (proto4.HostSettings, error)
+	}
+
+	// Store defines an interface to fetch hosts that need to be scanned and
+	// persist the scan results in the database.
+	Store interface {
+		Host(hk types.PublicKey) (Host, error)
+		Hosts(offset, limit int, queryOpts ...HostQueryOpt) ([]Host, error)
+		HostStats(offset, limit int) ([]HostStats, error)
+		UsableHosts(offset int, limit int, opts ...UsableHostQueryOpt) ([]HostInfo, error)
+
+		HostsForFunding() ([]types.PublicKey, error)
+		HostsForPruning() ([]types.PublicKey, error)
+		HostsForPinning() ([]types.PublicKey, error)
+		HostsForScanning() ([]types.PublicKey, error)
+		HostsWithUnpinnableSectors() ([]types.PublicKey, error)
+		StuckHosts() ([]StuckHost, error)
+
+		ImportHost(hk types.PublicKey, addresses []chain.NetAddress) error
+		BlockHosts(hostKeys []types.PublicKey, reasons []string) error
+		BlockedHosts(offset, limit int) ([]types.PublicKey, error)
+		UnblockHost(hk types.PublicKey) error
+		RemoveBlocklistReasons(hostKeys []types.PublicKey, reasons []string) (int, error)
+		ResetLostSectors(hk types.PublicKey) error
+
+		PruneHosts(lastSuccessfulScanCutoff time.Time, minConsecutiveFailedScans int) (int64, error)
+		UpdateHostPrices(hostKey types.PublicKey, prices proto4.HostPrices) error
+		UpdateHostScan(hostKey types.PublicKey, hs proto4.HostSettings, loc geoip.Location, scanSucceeded bool, nextScan time.Time) error
+
+		UsabilitySettings() (UsabilitySettings, error)
+		UpdateUsabilitySettings(us UsabilitySettings) error
+
+		AggregatedHostStats() (AggregatedHostStats, error)
+	}
+
+	// AlertsManager defines an interface to register alerts.
+	AlertsManager interface {
+		RegisterAlert(alert alerts.Alert) error
+		DismissAlerts(ids ...types.Hash256)
+	}
+
+	// Syncer defines an interface that exposes the Peers method.
+	Syncer interface {
+		Peers() []*syncer.Peer
+	}
+
+	// UpdateTx defines what the host manager needs to atomically process a
+	// chain update in the database.
+	UpdateTx interface {
+		AddHostAnnouncement(hk types.PublicKey, ha chain.V2HostAnnouncement, ts time.Time) error
+	}
+
+	// A Locator maps IP addresses to their location.
+	Locator interface {
+		Close() error
+		Locate(ip net.IP) (geoip.Location, error)
+	}
+)
+
+// RHP4Addrs returns the addresses of the host.
+func (h *Host) RHP4Addrs() []chain.NetAddress {
+	return h.Addresses
+}
+
+// Host returns the host with the given key.
+func (hm *HostManager) Host(ctx context.Context, hostKey types.PublicKey) (Host, error) {
+	return hm.store.Host(hostKey)
+}
+
+// Hosts returns a list of hosts filtered by the given query options.
+func (hm *HostManager) Hosts(ctx context.Context, offset, limit int, queryOpts ...HostQueryOpt) ([]Host, error) {
+	return hm.store.Hosts(offset, limit, queryOpts...)
+}
+
+// ImportHost adds a host and its addresses to the set of hosts to be scanned
+// and returns the resulting host. If the host is already known, its addresses
+// are replaced and it is queued for the next scan. Contrary to an announcement,
+// which drops the addresses it can't use, the whole import is rejected if any
+// address is invalid.
+func (hm *HostManager) ImportHost(ctx context.Context, hostKey types.PublicKey, addresses []chain.NetAddress) (Host, error) {
+	if hostKey == (types.PublicKey{}) {
+		return Host{}, fmt.Errorf("%w: public key is required", ErrInvalidHostKey)
+	} else if len(addresses) == 0 {
+		return Host{}, fmt.Errorf("%w: at least one address is required", ErrInvalidAddress)
+	}
+
+	counts := make(map[chain.Protocol]int)
+	for i, address := range addresses {
+		if err := validateAddress(address); err != nil {
+			return Host{}, fmt.Errorf("%w at index %d: %w", ErrInvalidAddress, i, err)
+		}
+		counts[address.Protocol]++
+		if counts[address.Protocol] > announcementMaxAddressesPerProtocol {
+			return Host{}, fmt.Errorf("%w: at most %d %q addresses are allowed", ErrInvalidAddress, announcementMaxAddressesPerProtocol, address.Protocol)
+		}
+	}
+
+	if err := hm.store.ImportHost(hostKey, addresses); err != nil {
+		return Host{}, err
+	}
+	return hm.store.Host(hostKey)
+}
+
+// UsableHosts returns a list of hosts that are not blocked, usable and have an
+// active contract. It returns only the host's public key and addresses.
+func (hm *HostManager) UsableHosts(ctx context.Context, offset, limit int, opts ...UsableHostQueryOpt) ([]HostInfo, error) {
+	return hm.store.UsableHosts(offset, limit, opts...)
+}
+
+// HostsForFunding returns a list of hosts that have accounts that need funding
+func (hm *HostManager) HostsForFunding(ctx context.Context) ([]types.PublicKey, error) {
+	return hm.store.HostsForFunding()
+}
+
+// HostsForPruning returns a list of hosts with sectors that need pruning
+func (hm *HostManager) HostsForPruning(ctx context.Context) ([]types.PublicKey, error) {
+	return hm.store.HostsForPruning()
+}
+
+// HostsForPinning returns a list of hosts that have sectors that need pinning
+func (hm *HostManager) HostsForPinning(ctx context.Context) ([]types.PublicKey, error) {
+	return hm.store.HostsForPinning()
+}
+
+// BlockHosts blocks the given hosts for the given list of reasons
+func (hm *HostManager) BlockHosts(ctx context.Context, hostKeys []types.PublicKey, reasons []string) error {
+	return hm.store.BlockHosts(hostKeys, reasons)
+}
+
+// HostsWithUnpinnableSectors returns any hosts that have sectors that could not be pinned
+func (hm *HostManager) HostsWithUnpinnableSectors(ctx context.Context) ([]types.PublicKey, error) {
+	return hm.store.HostsWithUnpinnableSectors()
+}
+
+// BlockedHosts returns a list of blocked hosts
+func (hm *HostManager) BlockedHosts(ctx context.Context, offset, limit int) ([]types.PublicKey, error) {
+	return hm.store.BlockedHosts(offset, limit)
+}
+
+// UnblockHost unblocks the given host
+func (hm *HostManager) UnblockHost(ctx context.Context, hk types.PublicKey) error {
+	return hm.store.UnblockHost(hk)
+}
+
+// ResetLostSectors resets the lost sectors count for the given host
+func (hm *HostManager) ResetLostSectors(ctx context.Context, hk types.PublicKey) error {
+	return hm.store.ResetLostSectors(hk)
+}
+
+// NewManager creates a new host manager.
+func NewManager(syncer Syncer, locator Locator, client HostClient, store Store, alerter AlertsManager, opts ...Option) (*HostManager, error) {
+	// uses Cloudflare 1.1.1.1 for when OS resolver fails
+	fallbackResolver := &net.Resolver{
+		// PreferGo allows us to use our own dialer
+		// https://github.com/golang/go/issues/35561
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, "1.1.1.1:53")
+		},
+	}
+
+	m := &HostManager{
+		announcementMaxAge: time.Hour * 24 * 365,
+		scanFrequency:      5 * time.Minute,
+		scanInterval:       time.Hour * 24,
+
+		onlineChecker: &onlineChecker{addresses: fallbackSites, syncer: syncer},
+		resolver:      &resolver{main: &net.Resolver{}, fallback: fallbackResolver},
+		scanner:       &scanner{},
+		locator:       locator,
+		store:         store,
+		hosts:         client,
+		alerter:       alerter,
+
+		triggerHostScanningChan:       make(chan struct{}, 1),
+		triggerForcedHostScanningChan: make(chan struct{}, 1),
+
+		tg:  threadgroup.New(),
+		log: zap.NewNop(),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+
+	if m.announcementMaxAge == 0 {
+		return nil, fmt.Errorf("announcementMaxAge can not be zero")
+	} else if m.scanFrequency == 0 {
+		return nil, fmt.Errorf("scanFrequency can not be zero")
+	} else if m.scanInterval == 0 {
+		return nil, fmt.Errorf("scanInterval can not be zero")
+	}
+
+	ctx, cancel, err := m.tg.AddContext(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		defer cancel()
+
+		pruneTicker := time.NewTicker(pruneFrequency)
+		stuckTicker := time.NewTicker(stuckFrequency)
+		scanTicker := time.NewTicker(m.scanFrequency)
+		defer func() {
+			pruneTicker.Stop()
+			stuckTicker.Stop()
+			scanTicker.Stop()
+		}()
+		resetScanTicker := func() {
+			scanTicker.Stop()
+			scanTicker = time.NewTicker(m.scanFrequency)
+		}
+
+		for {
+			select {
+			case <-pruneTicker.C:
+				m.pruneHosts()
+			case <-stuckTicker.C:
+				m.registerStuckHostsAlert()
+			case <-m.triggerHostScanningChan:
+				resetScanTicker()
+				m.log.Debug("triggered host scanning")
+				m.scanHosts(ctx, m.hostsForScanning(false))
+			case <-m.triggerForcedHostScanningChan:
+				resetScanTicker()
+				m.log.Debug("triggered forced host scanning")
+				m.scanHosts(ctx, m.hostsForScanning(true))
+			case <-scanTicker.C:
+				m.scanHosts(ctx, m.hostsForScanning(false))
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return m, nil
+}
+
+// Close closes the manager.
+func (m *HostManager) Close() error {
+	m.tg.Stop()
+	return nil
+}
+
+// TriggerHostScanning triggers a scan of the hosts that are due for scanning.
+// If force is true, every known host is scanned regardless of when its next
+// scan is scheduled. Triggering is best-effort, it is a no-op if a scan of the
+// same kind is already queued.
+func (m *HostManager) TriggerHostScanning(force bool) {
+	ch := m.triggerHostScanningChan
+	if force {
+		ch = m.triggerForcedHostScanningChan
+	}
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+// UsabilitySettings returns the current usability settings.
+func (m *HostManager) UsabilitySettings(ctx context.Context) (UsabilitySettings, error) {
+	return m.store.UsabilitySettings()
+}
+
+// UpdateUsabilitySettings updates the host's usability settings.
+func (m *HostManager) UpdateUsabilitySettings(ctx context.Context, us UsabilitySettings) error {
+	// perhaps this should reset next_scan to NOW() on all hosts that succeeded their last scan?
+	return m.store.UpdateUsabilitySettings(us)
+}
+
+// Usable refreshes the host's prices and checks whether the host is still usable.
+// If the host is bad, it returns (false, nil).
+//
+// This method is more efficient than [HostManager.ScannedHost] as it does not
+// require the host to be reachable on all announced addresses.
+func (m *HostManager) Usable(ctx context.Context, hostKey types.PublicKey) (bool, error) {
+	// fetch host
+	host, err := m.store.Host(hostKey)
+	if err != nil {
+		return false, fmt.Errorf("failed to get host, %w", err)
+	} else if host.Blocked {
+		// only check blocked, as usability may change after updating prices
+		return false, nil
+	}
+
+	prices, err := m.hosts.Prices(ctx, hostKey)
+	if err != nil {
+		return false, fmt.Errorf("failed to fetch host prices, %w", err)
+	} else if err := prices.Validate(hostKey); err != nil {
+		return false, nil // host somehow returned bad prices
+	}
+
+	err = m.store.UpdateHostPrices(hostKey, prices)
+	if err != nil {
+		return false, fmt.Errorf("failed to update host prices, %w", err)
+	}
+	host, err = m.store.Host(hostKey)
+	return host.IsGood(), err
+}
+
+// WithScannedHost calls the given function with the Host with the given host
+// key. If the call fails due to the host's price table being outdated, it will
+// scan the host and try again. If the host is bad, it returns ErrBadHost.
+// NOTE: It's important that the function passed to WithScannedHost can be
+// called twice.
+func (m *HostManager) WithScannedHost(ctx context.Context, hk types.PublicKey, fn func(h Host) error) error {
+	// fetch host
+	host, err := m.store.Host(hk)
+	if err != nil {
+		return fmt.Errorf("failed to get host, %w", err)
+	} else if !host.IsGood() {
+		return fmt.Errorf("%w: blocked=%t, usable=%t", ErrBadHost, host.Blocked, host.Usability.Usable())
+	}
+
+	// optimistically call the function if the prices are still valid for a
+	// bit
+	const validPriceBuf = 5 * time.Minute
+	if host.Settings.Prices.ValidUntil.After(time.Now().Add(validPriceBuf)) {
+		if err := fn(host); err != nil && !errors.Is(err, proto4.ErrPricesExpired) {
+			return err
+		} else if err == nil {
+			return nil // 'fn' succeeded so we're done
+		}
+	}
+
+	// scan the host if the prices were outdated
+	host, err = m.ScanHost(ctx, hk)
+	if err != nil {
+		return fmt.Errorf("failed to scan host, %w", err)
+	} else if !host.IsGood() {
+		return fmt.Errorf("%w: blocked=%t, usable=%t", ErrBadHost, host.Blocked, host.Usability.Usable())
+	}
+
+	// try again
+	return fn(host)
+}
+
+// ScanHost scans the host with given host key and returns it with updated
+// settings and checks.
+//
+// It will dial every address the host has announced and only return the host if it
+// was reachable on all addresses. If the host is unreachable, it returns an
+// error. If the host is bad, it returns ErrBadHost.
+//
+// This should be used sparingly as it performs significantly more network I/O than
+// necessary.
+func (m *HostManager) ScanHost(ctx context.Context, hk types.PublicKey) (Host, error) {
+	logger := m.log.With(zap.Stringer("hk", hk))
+
+	ctx, cancel := context.WithTimeout(ctx, scanTimeout)
+	defer cancel()
+
+	host, err := m.store.Host(hk)
+	if err != nil {
+		return Host{}, fmt.Errorf("failed to get host, %w", err)
+	}
+
+	addrs, loc, err := resolveHost(ctx, m.resolver, m.locator, host.Addresses, logger)
+	if err != nil {
+		return Host{}, fmt.Errorf("failed to resolve host, %w", err)
+	}
+
+	settings, err := fetchSettings(ctx, m.scanner, hk, addrs, logger)
+	if err != nil {
+		return Host{}, fmt.Errorf("failed to fetch settings, %w", err)
+	}
+
+	consecutiveFailures := host.ConsecutiveFailedScans
+	success := settings != (proto4.HostSettings{})
+	if !success && !m.onlineChecker.IsOnline() {
+		return Host{}, errNodeOffline
+	} else if !success {
+		consecutiveFailures++
+	}
+
+	nextScan := calculateNextScanTime(
+		time.Now(),
+		success,
+		consecutiveFailures,
+		m.scanInterval,
+		scanIntervalOffsetHours,
+		scanExponentialBackoffHours,
+		scanExponentialBackoffMaxHours,
+	)
+
+	err = m.store.UpdateHostScan(hk, settings, loc, success, nextScan)
+	if err != nil {
+		return Host{}, fmt.Errorf("failed to update host, %w", err)
+	}
+
+	return m.store.Host(hk)
+}
+
+// UpdateChainState updates the host announcements in the database.
+func (m *HostManager) UpdateChainState(tx UpdateTx, applied []chain.ApplyUpdate) error {
+	for _, update := range applied {
+		// ignore announcements that are too old
+		if time.Since(update.Block.Timestamp) > time.Duration(m.announcementMaxAge) {
+			continue
+		}
+
+		has := make(map[types.PublicKey]chain.V2HostAnnouncement)
+		chain.ForEachV2HostAnnouncement(update.Block, func(hk types.PublicKey, addrs []chain.NetAddress) {
+			filtered := make(map[chain.Protocol][]chain.NetAddress)
+			for _, addr := range addrs {
+				if err := validateAddress(addr); err != nil {
+					m.log.Debug("ignoring host announcement", zap.Stringer("hk", hk), zap.Error(err))
+				} else if len(filtered[addr.Protocol]) < announcementMaxAddressesPerProtocol {
+					filtered[addr.Protocol] = append(filtered[addr.Protocol], addr)
+				}
+			}
+			for _, addrs := range filtered {
+				has[hk] = append(has[hk], addrs...)
+			}
+		})
+
+		for hk, ha := range has {
+			if err := tx.AddHostAnnouncement(hk, ha, update.Block.Timestamp); err != nil {
+				return fmt.Errorf("failed to add host announcement: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// Stats returns statistics about the hosts in the database.
+func (m *HostManager) Stats(ctx context.Context, offset, limit int) ([]HostStats, error) {
+	return m.store.HostStats(offset, limit)
+}
+
+// hostsForScanning returns the public keys of the hosts that need to be
+// scanned, if force is true, this method will return the public keys of all
+// hosts in the database.
+func (m *HostManager) hostsForScanning(force bool) []types.PublicKey {
+	if !force {
+		hosts, err := m.store.HostsForScanning()
+		if err != nil {
+			m.log.Error("failed to get hosts for scanning", zap.Error(err))
+			return nil
+		}
+		return hosts
+	}
+
+	// forced scans are operator-triggered and infrequent, so it's fine to pay
+	// the price here and fetch all hosts only to get their public keys
+	hosts, err := m.store.Hosts(0, math.MaxInt)
+	if err != nil {
+		m.log.Error("failed to get hosts for scanning", zap.Error(err))
+		return nil
+	}
+
+	var hks []types.PublicKey
+	for _, h := range hosts {
+		hks = append(hks, h.PublicKey)
+	}
+	return hks
+}
+
+func (m *HostManager) pruneHosts() {
+	cutoff := time.Now().Add(-pruneMinDowntime)
+	n, err := m.store.PruneHosts(time.Now().Add(-pruneMinDowntime), pruneMinConsecutiveScanFailures)
+	if err != nil {
+		m.log.Error("failed to prune hosts",
+			zap.Time("minLastSuccessfulScan", cutoff),
+			zap.Int("minConsecutiveFailures", pruneMinConsecutiveScanFailures),
+			zap.Error(err),
+		)
+		return
+	} else if n > 0 {
+		m.log.Debug("pruned hosts",
+			zap.Time("minLastSuccessfulScan", cutoff),
+			zap.Int("minConsecutiveFailures", pruneMinConsecutiveScanFailures),
+			zap.Int64("removed", n),
+		)
+	}
+}
+
+func (m *HostManager) scanHosts(ctx context.Context, hosts []types.PublicKey) {
+	if len(hosts) == 0 {
+		m.log.Debug("scan skipped, no hosts for scanning")
+		return
+	}
+
+	start := time.Now()
+	m.log.Debug("scan started", zap.Int("hosts", len(hosts)))
+
+	sema := make(chan struct{}, scanThreads)
+	defer close(sema)
+
+	var once sync.Once
+	var wg sync.WaitGroup
+loop:
+	for _, hk := range hosts {
+		select {
+		case <-ctx.Done():
+			break loop
+		case sema <- struct{}{}:
+		}
+
+		wg.Add(1)
+		go func(ctx context.Context, hk types.PublicKey) {
+			defer func() {
+				<-sema
+				wg.Done()
+			}()
+
+			if _, err := m.ScanHost(ctx, hk); errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return
+			} else if errors.Is(err, errNodeOffline) {
+				once.Do(func() { m.log.Warn("indexer is offline, skipping scans") })
+				return
+			} else if err != nil {
+				m.log.Error("failed to perform host scan", zap.Stringer("hk", hk), zap.Error(err))
+			}
+		}(ctx, hk)
+	}
+
+	wg.Wait()
+
+	m.log.Debug("host scans finished", zap.Int("hosts", len(hosts)), zap.Duration("duration", time.Since(start)))
+	if unblocked, err := m.unblockUsableHosts(ctx); err != nil {
+		m.log.Error("failed to unblock usable hosts after scanning", zap.Error(err))
+	} else if unblocked > 0 {
+		m.log.Debug("unblocked usable hosts", zap.Int("hosts", unblocked))
+	}
+}
+
+// unblockUsableHosts unblocks hosts that were blocked for failing usability
+// checks but that are usable again and no longer have any active contracts.
+// Only reasons that correspond to usability checks are removed; any other
+// blocklist reasons are left intact.
+func (m *HostManager) unblockUsableHosts(ctx context.Context) (int, error) {
+	const batchSize = 100
+	var toUnblock []types.PublicKey
+	for offset := 0; ; offset += batchSize {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		hosts, err := m.store.Hosts(offset, batchSize,
+			WithBlocked(true),
+			WithUsable(true),
+			WithActiveContracts(false))
+		if err != nil {
+			return 0, fmt.Errorf("failed to fetch hosts to unblock: %w", err)
+		}
+		for _, host := range hosts {
+			toUnblock = append(toUnblock, host.PublicKey)
+		}
+		if len(hosts) < batchSize {
+			break
+		}
+	}
+
+	if len(toUnblock) == 0 {
+		return 0, nil
+	}
+
+	// removing reasons not present on a host is a no-op, so strip all usability
+	// reasons unconditionally while preserving manual blocklist reasons.
+	unblocked, err := m.store.RemoveBlocklistReasons(toUnblock, Usability{}.FailedChecks())
+	if err != nil {
+		return 0, fmt.Errorf("failed to remove usability blocklist reasons: %w", err)
+	}
+	return unblocked, nil
+}
+
+func newStuckHostsAlert(hosts []StuckHost) alerts.Alert {
+	return alerts.Alert{
+		ID:       alertStuckHostsID,
+		Severity: alerts.SeverityWarning,
+		Message:  "Host(s) are stuck",
+		Data: map[string]any{
+			"hosts": hosts,
+			"hint":  "Contract operations (form/renew/refresh) have been failing for these hosts. Consider blocking these hosts through the blocklist feature.",
+		},
+		Timestamp: time.Now(),
+	}
+}
+
+func (m *HostManager) registerStuckHostsAlert() {
+	stuckHosts, err := m.store.StuckHosts()
+	if err != nil {
+		m.log.Error("failed to get stuck hosts", zap.Error(err))
+		return
+	}
+	if len(stuckHosts) > 0 {
+		if err := m.alerter.RegisterAlert(newStuckHostsAlert(stuckHosts)); err != nil {
+			m.log.Error("failed to register stuck hosts alert", zap.Error(err))
+			return
+		}
+	} else {
+		m.alerter.DismissAlerts(alertStuckHostsID)
+	}
+}
+
+// fetchSettings uses the given scanner to fetch the settings of the host with
+// given public key. It only returns the settings if the host is available on
+// every address. The only error this function returns is [context.Canceled],
+// other errors that occur during the resolving and parsing are debug logged but
+// otherwise ignored.
+func fetchSettings(ctx context.Context, scanner Scanner, hk types.PublicKey, addresses []chain.NetAddress, log *zap.Logger) (proto4.HostSettings, error) {
+	var settings []proto4.HostSettings
+	for _, addr := range addresses {
+		var hs proto4.HostSettings
+		var err error
+		switch addr.Protocol {
+		case siamux.Protocol:
+			hs, err = scanner.ScanSiamux(ctx, hk, addr.Address)
+		case quic.Protocol:
+			hs, err = scanner.ScanQuic(ctx, hk, addr.Address)
+		default:
+			continue // ignore
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return proto4.HostSettings{}, err
+		} else if err != nil {
+			log.Debug("failed to get host settings",
+				zap.String("address", addr.Address),
+				zap.String("protocol", string(addr.Protocol)),
+				zap.Error(err))
+			settings = nil // require host to be available on all addresses
+			break
+		}
+		settings = append(settings, hs)
+	}
+
+	// return a random setting to avoid the host cheating us by providing
+	// different settings over different addresses or protocols
+	if len(settings) == 0 {
+		return proto4.HostSettings{}, nil
+	}
+	return settings[frand.Intn(len(settings))], nil
+}
+
+// calculateNextScanTime calculates the time of the next scan based on the given
+// parameters.
+func calculateNextScanTime(lastScan time.Time, success bool, consecScanFailures int, interval time.Duration, offsetHours, expBackoffHours, expBackoffHoursMax int) time.Time {
+	// sanity check input
+	if interval == 0 {
+		panic("interval can not be zero")
+	} else if offsetHours < 0 {
+		panic("invalid offset hours")
+	} else if interval < time.Duration(offsetHours)*time.Hour {
+		offsetHours = 0
+	}
+
+	if success {
+		randomOffset := time.Duration(frand.Intn(2*offsetHours+1)-offsetHours) * time.Hour
+		return lastScan.Add(interval).Add(randomOffset)
+	}
+
+	expBackoff := time.Duration(min(expBackoffHours*consecScanFailures, expBackoffHoursMax)) * time.Hour
+	return lastScan.Add(expBackoff)
+}
+
+// resolveHost uses the given resolver to resolve the given list of host
+// addresses. It returns a filtered list of addresses, leaving out any invalid
+// and/or private addresses, and a list of networks in CIDR notation. The only
+// error this function returns is [context.Canceled], other errors that occur
+// during the resolving and parsing are debug logged but otherwise ignored.
+func resolveHost(ctx context.Context, resolver Resolver, locator Locator, addresses []chain.NetAddress, log *zap.Logger) ([]chain.NetAddress, geoip.Location, error) {
+	var filtered []chain.NetAddress
+	var loc geoip.Location
+	for _, na := range addresses {
+		host, _, err := net.SplitHostPort(na.Address)
+		if err != nil {
+			log.Debug("failed to split host port", zap.String("address", na.Address), zap.Error(err))
+			continue
+		}
+
+		ips, err := resolver.LookupIPAddr(ctx, host)
+		if errors.Is(err, context.Canceled) {
+			return nil, geoip.Location{}, err
+		} else if err != nil {
+			log.Debug("failed to resolve host", zap.String("host", host), zap.Error(err))
+			continue
+		} else if len(ips) == 0 {
+			log.Debug("no IPs found for host", zap.String("host", host))
+			continue
+		}
+
+		var hasPrivateIP bool
+		for _, ip := range ips {
+			if isPrivateIP(ip.IP) {
+				hasPrivateIP = true
+				break
+			}
+		}
+		if hasPrivateIP {
+			log.Debug("host has private IP", zap.String("host", host))
+			continue
+		}
+
+		if loc.CountryCode == "" {
+			loc, err = locator.Locate(ips[0].IP)
+			if err != nil {
+				log.Debug("failed to locate IP address", zap.Error(err))
+			}
+		}
+
+		filtered = append(filtered, na)
+	}
+
+	return filtered, loc, nil
+}
+
+func isPrivateIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return true
+	}
+
+	privateIPBlocks := []net.IPNet{
+		{IP: net.IPv4(10, 0, 0, 0), Mask: net.CIDRMask(8, 32)},
+		{IP: net.IPv4(172, 16, 0, 0), Mask: net.CIDRMask(12, 32)},
+		{IP: net.IPv4(192, 168, 0, 0), Mask: net.CIDRMask(16, 32)},
+		{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}, // CGNAT
+		{IP: net.ParseIP("fc00::"), Mask: net.CIDRMask(7, 128)},
+		{IP: net.ParseIP("fe80::"), Mask: net.CIDRMask(10, 128)},
+	}
+
+	for _, block := range privateIPBlocks {
+		if block.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func validateAddress(na chain.NetAddress) error {
+	if !(na.Protocol == siamux.Protocol || na.Protocol == quic.Protocol) {
+		return fmt.Errorf("unknown protocol %q", na.Protocol)
+	}
+	if na.Address == "" {
+		return fmt.Errorf("empty address")
+	}
+	host, portStr, err := net.SplitHostPort(na.Address)
+	if err != nil {
+		return fmt.Errorf("invalid address: %w", err)
+	} else if host == "" {
+		return fmt.Errorf("empty host")
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return fmt.Errorf("invalid port %q", portStr)
+	} else if port < 1 || port > 65535 {
+		return fmt.Errorf("port must be between 1 and 65535")
+	}
+	return nil
+}

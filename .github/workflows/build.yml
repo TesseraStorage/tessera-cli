@@ -13,7 +13,9 @@ permissions:
 jobs:
   # Fast gate: the unit suite covers the reconciliation table, deletion and
   # conflict handling, so a failing test stops the matrix before four binaries
-  # are produced.
+  # are produced. Vendor mode is pinned so the runner never needs the local
+  # fork checkouts referenced by go.mod's replace directives (the committed
+  # vendor/ tree is the source of truth; see TESTING.md).
   test:
     name: test
     runs-on: ubuntu-latest
@@ -25,10 +27,10 @@ jobs:
           go-version: "1.26"
 
       - name: Vet
-        run: go vet ./...
+        run: go vet -mod=vendor ./...
 
       - name: Test
-        run: go test ./...
+        run: go test -mod=vendor ./...
 
   build:
     name: ${{ matrix.target }}
@@ -64,7 +66,7 @@ jobs:
       - name: Build
         run: |
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
-            go build -o tessera-${{ matrix.target }}${{ matrix.ext }} .
+            go build -mod=vendor -o tessera-${{ matrix.target }}${{ matrix.ext }} .
 
       - uses: actions/upload-artifact@v4
         with:

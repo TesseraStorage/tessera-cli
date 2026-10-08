@@ -1,0 +1,574 @@
+package slabs
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"runtime"
+	"sync"
+	"time"
+
+	proto "go.sia.tech/core/rhp/v4"
+	"go.sia.tech/core/types"
+	"go.sia.tech/coreutils/rhp/v4"
+	"go.sia.tech/coreutils/threadgroup"
+	"go.sia.tech/indexd/alerts"
+	"go.sia.tech/indexd/contracts"
+	"go.sia.tech/indexd/hosts"
+	"go.sia.tech/indexd/keys"
+	"go.uber.org/zap"
+)
+
+type (
+	// SlabManager is responsible for managing slabs, including pinning them,
+	// checking their integrity on the network and migrating their sectors if
+	// necessary.
+	SlabManager struct {
+		healthCheckInterval       time.Duration
+		pruneDeletedSlabsInterval time.Duration
+
+		integrityCheckInterval       time.Duration
+		failedIntegrityCheckInterval time.Duration
+		maxFailedIntegrityChecks     uint
+		minHostDistanceKm            float64
+
+		numIntegrityCheckGoroutines int
+		numMigrationGoroutines      int
+		integrityCheckTimeout       time.Duration
+
+		runMigrations bool
+		migrator      *Migrator
+
+		alerter AlertsManager
+		am      AccountManager
+		cm      ContractManager
+		hm      HostManager
+
+		store    Store
+		verifier *SectorVerifier
+
+		tg  *threadgroup.ThreadGroup
+		log *zap.Logger
+	}
+
+	// AccountManager defines the SlabManager's dependencies on the account
+	// manager.
+	AccountManager interface {
+		DebitServiceAccount(hostKey types.PublicKey, account proto.Account, amount types.Currency) error
+		RegisterServiceAccount(account proto.Account)
+		ResetAccountBalance(hostKey types.PublicKey, account proto.Account) error
+		ServiceAccountBalance(hostKey types.PublicKey, account proto.Account) (types.Currency, error)
+	}
+
+	// ContractManager defines the SlabManager's dependencies on the contract
+	// manager.
+	ContractManager interface {
+		TriggerAccountRefill(ctx context.Context, hostKey types.PublicKey, account proto.Account) error
+		HealthyContracts() ([]contracts.Contract, error)
+	}
+
+	// A HostClient defines the minimal interface for interacting with hosts that
+	// the SlabManager requires.
+	HostClient interface {
+		AddFailedRPC(hostKey types.PublicKey)
+		AddTimedOutRPC(hostKey types.PublicKey, write bool, bytes uint64, elapsed time.Duration)
+		Prices(context.Context, types.PublicKey) (proto.HostPrices, error)
+		WriteSector(ctx context.Context, accountKey types.PrivateKey, hostKey types.PublicKey, data []byte) (rhp.RPCWriteSectorResult, error)
+		ReadSector(ctx context.Context, accountKey types.PrivateKey, hostKey types.PublicKey, root types.Hash256, w io.Writer, offset, length uint64) (rhp.RPCReadSectorResult, error)
+
+		Prioritize([]types.PublicKey) []types.PublicKey
+		// ReadEstimate returns the expected time to read the given number
+		// of bytes based on the network-wide observed read throughput. It
+		// is used to size adaptive download racing.
+		ReadEstimate(bytes uint64) time.Duration
+		// PickWrite atomically selects the best write candidate and
+		// reserves an inflight slot. The release function MUST be called
+		// when the RPC completes; the picked host is removed from
+		// candidates and the shortened slice is returned as remaining.
+		PickWrite(candidates []types.PublicKey) (host types.PublicKey, release func(), remaining []types.PublicKey, ok bool)
+		// PickReads atomically sorts candidates and reserves inflight
+		// read slots on the top n hosts under a single lock hold;
+		// callers MUST call all returned releases. The sorted-by-score
+		// tail is returned as remaining so callers can re-pick from
+		// it (e.g. with n=1) and see fresh inflight state. When fewer
+		// than n usable hosts are available, picked is nil and the
+		// partial sorted list is returned as remaining.
+		PickReads(candidates []types.PublicKey, n int) (picked []types.PublicKey, releases []func(), remaining []types.PublicKey)
+		// TrackInflightRead increments the host's inflight read counter
+		// and returns a function that decrements it. Callers should hold
+		// it for the duration of the RPC so concurrent prioritize calls
+		// reflect current load.
+		TrackInflightRead(hostKey types.PublicKey) func()
+	}
+
+	// HostManager defines the minimal interface of HostManager functionality
+	// the SlabManager requires.
+	HostManager interface {
+		Usable(ctx context.Context, hostKey types.PublicKey) (bool, error)
+	}
+
+	// Store defines an interface to store and update slab related information
+	// in the database.
+	Store interface {
+		Hosts(offset, limit int, queryOpts ...hosts.HostQueryOpt) ([]hosts.Host, error)
+		HostsForIntegrityChecks(maxLastCheck time.Time, limit int) ([]types.PublicKey, error)
+		HostsWithLostSectors() ([]types.PublicKey, error)
+		MaintenanceSettings() (contracts.MaintenanceSettings, error)
+		MarkFailingSectorsLost(hostKey types.PublicKey, maxFailedIntegrityChecks uint) error
+		MarkSectorsLost(hostKey types.PublicKey, roots []types.Hash256) error
+		MarkSlabRepaired(slabID SlabID, success bool) error
+		MigrateSector(root types.Hash256, hostKey types.PublicKey) (bool, error)
+		RecordSlabMigrated(slabID SlabID) error
+		PinSlabs(account proto.Account, nextIntegrityCheck time.Time, toPin ...SlabPinParams) ([]SlabID, error)
+		UnpinSlab(proto.Account, SlabID) error
+		RecordIntegrityCheck(success bool, nextCheck time.Time, hostKey types.PublicKey, roots []types.Hash256) error
+		SectorsForIntegrityCheck(hostKey types.PublicKey, limit int) ([]types.Hash256, error)
+		PinnedSlab(account proto.Account, slabID SlabID) (PinnedSlab, error)
+		Slab(slabID SlabID) (slab Slab, err error)
+		Slabs(account proto.Account, slabIDs []SlabID) ([]Slab, error)
+		SlabIDs(account proto.Account, offset, limit int) ([]SlabID, error)
+		Tip() (types.ChainIndex, error)
+		UnhealthySlabs(cursor int64, limit int) ([]SlabID, int64, error)
+		PruneSlabs(account proto.Account, cutoff time.Time) error
+		PruneDeletedSlabs(limit int) (int, error)
+
+		// Object methods
+		Object(account proto.Account, key types.Hash256) (SealedObject, error)
+		DeleteObject(account proto.Account, objectKey types.Hash256) error
+		PinObject(account proto.Account, obj PinObjectRequest) error
+		ListObjects(account proto.Account, cursor Cursor, limit int) ([]ObjectEvent, error)
+		SharedObject(key types.Hash256) (SharedObject, error)
+
+		ObjectsForSlab(slabID SlabID) ([]SlabObject, error)
+		SectorStats() (SectorsStats, error)
+	}
+
+	// AlertsManager defines an interface to register alerts.
+	AlertsManager interface {
+		RegisterAlert(alert alerts.Alert) error
+		DismissAlerts(ids ...types.Hash256)
+	}
+)
+
+var (
+	alertLostSectorsID = alerts.RandomAlertID()
+)
+
+// An Option is a functional option for the SlabManager.
+type Option func(*SlabManager)
+
+// WithHealthCheckInterval sets the interval for health checks.
+func WithHealthCheckInterval(interval time.Duration) Option {
+	return func(m *SlabManager) {
+		m.healthCheckInterval = interval
+	}
+}
+
+// WithPruneDeletedSlabsInterval sets the interval at which the slab manager
+// prunes deleted slabs, removing those no longer pinned by any account along
+// with their orphaned sectors.
+func WithPruneDeletedSlabsInterval(interval time.Duration) Option {
+	return func(m *SlabManager) {
+		m.pruneDeletedSlabsInterval = interval
+	}
+}
+
+// WithIntegrityCheckIntervals sets the intervals for successful and failed integrity checks.
+func WithIntegrityCheckIntervals(success, failure time.Duration) Option {
+	return func(m *SlabManager) {
+		m.integrityCheckInterval = success
+		m.failedIntegrityCheckInterval = failure
+	}
+}
+
+// WithNumIntegrityCheckGoroutines sets the number of hosts to check in
+// parallel during integrity checks. This directly impacts the number of
+// concurrent ReadSector RPCs performed when verifying sector integrity.
+//
+// The default is 50.
+func WithNumIntegrityCheckGoroutines(n int) Option {
+	return func(m *SlabManager) {
+		if n <= 0 {
+			panic("integrity check goroutines must be positive") // developer error
+		}
+		m.numIntegrityCheckGoroutines = n
+	}
+}
+
+// WithNumMigrationGoroutines sets the number of slabs to migrate in parallel.
+// This directly impacts the number of concurrent downloads/uploads the contract
+// manager will perform when repairing slabs and the number of slabs held in
+// memory during repairs.
+//
+// The default is runtime.NumCPU().
+func WithNumMigrationGoroutines(size int) Option {
+	return func(m *SlabManager) {
+		if size <= 0 {
+			panic("migration batch size must be positive") // developer error
+		}
+		m.numMigrationGoroutines = size
+	}
+}
+
+// WithRepairCostRecorder prices every RPC the migrator performs.
+//
+// TESSERA ADDITION — REPORTING ONLY, per Skeen's constraint on forking indexd: "not in a way that
+// changes it's actual operation, rather in a way that simply reports its actions to us for
+// recording/cost attribution."
+//
+// This wraps ONLY the migrator's HostClient, so client uploads/downloads are untouched. Repair had
+// been running unpriced (3,511 sectors already migrated) and is egress-dominated at ~10 egress + 1
+// ingress per repaired shard, making it the cost centre that decides RS 10+20 economics.
+//
+// Applied AFTER the migrator is constructed so the wrap cannot change how the migrator itself is
+// built. Passing a nil recorder leaves the client exactly as it was.
+func WithRepairCostRecorder(rec RepairRecorder) Option {
+	return func(m *SlabManager) {
+		if rec == nil || m.migrator == nil {
+			return
+		}
+		m.migrator.hosts = WithRepairRecorder(m.migrator.hosts, rec)
+	}
+}
+
+// WithMigratorOption applies a MigratorOption to the SlabManager's migrator.
+func WithMigratorOption(opt MigratorOption) Option {
+	return func(m *SlabManager) {
+		opt(m.migrator)
+	}
+}
+
+// WithMinHostDistance sets the minimum distance between hosts used for storing
+// sectors of the same slab. The default is 10km, if set to 0, the distance
+// check is disabled.
+func WithMinHostDistance(km float64) Option {
+	return func(m *SlabManager) {
+		m.minHostDistanceKm = km
+	}
+}
+
+// WithIntegrityCheckTimeout sets the maximum time allowed for verifying all sectors
+// on a single host. The default is 5 minutes.
+func WithIntegrityCheckTimeout(d time.Duration) Option {
+	return func(m *SlabManager) {
+		if d <= 0 {
+			panic("integrity check timeout must be positive") // developer error
+		}
+		m.integrityCheckTimeout = d
+	}
+}
+
+// WithLogger sets the logger for the SlabManager.
+func WithLogger(l *zap.Logger) Option {
+	return func(m *SlabManager) {
+		m.log = l
+	}
+}
+
+// WithMigrations enables or disables the migration loop on a full node. The
+// default is enabled; set to false to outsource migrations to remote nodes.
+func WithMigrations(enabled bool) Option {
+	return func(m *SlabManager) {
+		m.runMigrations = enabled
+	}
+}
+
+// DeriveAccountKeys derives the migration and integrity service-account keys
+// the slab manager uses from a wallet key. All nodes (primary and remote) must
+// derive them identically so the host-side accounts line up.
+func DeriveAccountKeys(walletKey types.PrivateKey) (migration, integrity types.PrivateKey) {
+	return keys.DerivePrivateKey(walletKey, "migration"), keys.DerivePrivateKey(walletKey, "integrity")
+}
+
+// NewManager creates a new slab manager.
+func NewManager(am AccountManager, cm ContractManager, hm HostManager, store Store, hosts HostClient, alerter AlertsManager, migrationAccount, integrityAccount types.PrivateKey, opts ...Option) (*SlabManager, error) {
+	sm := newSlabManager(am, cm, hm, store, hosts, alerter, migrationAccount, integrityAccount, opts...)
+
+	ctx, cancel, err := sm.tg.AddContext(context.Background())
+	if err != nil {
+		return nil, err
+	}
+
+	go func() {
+		defer cancel()
+		sm.maintenanceLoop(ctx)
+	}()
+
+	return sm, nil
+}
+
+func newSlabManager(am AccountManager, cm ContractManager, hm HostManager, store Store, hosts HostClient, alerter AlertsManager, migrationAccount, integrityAccount types.PrivateKey, opts ...Option) *SlabManager {
+	m := &SlabManager{
+		healthCheckInterval:       time.Minute,
+		pruneDeletedSlabsInterval: time.Minute,
+
+		integrityCheckInterval:       14 * 24 * time.Hour,
+		failedIntegrityCheckInterval: 12 * time.Hour,
+		maxFailedIntegrityChecks:     5,
+		minHostDistanceKm:            10,
+
+		integrityCheckTimeout:       5 * time.Minute,
+		numIntegrityCheckGoroutines: 50,
+		numMigrationGoroutines:      runtime.NumCPU(),
+
+		runMigrations: true,
+
+		migrator: NewMigrator(hosts, migrationAccount, nil),
+
+		am:      am,
+		cm:      cm,
+		hm:      hm,
+		store:   store,
+		alerter: alerter,
+		tg:      threadgroup.New(),
+		log:     zap.NewNop(),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+
+	// propagate the resolved logger to the migrator
+	m.migrator.log = m.log.Named("migrations")
+
+	m.verifier = NewSectorVerifier(am, hosts, integrityAccount, m.log)
+	m.initServiceAccounts(migrationAccount.PublicKey(), integrityAccount.PublicKey())
+	return m
+}
+
+// Close closes the manager.
+func (m *SlabManager) Close() error {
+	m.tg.Stop()
+	return nil
+}
+
+// ObjectsForSlab returns all (account, object key) pairs for objects that
+// reference the given slab.
+func (m *SlabManager) ObjectsForSlab(slabID SlabID) ([]SlabObject, error) {
+	return m.store.ObjectsForSlab(slabID)
+}
+
+func (m *SlabManager) initServiceAccounts(migrationAccount, integrityAccount types.PublicKey) {
+	for _, acc := range []struct {
+		description string
+		key         types.PublicKey
+	}{
+		{"slab migrations", migrationAccount},
+		{"data integrity checks", integrityAccount},
+	} {
+		// ensure account is registered with the AccountManager
+		m.am.RegisterServiceAccount(proto.Account(acc.key))
+	}
+}
+
+// maintenanceLoop performs any background tasks that the slab manager needs to
+// perform on slabs
+func (m *SlabManager) maintenanceLoop(ctx context.Context) {
+	var wg sync.WaitGroup
+	launch := func(descr string, interval time.Duration, task func(context.Context) error) {
+		ticker := time.NewTicker(interval)
+
+		wg.Go(func() {
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+				case <-ctx.Done():
+					return
+				}
+				if err := task(ctx); err != nil && !(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+					m.log.Error("maintenance failed", zap.String("task", descr), zap.Error(err))
+				}
+			}
+		})
+	}
+
+	// register lost sectors alerts on startup
+	m.registerLostSectorsAlert()
+	launch("integrity checks", m.healthCheckInterval, m.performIntegrityChecks)
+	launch("prune deleted slabs", m.pruneDeletedSlabsInterval, m.performPruneDeletedSlabs)
+	if m.runMigrations {
+		launch("slab migrations", m.healthCheckInterval, m.performSlabMigrations)
+	}
+	wg.Wait()
+}
+
+// performPruneDeletedSlabs prunes deleted slabs, removing those no longer pinned
+// by any account along with their orphaned sectors.
+func (m *SlabManager) performPruneDeletedSlabs(ctx context.Context) error {
+	start := time.Now()
+	log := m.log.Named("prune")
+	log.Debug("starting deleted slab pruning")
+
+	const batchSize = 100
+	var pruned int
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		n, err := m.store.PruneDeletedSlabs(batchSize)
+		if err != nil {
+			return fmt.Errorf("failed to prune deleted slabs: %w", err)
+		} else if n == 0 {
+			break
+		}
+		pruned += n
+	}
+
+	log.Debug("finished pruning deleted slabs", zap.Int("pruned", pruned), zap.Duration("elapsed", time.Since(start)))
+	return nil
+}
+
+func newLostSectorsAlert(hks []types.PublicKey) alerts.Alert {
+	return alerts.Alert{
+		ID:       alertLostSectorsID,
+		Severity: alerts.SeverityWarning,
+		Message:  "Host(s) have lost sectors",
+		Data: map[string]any{
+			"hostKeys": hks,
+			"hint":     "Host(s) have reported that it can't serve at least one sector. Consider blocking these hosts through the blocklist feature.",
+		},
+		Timestamp: time.Now(),
+	}
+}
+
+func (m *SlabManager) performIntegrityChecks(ctx context.Context) error {
+	start := time.Now()
+	logger := m.log.Named("integrity")
+	logger.Debug("starting integrity checks", zap.Time("start", start))
+
+	// start a worker pool that pulls hosts from a channel
+	hostCh := make(chan types.PublicKey, m.numIntegrityCheckGoroutines)
+	var wg sync.WaitGroup
+	for range m.numIntegrityCheckGoroutines {
+		wg.Go(func() {
+			for hostKey := range hostCh {
+				m.performIntegrityChecksForHost(ctx, hostKey, logger)
+			}
+		})
+	}
+
+	// fetch hosts and feed them to the workers
+	const batchSize = 100
+	for {
+		batch, err := m.store.HostsForIntegrityChecks(start, batchSize)
+		if err != nil {
+			close(hostCh)
+			wg.Wait()
+			return fmt.Errorf("failed to fetch hosts: %w", err)
+		}
+
+		for _, host := range batch {
+			select {
+			case hostCh <- host:
+			case <-ctx.Done():
+				close(hostCh)
+				wg.Wait()
+				return nil
+			}
+		}
+		if len(batch) < batchSize {
+			break
+		}
+	}
+
+	close(hostCh)
+	wg.Wait()
+	m.registerLostSectorsAlert()
+
+	logger.Debug("finished integrity checks", zap.Duration("elapsed", time.Since(start)))
+	return nil
+}
+
+func (m *SlabManager) performSlabMigrations(ctx context.Context) error {
+	start := time.Now()
+	log := m.log.Named("migrations")
+	log.Debug("starting slab migrations")
+
+	// to make sure the workers don't finish their work before we have another
+	// batch ready, we fetch a multiple of the number of workers each time.
+	slabBatchSize := migrationSlabsPerWorker * m.numMigrationGoroutines
+
+	type migrationJob struct {
+		id    SlabID
+		state MigrationState
+	}
+	slabCh := make(chan migrationJob, slabBatchSize)
+	var wg sync.WaitGroup
+	for range m.numMigrationGoroutines {
+		wg.Go(func() {
+			for job := range slabCh {
+				m.migrateSlab(ctx, job.id, job.state, log.With(zap.Stringer("slab", job.id)))
+			}
+		})
+	}
+
+	// fetch unhealthy slabs and feed them to the workers in a separate
+	// goroutine so the slow UnhealthySlabs / fetchMigrationState calls
+	// happen in parallel with worker processing rather than blocking it.
+	producerErrCh := make(chan error, 1)
+	go func() {
+		defer close(slabCh)
+		var cursor int64
+		for {
+			log.Debug("processing batch")
+			fetchStart := time.Now()
+			batch, nextCursor, err := m.store.UnhealthySlabs(cursor, slabBatchSize)
+			if err != nil {
+				producerErrCh <- err
+				return
+			}
+			log.Debug("fetched batch of unhealthy slabs", zap.Int("batchSize", len(batch)), zap.Int64("cursor", cursor), zap.Int64("nextCursor", nextCursor), zap.Duration("elapsed", time.Since(fetchStart)))
+
+			// update the state for every batch
+			stateStart := time.Now()
+			state, err := m.fetchMigrationState()
+			if err != nil {
+				producerErrCh <- err
+				return
+			}
+			log.Debug("fetched migration state", zap.Duration("elapsed", time.Since(stateStart)))
+
+			for _, id := range batch {
+				select {
+				case slabCh <- migrationJob{id: id, state: state}:
+				case <-ctx.Done():
+					log.Debug("migration interrupted by context cancellation")
+					return
+				}
+			}
+
+			// if the next cursor is 0 it means we're through all unhealthy slabs
+			if nextCursor == 0 {
+				log.Debug("no more unhealthy slabs to migrate")
+				return
+			}
+			cursor = nextCursor
+		}
+	}()
+
+	wg.Wait()
+	log.Debug("finished slab migrations", zap.Duration("elapsed", time.Since(start)))
+	select {
+	case err := <-producerErrCh:
+		return err
+	default:
+		return nil
+	}
+}
+
+func (m *SlabManager) registerLostSectorsAlert() {
+	hks, err := m.store.HostsWithLostSectors()
+	if err != nil {
+		m.log.Error("failed to get hosts with lost sectors", zap.Error(err))
+		return
+	}
+	if len(hks) > 0 {
+		if err := m.alerter.RegisterAlert(newLostSectorsAlert(hks)); err != nil {
+			m.log.Error("failed to register lost sector alert", zap.Error(err))
+			return
+		}
+	} else {
+		m.alerter.DismissAlerts(alertLostSectorsID)
+	}
+}
