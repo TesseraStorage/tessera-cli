@@ -10,6 +10,15 @@ require (
 	golang.org/x/term v0.45.0
 )
 
+// Local forks for development. CI builds from the committed vendor tree with
+// -mod=vendor, so these paths do not need to exist on the build runner. Both
+// replaces are required: a dependency's own replace directives are ignored,
+// and the siastorage fork calls appClient.ObjectHosts, which exists only in
+// the local indexd fork.
+replace go.sia.tech/siastorage => /root/siastorage-fork
+
+replace go.sia.tech/indexd => /root/tessera
+
 require (
 	github.com/dunglas/httpsfv v1.1.0 // indirect
 	github.com/julienschmidt/httprouter v1.3.0 // indirect

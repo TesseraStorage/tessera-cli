@@ -36,7 +36,60 @@ These cover the parts where a mistake costs data:
 | `TestInstallServiceWithoutActivationChangesNothing` | Without `--yes` no service is started |
 | `TestPromptYesNoNonInteractive` | A piped stdin is never prompted, so scripts cannot hang |
 
-## 2. Test account
+## 2. Vendored Sia forks (no checkouts, no network)
+
+The CLI depends on two local Sia forks, wired in `go.mod` with absolute
+`replace` directives:
+
+```go
+replace go.sia.tech/siastorage => /root/siastorage-fork
+replace go.sia.tech/indexd => /root/tessera
+```
+
+Both are required together. A dependency's own `replace` directives are
+ignored, and the `siastorage` fork calls `appClient.ObjectHosts`, which exists
+only in the local `indexd` fork; with only one replace the build does not
+compile. The generated `vendor/` tree is committed, so CI and anyone without
+the checkouts builds and tests with:
+
+```bash
+go vet -mod=vendor ./...
+go test -mod=vendor ./...
+go build -mod=vendor .
+```
+
+`-mod=vendor` reads only `vendor/`; the absolute paths above never need to
+exist on a build runner (they do not exist on GitHub Actions).
+
+### Re-vendoring after a fork change
+
+Whenever either fork changes, refresh the committed tree from a clean fork
+checkout:
+
+```bash
+# The fork keeps an ignored 62 MB GeoLite2-City.mmdb in its package
+# directory; move it out first so `go mod vendor` does not copy it.
+mv /root/siastorage-fork/GeoLite2-City.mmdb /tmp/
+cd /root/tessera-cli
+go mod vendor
+mv /tmp/GeoLite2-City.mmdb /root/siastorage-fork/
+git add go.mod go.sum vendor
+```
+
+`vendor/` should be ≈ 27 MB and contain no `*.mmdb` file. `go mod tidy` (and
+anything else that resolves the module graph) requires **both** fork checkouts
+to exist at the replace paths above; a missing checkout fails with an error
+naming the path.
+
+### If the replaces are dropped
+
+Dropping either `replace` while `vendor/modules.txt` still records it makes
+every `-mod=vendor` command fail with `inconsistent vendoring`. There are only
+two consistent end states: keep both replaces and the vendored tree in
+lockstep, or publish both forks and pin pseudo-versions (out of scope for
+now).
+
+## 3. Test account
 
 Tests that touch the network need an account. A dedicated test key is provided:
 
@@ -62,7 +115,7 @@ For an isolated sandbox, point `TESSERA_HOME` at a scratch directory:
 export TESSERA_HOME=/tmp/tessera-test
 ```
 
-## 3. Two-machine end-to-end test
+## 4. Two-machine end-to-end test
 
 The scenario simulates a Mac and a Windows PC sharing one account. Both
 machines use the same credentials in separate `TESSERA_HOME` directories, so a
@@ -157,7 +210,7 @@ for f in json.load(sys.stdin)['files']:
 " | while read -r p; do $A delete "$p" --purge; done
 ```
 
-## 4. Manual checklist
+## 5. Manual checklist
 
 Some behaviour is easier to confirm by hand than to script:
 
@@ -229,5 +282,7 @@ now has a regression test:
 - Sia host throughput in a sandbox is slow (tens of seconds per small object).
   The end-to-end scripts are therefore run as background jobs.
 - The indexer rejects `test`-flagged uploads; use the normal account.
-- `go build` needs network access the first time to fetch the pinned
-  dependencies (`go.sia.tech/siastorage`, `go.sia.tech/indexd`).
+- `go build` and `go test` need no network: the two Sia forks and every other
+  dependency are vendored (see §2). Only re-vendoring (`go mod vendor`) and
+  `go mod tidy` need the fork checkouts, and `go mod tidy` may need the module
+  proxy for unrelated dependencies.
