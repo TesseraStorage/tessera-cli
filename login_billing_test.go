@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"go.sia.tech/core/types"
 )
@@ -482,6 +483,7 @@ type fakeRegistrationBuilder struct {
 	waitErr       error
 	registerCalls int
 	registerErr   error
+	registerErrs  []error
 	phrase        string
 	app           registeredApp
 }
@@ -499,6 +501,14 @@ func (f *fakeRegistrationBuilder) WaitForApproval(context.Context) error {
 func (f *fakeRegistrationBuilder) Register(_ context.Context, mnemonic string) (registeredApp, error) {
 	f.registerCalls++
 	f.phrase = mnemonic
+	if len(f.registerErrs) > 0 {
+		err := f.registerErrs[0]
+		f.registerErrs = f.registerErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+		return f.app, nil
+	}
 	if f.registerErr != nil {
 		return nil, f.registerErr
 	}
@@ -566,12 +576,22 @@ func stubStdin(t *testing.T, input string) {
 	})
 }
 
+// stubRegistrationRetryBackoff zeroes the post-mint retry pause so retry tests
+// exercise the bounded attempts without real delays.
+func stubRegistrationRetryBackoff(t *testing.T) {
+	t.Helper()
+	orig := registrationRetryBackoff
+	registrationRetryBackoff = func(int) time.Duration { return 0 }
+	t.Cleanup(func() { registrationRetryBackoff = orig })
+}
+
 // stubHeadlessRegistration installs a fake billing client and a fake builder
 // around the registration flow. stdin is pinned to "not a terminal" and the
 // approval is stubbed; tests assert on the returned builder and recorder.
 func stubHeadlessRegistration(t *testing.T, fake *fakeLoginAPI) (*fakeRegistrationBuilder, *approveRecorder) {
 	t.Helper()
 	stubStdinTerminal(t, false)
+	stubRegistrationRetryBackoff(t)
 	stubBillingClient(t, fake)
 	builder := &fakeRegistrationBuilder{
 		respURL: "https://index.example/auth/connect/req-1",
@@ -625,6 +645,10 @@ func TestApproveConnectURL(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "400") {
 			t.Errorf("error = %q, want the status", err)
+		}
+		var httpErr *approveHTTPError
+		if !errors.As(err, &httpErr) || httpErr.Status != http.StatusBadRequest {
+			t.Errorf("error = %v (%T), want a typed approveHTTPError with status 400 so a 4xx is not retried", err, err)
 		}
 		if strings.Contains(err.Error(), "ck_secret") {
 			t.Errorf("error leaked the connect key: %v", err)
@@ -1042,6 +1066,211 @@ func TestBillingLoginMintFailuresSkipRegister(t *testing.T) {
 	}
 }
 
+// TestRetryableRegistrationError pins the post-mint retry classification: a
+// typed 4xx rejection is definitive, while transport errors, timeouts, 5xx and
+// the SDK's own errors are transient.
+func TestRetryableRegistrationError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"transport error", errors.New("dial tcp: connection refused"), true},
+		{"context deadline", context.DeadlineExceeded, true},
+		{"billing 5xx", &billingError{Status: 500, Code: "internal"}, true},
+		{"billing 503", &billingError{Status: 503, Code: "unavailable"}, true},
+		{"billing 4xx is definitive", &billingError{Status: 400, Code: "bad_request"}, false},
+		{"billing 409 is definitive", &billingError{Status: 409, Code: "conflict"}, false},
+		{"approval 5xx", &approveHTTPError{Status: 502}, true},
+		{"approval 4xx is definitive", &approveHTTPError{Status: 400}, false},
+		{"wrapped client rejection", fmt.Errorf("step: %w", &billingError{Status: 403, Code: "forbidden"}), false},
+		{"wrapped transport error", fmt.Errorf("step: %w", errors.New("unexpected EOF")), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := retryableRegistrationError(tc.err); got != tc.want {
+				t.Fatalf("retryableRegistrationError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBillingLoginRetriesApprovalTransiently: one failed approval POST is
+// retried with the SAME minted connect key, builder and response URL, so the
+// account still completes instead of being stranded with a single-use key that
+// was never persisted.
+func TestBillingLoginRetriesApprovalTransiently(t *testing.T) {
+	testConfigHome(t)
+	t.Setenv("TESSERA_PHRASE", "")
+	fake := &fakeLoginAPI{session: "sess-1", account: map[string]any{"billing_id": "TESS-42"}, connectKey: "ck_secret"}
+	builder, rec := stubHeadlessRegistration(t, fake)
+
+	approvals := 0
+	orig := approveConnectURL
+	approveConnectURL = func(_ context.Context, responseURL, connectKey string) error {
+		approvals++
+		rec.calls = append(rec.calls, approveCall{responseURL, connectKey})
+		if approvals == 1 {
+			return errors.New("temporary connection reset")
+		}
+		return nil
+	}
+	t.Cleanup(func() { approveConnectURL = orig })
+
+	var loginErr error
+	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok", "") })
+	if loginErr != nil {
+		t.Fatalf("billingLogin: %v", loginErr)
+	}
+	if approvals != 2 {
+		t.Fatalf("approval attempts = %d, want 2 (transient then success)", approvals)
+	}
+	if fake.credentialsCalls != 1 {
+		t.Fatalf("Credentials calls = %d, want exactly 1: the connect key is minted once", fake.credentialsCalls)
+	}
+	if builder.registerCalls != 1 {
+		t.Fatalf("Register calls = %d, want 1 (only the successful attempt)", builder.registerCalls)
+	}
+	if len(rec.calls) != 2 || rec.calls[0].connectKey != "ck_secret" || rec.calls[1].connectKey != "ck_secret" {
+		t.Fatalf("approvals = %+v, want both attempts to reuse the same connect key", rec.calls)
+	}
+	for _, a := range rec.calls {
+		if a.responseURL != builder.respURL {
+			t.Errorf("approval URL = %q, want the same request URL %q", a.responseURL, builder.respURL)
+		}
+	}
+	if strings.Contains(out, "ck_secret") {
+		t.Errorf("output leaked the connect key:\n%s", out)
+	}
+	saved, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.AppID == "" || saved.AppKey == "" {
+		t.Fatalf("registration did not complete: app_id %q app_key %q", saved.AppID, saved.AppKey)
+	}
+}
+
+// TestBillingLoginRetriesRegisterTransiently: SDK Register failures (the
+// indexer is reachable but hiccups) are retried against the approved builder,
+// which still holds the in-memory shared secret; the third attempt succeeds.
+func TestBillingLoginRetriesRegisterTransiently(t *testing.T) {
+	testConfigHome(t)
+	t.Setenv("TESSERA_PHRASE", "")
+	transient := errors.New("registration rpc reset")
+	fake := &fakeLoginAPI{session: "sess-1", account: map[string]any{"billing_id": "TESS-42"}, connectKey: "ck_secret"}
+	builder, _ := stubHeadlessRegistration(t, fake)
+	builder.registerErrs = []error{transient, transient, nil}
+
+	var loginErr error
+	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok", "") })
+	if loginErr != nil {
+		t.Fatalf("billingLogin: %v", loginErr)
+	}
+	if builder.registerCalls != 3 {
+		t.Fatalf("Register calls = %d, want 3 (two transient failures then success)", builder.registerCalls)
+	}
+	if fake.credentialsCalls != 1 {
+		t.Fatalf("Credentials calls = %d, want exactly 1", fake.credentialsCalls)
+	}
+	if !strings.Contains(out, "Storage identity linked") {
+		t.Errorf("success state missing from output:\n%s", out)
+	}
+	saved, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.AppID == "" || saved.AppKey == "" {
+		t.Fatalf("registration did not complete: app_id %q app_key %q", saved.AppID, saved.AppKey)
+	}
+}
+
+// TestBillingLoginPostMintRetryExhausted: a persistent transient failure is
+// attempted exactly three times, then reported with the unchanged
+// "registration incomplete" wrapper and no app credentials on disk.
+func TestBillingLoginPostMintRetryExhausted(t *testing.T) {
+	testConfigHome(t)
+	t.Setenv("TESSERA_PHRASE", "")
+	transient := errors.New("indexer unreachable")
+	fake := &fakeLoginAPI{session: "sess-1", account: map[string]any{"billing_id": "TESS-42"}, connectKey: "ck_secret"}
+	builder, _ := stubHeadlessRegistration(t, fake)
+	builder.registerErr = transient
+
+	var loginErr error
+	_ = captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok", "") })
+	if loginErr == nil {
+		t.Fatal("billingLogin = nil, want the exhausted-retry failure")
+	}
+	if builder.registerCalls != registrationAttempts {
+		t.Fatalf("Register calls = %d, want %d (the full bounded retry budget)", builder.registerCalls, registrationAttempts)
+	}
+	if fake.credentialsCalls != 1 {
+		t.Fatalf("Credentials calls = %d, want exactly 1: retries must not re-mint", fake.credentialsCalls)
+	}
+	if !errors.Is(loginErr, transient) {
+		t.Errorf("error %v does not wrap the underlying failure", loginErr)
+	}
+	for _, want := range []string{"registration incomplete", "TESS-42", "minted but not completed", "contact support"} {
+		if !strings.Contains(loginErr.Error(), want) {
+			t.Errorf("error %q missing %q", loginErr, want)
+		}
+	}
+	if strings.Contains(loginErr.Error(), "ck_secret") {
+		t.Errorf("error leaked the connect key: %v", loginErr)
+	}
+	saved, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.AppID != "" || saved.AppKey != "" {
+		t.Fatalf("partial app credentials persisted: app_id %q app_key %q", saved.AppID, saved.AppKey)
+	}
+}
+
+// TestBillingLoginDoesNotRetryClientRejection: a definitive typed 4xx from the
+// approval step is surfaced immediately, with exactly one attempt.
+func TestBillingLoginDoesNotRetryClientRejection(t *testing.T) {
+	testConfigHome(t)
+	t.Setenv("TESSERA_PHRASE", "")
+	rejection := &billingError{Status: 400, Code: "bad_request"}
+	fake := &fakeLoginAPI{session: "sess-1", account: map[string]any{"billing_id": "TESS-42"}, connectKey: "ck_secret"}
+	builder, rec := stubHeadlessRegistration(t, fake)
+
+	approvals := 0
+	orig := approveConnectURL
+	approveConnectURL = func(_ context.Context, responseURL, connectKey string) error {
+		approvals++
+		rec.calls = append(rec.calls, approveCall{responseURL, connectKey})
+		return rejection
+	}
+	t.Cleanup(func() { approveConnectURL = orig })
+
+	var loginErr error
+	_ = captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok", "") })
+	if loginErr == nil {
+		t.Fatal("billingLogin = nil, want the client rejection")
+	}
+	if approvals != 1 || len(rec.calls) != 1 {
+		t.Fatalf("approval attempts = %d (recorded %d), want exactly 1: a 4xx is definitive", approvals, len(rec.calls))
+	}
+	if builder.registerCalls != 0 {
+		t.Errorf("Register calls = %d, want 0", builder.registerCalls)
+	}
+	if !errors.Is(loginErr, rejection) {
+		t.Errorf("error %v does not wrap the typed client rejection", loginErr)
+	}
+	if !strings.Contains(loginErr.Error(), "registration incomplete") {
+		t.Errorf("error %q missing the minted-state annotation", loginErr)
+	}
+	saved, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.AppID != "" || saved.AppKey != "" {
+		t.Fatalf("partial app credentials persisted: app_id %q app_key %q", saved.AppID, saved.AppKey)
+	}
+}
+
 // TestAgentRegisterFailureNamesFetchedAccount: the agent path makes a
 // best-effort GET /account before minting, so a post-mint failure names the
 // billing account instead of "(unknown)".
@@ -1105,8 +1334,8 @@ func TestAgentRegisterAccountLookupFallback(t *testing.T) {
 				t.Errorf("error %q missing %q", err, want)
 			}
 		}
-		if builder.registerCalls != 1 {
-			t.Errorf("Register calls = %d, want 1: a failed lookup must not block registration", builder.registerCalls)
+		if builder.registerCalls != registrationAttempts {
+			t.Errorf("Register calls = %d, want %d: a failed lookup must not block registration and retries stay bounded", builder.registerCalls, registrationAttempts)
 		}
 	})
 

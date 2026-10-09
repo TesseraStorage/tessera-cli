@@ -312,6 +312,22 @@ var newSDKBuilder = func(indexerURL string, appID types.Hash256) registrationBui
 	})}
 }
 
+// registrationAttempts bounds the post-mint registration retry: one initial
+// try plus two retries. The connect key is single-use, so a transient failure
+// after the mint would otherwise strand the account; a bounded in-process
+// retry can still complete it with the same key and builder.
+const registrationAttempts = 3
+
+// registrationRetryBackoff is the pause before retry n (1-based). It is a
+// package-level var so tests can zero it and run instantly; the production
+// schedule is short (200ms then 500ms).
+var registrationRetryBackoff = func(retry int) time.Duration {
+	if retry == 1 {
+		return 200 * time.Millisecond
+	}
+	return 500 * time.Millisecond
+}
+
 // approveConnectURL completes the headless approval a browser tab normally
 // performs: POST {"approve":true} to the SDK's response URL with the connect
 // key as the Basic auth password (empty username, per indexd /auth/connect).
@@ -334,9 +350,36 @@ var approveConnectURL = func(ctx context.Context, responseURL, connectKey string
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("approve connection request: HTTP %d", resp.StatusCode)
+		return &approveHTTPError{Status: resp.StatusCode}
 	}
 	return nil
+}
+
+// approveHTTPError is a typed non-2xx failure from the headless approval POST.
+// It carries the HTTP status so the post-mint retry can tell a definitive 4xx
+// client rejection from a transient 5xx/timeout. It is deliberately not a
+// billingError: the approval talks to the indexer, not moneyd.
+type approveHTTPError struct{ Status int }
+
+func (e *approveHTTPError) Error() string {
+	return fmt.Sprintf("approve connection request: HTTP %d", e.Status)
+}
+
+// retryableRegistrationError reports whether a failed post-mint registration
+// step is worth another attempt. Transport errors, timeouts and the SDK's own
+// errors are transient (true); a typed server rejection with a 4xx status is
+// definitive (false). The mint runs outside this loop, so identity_exists is
+// never classified here.
+func retryableRegistrationError(err error) bool {
+	var be *billingError
+	if errors.As(err, &be) {
+		return be.Status >= 500
+	}
+	var he *approveHTTPError
+	if errors.As(err, &he) {
+		return he.Status >= 500
+	}
+	return true
 }
 
 // errIdentityExists is the 409 from POST /credentials: the billing account
@@ -423,45 +466,95 @@ func registerStorageIdentity(cfg *Config, phraseArg, billingID string) error {
 	appID := siastorage.GenerateAppID()
 	builder := newSDKBuilder(cfg.IndexerURL, appID)
 
-	respURL, err := builder.RequestConnection(ctx)
-	if err != nil {
-		return wrapRegistrationIncomplete(fmt.Errorf("connection request failed: %w", err), billingID)
-	}
-	if err := approveConnectURL(ctx, respURL, connectKey); err != nil {
-		return wrapRegistrationIncomplete(err, billingID)
-	}
-	if err := builder.WaitForApproval(ctx); err != nil {
-		return wrapRegistrationIncomplete(fmt.Errorf("wait failed: %w\n  (did the approval go through?)", err), billingID)
-	}
-
+	// The recovery phrase is resolved exactly once, on the first attempt that
+	// reaches Register, so a retry never regenerates or reprints it.
 	phrase := phraseArg
 	if phrase == "" {
 		phrase = os.Getenv("TESSERA_PHRASE")
 	}
-	if phrase == "" {
-		phrase = siastorage.NewSeedPhrase()
-		printRecoveryPhrase(phrase)
-	} else {
-		printSuppliedPhraseNote()
+	phraseResolved := false
+	resolvePhrase := func() {
+		if phraseResolved {
+			return
+		}
+		phraseResolved = true
+		if phrase == "" {
+			phrase = siastorage.NewSeedPhrase()
+			printRecoveryPhrase(phrase)
+		} else {
+			printSuppliedPhraseNote()
+		}
 	}
 
-	sdk, err := builder.Register(ctx, phrase)
-	if err != nil {
-		return wrapRegistrationIncomplete(fmt.Errorf("registration failed: %w", err), billingID)
-	}
-	appKey := sdk.AppKey()
-	sdk.Close()
+	// The post-mint sequence runs up to registrationAttempts times. Each
+	// attempt resumes from the first stage that has not completed, so a
+	// successful approval is never repeated and Register keeps using the
+	// builder's in-memory shared secret.
+	var (
+		respURL    string
+		approved   bool
+		waited     bool
+		registered bool
+		appKey     types.PrivateKey
+	)
+	attemptRegistration := func() error {
+		if !registered {
+			if respURL == "" {
+				url, err := builder.RequestConnection(ctx)
+				if err != nil {
+					return fmt.Errorf("connection request failed: %w", err)
+				}
+				respURL = url
+			}
+			if !approved {
+				if err := approveConnectURL(ctx, respURL, connectKey); err != nil {
+					return err
+				}
+				approved = true
+			}
+			if !waited {
+				if err := builder.WaitForApproval(ctx); err != nil {
+					return fmt.Errorf("wait failed: %w\n  (did the approval go through?)", err)
+				}
+				waited = true
+			}
+			resolvePhrase()
+			sdk, err := builder.Register(ctx, phrase)
+			if err != nil {
+				return fmt.Errorf("registration failed: %w", err)
+			}
+			appKey = sdk.AppKey()
+			sdk.Close()
+			// Optional local encryption of the phrase, exactly like the legacy
+			// flow; non-interactive logins skip the prompt entirely.
+			if phraseArg == "" && stdinIsTerminal() {
+				promptProtectPhrase(cfg, phrase)
+			}
+			registered = true
+		}
 
-	cfg.AppID = appID.String()
-	cfg.AppKey = hex.EncodeToString([]byte(appKey))
-
-	// Optional local encryption of the phrase, exactly like the legacy flow;
-	// non-interactive logins skip the prompt entirely.
-	if phraseArg == "" && stdinIsTerminal() {
-		promptProtectPhrase(cfg, phrase)
+		cfg.AppID = appID.String()
+		cfg.AppKey = hex.EncodeToString([]byte(appKey))
+		if err := saveConfig(cfg); err != nil {
+			return fmt.Errorf("save config: %w", err)
+		}
+		return nil
 	}
-	if err := saveConfig(cfg); err != nil {
-		return wrapRegistrationIncomplete(fmt.Errorf("save config: %w", err), billingID)
+
+	var regErr error
+	for attempt := 1; attempt <= registrationAttempts; attempt++ {
+		if attempt > 1 {
+			time.Sleep(registrationRetryBackoff(attempt - 1))
+		}
+		if regErr = attemptRegistration(); regErr == nil {
+			break
+		}
+		if !retryableRegistrationError(regErr) {
+			break
+		}
+	}
+	if regErr != nil {
+		return wrapRegistrationIncomplete(regErr, billingID)
 	}
 
 	if err := newBillingClient(&bc).Activate(); err != nil {
