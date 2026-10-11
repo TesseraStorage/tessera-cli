@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"go.sia.tech/core/types"
-	indexdapp "go.sia.tech/indexd/api/app"
+	indexdapp "go.sia.tech/indexd/api/appclient"
 	"go.sia.tech/indexd/slabs"
 	siastorage "go.sia.tech/siastorage"
 	"golang.org/x/term"
