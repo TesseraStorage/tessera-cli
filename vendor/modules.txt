@@ -60,12 +60,11 @@ go.sia.tech/coreutils/threadgroup
 go.sia.tech/coreutils/wallet
 # go.sia.tech/indexd v0.4.3-0.20260811102619-b064dc9575d1 => /root/tessera
 ## explicit; go 1.26.0
-go.sia.tech/indexd/accounts
 go.sia.tech/indexd/alerts
 go.sia.tech/indexd/api
-go.sia.tech/indexd/api/app
+go.sia.tech/indexd/api/appclient
 go.sia.tech/indexd/client/v2
-go.sia.tech/indexd/contracts
+go.sia.tech/indexd/contracttypes
 go.sia.tech/indexd/geoip
 go.sia.tech/indexd/hosts
 go.sia.tech/indexd/keys
