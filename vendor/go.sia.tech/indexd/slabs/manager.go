@@ -14,7 +14,7 @@ import (
 	"go.sia.tech/coreutils/rhp/v4"
 	"go.sia.tech/coreutils/threadgroup"
 	"go.sia.tech/indexd/alerts"
-	"go.sia.tech/indexd/contracts"
+	"go.sia.tech/indexd/contracttypes"
 	"go.sia.tech/indexd/hosts"
 	"go.sia.tech/indexd/keys"
 	"go.uber.org/zap"
@@ -65,7 +65,7 @@ type (
 	// manager.
 	ContractManager interface {
 		TriggerAccountRefill(ctx context.Context, hostKey types.PublicKey, account proto.Account) error
-		HealthyContracts() ([]contracts.Contract, error)
+		HealthyContracts() ([]contracttypes.Contract, error)
 	}
 
 	// A HostClient defines the minimal interface for interacting with hosts that
@@ -114,7 +114,7 @@ type (
 		Hosts(offset, limit int, queryOpts ...hosts.HostQueryOpt) ([]hosts.Host, error)
 		HostsForIntegrityChecks(maxLastCheck time.Time, limit int) ([]types.PublicKey, error)
 		HostsWithLostSectors() ([]types.PublicKey, error)
-		MaintenanceSettings() (contracts.MaintenanceSettings, error)
+		MaintenanceSettings() (contracttypes.MaintenanceSettings, error)
 		MarkFailingSectorsLost(hostKey types.PublicKey, maxFailedIntegrityChecks uint) error
 		MarkSectorsLost(hostKey types.PublicKey, roots []types.Hash256) error
 		MarkSlabRepaired(slabID SlabID, success bool) error
@@ -211,7 +211,8 @@ func WithNumMigrationGoroutines(size int) Option {
 	}
 }
 
-// WithRepairCostRecorder prices every RPC the migrator performs.
+// WithMigratorHostWrapper decorates the migrator's HostClient after the
+// migrator is constructed.
 //
 // TESSERA ADDITION — REPORTING ONLY, per Skeen's constraint on forking indexd: "not in a way that
 // changes it's actual operation, rather in a way that simply reports its actions to us for
@@ -222,13 +223,14 @@ func WithNumMigrationGoroutines(size int) Option {
 // ingress per repaired shard, making it the cost centre that decides RS 10+20 economics.
 //
 // Applied AFTER the migrator is constructed so the wrap cannot change how the migrator itself is
-// built. Passing a nil recorder leaves the client exactly as it was.
-func WithRepairCostRecorder(rec RepairRecorder) Option {
+// built. A nil wrapper leaves the client exactly as it was. repairmeter.WithRepairRecorder is the
+// wrapper the server passes: (func(hosts HostClient) HostClient).
+func WithMigratorHostWrapper(wrap func(HostClient) HostClient) Option {
 	return func(m *SlabManager) {
-		if rec == nil || m.migrator == nil {
+		if wrap == nil || m.migrator == nil {
 			return
 		}
-		m.migrator.hosts = WithRepairRecorder(m.migrator.hosts, rec)
+		m.migrator.hosts = wrap(m.migrator.hosts)
 	}
 }
 

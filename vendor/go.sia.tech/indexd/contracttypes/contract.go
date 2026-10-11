@@ -1,7 +1,10 @@
-package contracts
+// Package contracttypes holds the contract data types shared by the funding
+// package and by packages that must reason about contracts without linking the
+// funding code (notably slabs). The contracts package aliases these types, so
+// they remain wire- and API-compatible.
+package contracttypes
 
 import (
-	"errors"
 	"fmt"
 	"time"
 
@@ -19,82 +22,36 @@ const (
 	ContractStateRejected
 )
 
-var (
-	// ErrNotFound is returned by database operations that fail due to a
-	// contract not being found.
-	ErrNotFound = errors.New("contract not found")
+// MaxContractSize is the maximum size of a contract in bytes.
+const MaxContractSize = 10 * 1 << 40 // 10TB
 
-	// ErrInvalidSortField is returned when we don't support sorting by the
-	// requested field.
-	ErrInvalidSortField = errors.New("invalid sort field")
+const (
+	// MinContractGrowthRate is the minimum expected growth rate for contracts
+	// used when calculating funding. Lowering this value will mean contracts
+	// will need to be refreshed more frequently. 32 GiB is a good trade off
+	// between initial cost to both parties and the frequency of refreshes.
+	MinContractGrowthRate = 32 << 30
+
+	// MaxContractGrowthRate is the maximum additional data allowed when adding
+	// funds for refresh or renews. This means contracts will not grow
+	// exponentially as more data is uploaded. Decreasing this will mean
+	// contracts will need to be refreshed more frequently. Increasing this
+	// will mean large contracts will be more expensive. 256 GiB is a good
+	// trade off between cost and frequency of refreshes due to how long it
+	// would take to reasonably upload that amount of data with a 10 Gbps
+	// connection.
+	MaxContractGrowthRate = 256 << 30
 )
 
-type (
-	// ContractQueryOpts contains the options for querying contracts.
-	ContractQueryOpts struct {
-		Revisable *bool
-		Good      *bool
-		IDs       []types.FileContractID
-		HostKeys  []types.PublicKey
-		Sorting   []ContractSortOpt
-	}
-
-	// ContractQueryOpt is a functional option for querying contracts.
-	ContractQueryOpt func(*ContractQueryOpts)
-
-	// ContractSortOpt specifies a sorting option for querying contracts.
-	ContractSortOpt struct {
-		Field      string
-		Descending bool
-	}
-)
-
-// WithGood filters contracts by whether they are considered good.
-func WithGood(good bool) ContractQueryOpt {
-	return func(opts *ContractQueryOpts) {
-		opts.Good = &good
-	}
-}
-
-// WithRevisable filters contracts by whether they can still be revised.
-func WithRevisable(revisable bool) ContractQueryOpt {
-	return func(opts *ContractQueryOpts) {
-		opts.Revisable = &revisable
-	}
-}
-
-// WithIDs limits the set of returned contracts to those with an ID in the
-// provided slice.
-func WithIDs(ids []types.FileContractID) ContractQueryOpt {
-	return func(opts *ContractQueryOpts) {
-		opts.IDs = ids
-	}
-}
-
-// WithHostKeys limits the set of returned contracts to those on a host with a
-// public key in the provided slice
-func WithHostKeys(hks []types.PublicKey) ContractQueryOpt {
-	return func(opts *ContractQueryOpts) {
-		opts.HostKeys = hks
-	}
-}
-
-// WithSorting adds a sorting option to the contract query. Multiple sorting
-// options can be provided and will be applied in the order they were added.
-func WithSorting(field string, descending bool) ContractQueryOpt {
-	return func(opts *ContractQueryOpts) {
-		opts.Sorting = append(opts.Sorting, ContractSortOpt{
-			Field:      field,
-			Descending: descending,
-		})
-	}
-}
+// MinHostCollateral is the minimum collateral the renter will request when
+// forming, refreshing, or renewing a contract.
+var MinHostCollateral = types.Siacoins(1)
 
 type (
 	// ContractState describes the current state of the contract on the network
 	// - pending: the contract has not yet been seen on-chain
 	// - active: the contract was mined on-chain
-	// - resolved: the contract has been renewed or a valid storage proof has been submitted
+	// - resolved: the contract was renewed or a valid storage proof has been submitted
 	// - expired: the contract has expired without a valid storage proof
 	// - rejected: the contract didn't make it into a block
 	ContractState uint
@@ -171,7 +128,7 @@ func (c Contract) inRenewWindow(renewWindow, height uint64) bool {
 // GoodForAppend indicates whether a contract can be used to append sectors
 func (c Contract) GoodForAppend(settings proto.HostSettings, renewWindow, height, period uint64) error {
 	prices := settings.Prices
-	maxRenewableSize := maxRenewableContractSize(settings, period)
+	maxRenewableSize := MaxRenewableContractSize(settings, period)
 	switch {
 	case !c.Good:
 		return fmt.Errorf("contract is not good")
@@ -203,14 +160,14 @@ func (c Contract) GoodForRefresh(settings proto.HostSettings, fundTarget types.C
 	}
 
 	duration := c.ExpirationHeight - height
-	_, collateral := contractFunding(settings, c.Size, fundTarget, duration)
+	_, collateral := ContractFunding(settings, c.Size, fundTarget, duration)
 	var totalCollateral types.Currency
 	if settings.ProtocolVersion.Cmp(rhp.ProtocolVersion502) >= 0 {
 		totalCollateral = c.UsedCollateral.Add(collateral)
 	} else {
 		totalCollateral = c.TotalCollateral.Add(collateral)
 	}
-	maxRenewableSize := maxRenewableContractSize(settings, period)
+	maxRenewableSize := MaxRenewableContractSize(settings, period)
 	switch {
 	case !c.Good:
 		return fmt.Errorf("contract is not good")
@@ -275,9 +232,9 @@ func (s *ContractState) UnmarshalText(b []byte) error {
 	}
 }
 
-// maxRenewableContractSize returns the maximum size a contract can have to
-// still be renewable
-func maxRenewableContractSize(hostSettings proto.HostSettings, period uint64) uint64 {
+// MaxRenewableContractSize returns the maximum size a contract can have to
+// still be renewable.
+func MaxRenewableContractSize(hostSettings proto.HostSettings, period uint64) uint64 {
 	maxCollateral := hostSettings.MaxCollateral
 	sectorUsage := hostSettings.Prices.RPCAppendSectorsCost(1, period+proto.ProofWindow)
 	sectorCollateral := sectorUsage.HostRiskedCollateral()
@@ -286,7 +243,7 @@ func maxRenewableContractSize(hostSettings proto.HostSettings, period uint64) ui
 	}
 	maxSectors := maxCollateral.Div(sectorCollateral)
 	maxSectorsSize := maxSectors.Mul64(proto.SectorSize).Big()
-	maxSize := uint64(maxContractSize)
+	maxSize := uint64(MaxContractSize)
 	if maxSectorsSize.IsUint64() {
 		maxSize = min(maxSize, maxSectorsSize.Uint64())
 	}
@@ -297,4 +254,27 @@ func maxRenewableContractSize(hostSettings proto.HostSettings, period uint64) ui
 	// round down to a multiple of the sector size
 	maxSize = (maxSize / proto.SectorSize) * proto.SectorSize
 	return maxSize
+}
+
+// ContractFunding calculates the funding and collateral that go into forming,
+// refreshing or renewing a contract.
+func ContractFunding(settings proto.HostSettings, existingData uint64, minAllowance types.Currency, duration uint64) (allowance, collateral types.Currency) {
+	multiplier := 1 + (existingData / MinContractGrowthRate)
+	contractGrowth := min(MinContractGrowthRate*multiplier, MaxContractGrowthRate) / proto.SectorSize // 100% growth clamped to [32GiB, 256GiB]
+	uploadCost := settings.Prices.RPCWriteSectorCost(proto.SectorSize).RenterCost().Mul64(contractGrowth)
+	downloadCost := settings.Prices.RPCReadSectorCost(proto.SectorSize).RenterCost().Mul64(contractGrowth)
+	storeCost := settings.Prices.RPCAppendSectorsCost(contractGrowth, duration).RenterCost()
+	allowance = uploadCost.Add(storeCost).Add(downloadCost)
+	if allowance.Cmp(minAllowance) < 0 {
+		allowance = minAllowance // ensure we have at least the minimum allowance
+	}
+
+	collateral = proto.MaxHostCollateral(settings.Prices, storeCost) // based on store cost because uploads do not require collateral
+	if collateral.Cmp(settings.MaxCollateral) > 0 {
+		collateral = settings.MaxCollateral
+	}
+	if collateral.Cmp(MinHostCollateral) < 0 {
+		collateral = MinHostCollateral // ensure we have at least the minimum collateral
+	}
+	return
 }

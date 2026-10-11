@@ -1,4 +1,4 @@
-package app
+package appclient
 
 import (
 	"bytes"
@@ -68,26 +68,26 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, msg)
 }
 
-// sign signs the request with the appropriate headers and returns the signed URL
+// Sign signs the request with the appropriate headers and returns the signed URL
 // and request body.
-func sign(appKey types.PrivateKey, validUntil time.Time, method, endpointURL string, requestBuf []byte) (*url.URL, io.Reader, error) {
+func Sign(appKey types.PrivateKey, validUntil time.Time, method, endpointURL string, requestBuf []byte) (*url.URL, io.Reader, error) {
 	u, err := url.Parse(endpointURL)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to parse URL: %w", err)
 	}
 
 	// prepare request hash
-	sigHash := requestHash(method, u.Host, u.Path, validUntil, requestBuf)
+	sigHash := RequestHash(method, u.Host, u.Path, validUntil, requestBuf)
 
 	// prepare query parameters
 	val := url.Values{}
-	val.Set(queryParamValidUntil, fmt.Sprint(validUntil.Unix()))
+	val.Set(QueryParamValidUntil, fmt.Sprint(validUntil.Unix()))
 
 	pk := appKey.PublicKey()
-	val.Set(queryParamCredential, base64.URLEncoding.EncodeToString(pk[:]))
+	val.Set(QueryParamCredential, base64.URLEncoding.EncodeToString(pk[:]))
 
 	sig := appKey.SignHash(sigHash)
-	val.Set(queryParamSignature, base64.URLEncoding.EncodeToString(sig[:]))
+	val.Set(QueryParamSignature, base64.URLEncoding.EncodeToString(sig[:]))
 
 	// merge query params
 	q := u.Query()
@@ -104,7 +104,7 @@ func sign(appKey types.PrivateKey, validUntil time.Time, method, endpointURL str
 	return u, body, nil
 }
 
-func doRequest(ctx context.Context, method string, u *url.URL, body io.Reader, accept string) (io.ReadCloser, error) {
+func DoRequest(ctx context.Context, method string, u *url.URL, body io.Reader, accept string) (io.ReadCloser, error) {
 	if u == nil {
 		return nil, errors.New("nil URL")
 	}
@@ -142,15 +142,15 @@ func (c *Client) signedRequestCustom(ctx context.Context, appKey types.PrivateKe
 			return nil, fmt.Errorf("failed to marshal request data: %w", err)
 		}
 	}
-	u, body, err := sign(appKey, time.Now().Add(c.validity), method, fmt.Sprintf("%s%s", c.baseURL, route), requestBuf)
+	u, body, err := Sign(appKey, time.Now().Add(c.validity), method, fmt.Sprintf("%s%s", c.baseURL, route), requestBuf)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign request: %w", err)
 	}
-	return doRequest(ctx, method, u, body, accept)
+	return DoRequest(ctx, method, u, body, accept)
 }
 
 func (c *Client) signedRequestJSON(ctx context.Context, appKey types.PrivateKey, method, route string, data, resp any) error {
-	body, err := c.signedRequestCustom(ctx, appKey, applicationJSON, method, route, data)
+	body, err := c.signedRequestCustom(ctx, appKey, ApplicationJSON, method, route, data)
 	if err != nil {
 		return err
 	}
@@ -164,7 +164,7 @@ func (c *Client) signedRequestJSON(ctx context.Context, appKey types.PrivateKey,
 }
 
 func (c *Client) signedRequestBinary(ctx context.Context, appKey types.PrivateKey, method, route string, data any, resp types.DecoderFrom) error {
-	body, err := c.signedRequestCustom(ctx, appKey, applicationOctetStream, method, route, data)
+	body, err := c.signedRequestCustom(ctx, appKey, ApplicationOctetStream, method, route, data)
 	if err != nil {
 		return err
 	}
@@ -371,7 +371,7 @@ func (c *Client) SharedHosts(ctx context.Context, sharingKey types.PrivateKey, o
 // CreateSharedObjectURL generates a signed URL for accessing the object with the given
 // key. The URL is valid until the specified validUntil time.
 func (c *Client) CreateSharedObjectURL(ctx context.Context, appKey types.PrivateKey, objectKey types.Hash256, masterKey []byte, validUntil time.Time) (string, error) {
-	u, _, err := sign(appKey, validUntil, http.MethodGet, fmt.Sprintf("%s/objects/%s/shared", c.baseURL, objectKey), nil)
+	u, _, err := Sign(appKey, validUntil, http.MethodGet, fmt.Sprintf("%s/objects/%s/shared", c.baseURL, objectKey), nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to sign request: %w", err)
 	}
@@ -404,7 +404,7 @@ func (c *Client) SharedObject(ctx context.Context, sharedURL string) (slabs.Shar
 
 	u.Fragment = ""
 	var obj slabs.SharedObject
-	resp, err := doRequest(ctx, http.MethodGet, u, nil, applicationJSON)
+	resp, err := DoRequest(ctx, http.MethodGet, u, nil, ApplicationJSON)
 	if err != nil {
 		return slabs.SharedObject{}, nil, fmt.Errorf("failed to fetch shared object: %w", err)
 	}
@@ -429,7 +429,7 @@ func (c *Client) RequestAppConnection(ctx context.Context, ephemeralKey types.Pr
 	request := RegisterAppRequest{Info: info}
 	if opts.preAuthorizedKey != nil {
 		request.PreAuthorizedKey = opts.preAuthorizedKey.PublicKey()
-		proofHash := preAuthorizationHash(ephemeralKey.PublicKey(), request)
+		proofHash := PreAuthorizationHash(ephemeralKey.PublicKey(), request)
 		request.PreAuthorizationSignature = opts.preAuthorizedKey.SignHash(proofHash)
 	}
 
@@ -438,12 +438,12 @@ func (c *Client) RequestAppConnection(ctx context.Context, ephemeralKey types.Pr
 		return RegisterAppResponse{}, fmt.Errorf("failed to marshal request data: %w", err)
 	}
 
-	u, reqBody, err := sign(ephemeralKey, time.Now().Add(c.validity), http.MethodPost, fmt.Sprintf("%s/auth/connect", c.baseURL), requestBuf)
+	u, reqBody, err := Sign(ephemeralKey, time.Now().Add(c.validity), http.MethodPost, fmt.Sprintf("%s/auth/connect", c.baseURL), requestBuf)
 	if err != nil {
 		return RegisterAppResponse{}, fmt.Errorf("failed to sign request: %w", err)
 	}
 
-	respBody, err := doRequest(ctx, http.MethodPost, u, reqBody, applicationJSON)
+	respBody, err := DoRequest(ctx, http.MethodPost, u, reqBody, ApplicationJSON)
 	if err != nil {
 		return RegisterAppResponse{}, err
 	}
@@ -456,7 +456,7 @@ func (c *Client) RequestAppConnection(ctx context.Context, ephemeralKey types.Pr
 // RequestStatus checks if an auth request has been approved.
 // If the auth request is still pending, it returns false.
 func (c *Client) RequestStatus(ctx context.Context, ephemeralKey types.PrivateKey, statusURL string) (status AuthConnectStatusResponse, err error) {
-	u, _, err := sign(ephemeralKey, time.Now().Add(c.validity), http.MethodGet, statusURL, nil)
+	u, _, err := Sign(ephemeralKey, time.Now().Add(c.validity), http.MethodGet, statusURL, nil)
 	if err != nil {
 		return AuthConnectStatusResponse{}, fmt.Errorf("failed to sign request: %w", err)
 	}
@@ -504,25 +504,25 @@ func (c *Client) RegisterApp(ctx context.Context, registerURL string, ephemeralK
 
 	requestBuf, err := json.Marshal(RegisterAppKeyRequest{
 		AppKey:    appKey.PublicKey(),
-		Signature: appKey.SignHash(registerAppKeyHash(ephemeralKey.PublicKey(), requestID)),
+		Signature: appKey.SignHash(RegisterAppKeyHash(ephemeralKey.PublicKey(), requestID)),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to marshal request data: %w", err)
 	}
 
-	u, body, err := sign(ephemeralKey, time.Now().Add(c.validity), http.MethodPost, u.String(), requestBuf)
+	u, body, err := Sign(ephemeralKey, time.Now().Add(c.validity), http.MethodPost, u.String(), requestBuf)
 	if err != nil {
 		return fmt.Errorf("failed to sign request: %w", err)
 	}
 
-	_, err = doRequest(ctx, http.MethodPost, u, body, applicationJSON)
+	_, err = DoRequest(ctx, http.MethodPost, u, body, ApplicationJSON)
 	return err
 }
 
 // CheckAppAuth checks if the application is authenticated with the indexer.
 // It returns true if authenticated, false if not, and an error if the request fails.
 func (c *Client) CheckAppAuth(ctx context.Context, appKey types.PrivateKey) (bool, error) {
-	u, body, err := sign(appKey, time.Now().Add(c.validity), http.MethodGet, fmt.Sprintf("%s/auth/check", c.baseURL), nil)
+	u, body, err := Sign(appKey, time.Now().Add(c.validity), http.MethodGet, fmt.Sprintf("%s/auth/check", c.baseURL), nil)
 	if err != nil {
 		return false, fmt.Errorf("failed to sign request: %w", err)
 	}

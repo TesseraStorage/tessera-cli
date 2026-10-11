@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"go.sia.tech/core/types"
-	"go.sia.tech/indexd/contracts"
+	"go.sia.tech/indexd/contracttypes"
 	"go.sia.tech/indexd/hosts"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/chacha20"
@@ -25,10 +25,10 @@ const migrationSlabsPerWorker = 10
 // receive them. It is shipped to remote nodes alongside a batch of unhealthy
 // slabs so they can make the same decisions the local migration loop makes.
 type MigrationState struct {
-	Height              uint64                        `json:"height"`
-	HealthyContracts    []contracts.Contract          `json:"healthyContracts"`
-	Hosts               []hosts.Host                  `json:"hosts"`
-	MaintenanceSettings contracts.MaintenanceSettings `json:"maintenanceSettings"`
+	Height              uint64                            `json:"height"`
+	HealthyContracts    []contracttypes.Contract          `json:"healthyContracts"`
+	Hosts               []hosts.Host                      `json:"hosts"`
+	MaintenanceSettings contracttypes.MaintenanceSettings `json:"maintenanceSettings"`
 	// MinHostDistanceKm is the primary node's minimum distance between hosts
 	// storing sectors of the same slab, so remote nodes apply the same
 	// placement policy.
@@ -175,6 +175,13 @@ func NewMigrator(hosts HostClient, migrationAccount types.PrivateKey, log *zap.L
 	return m
 }
 
+// repairSequenceStamper is implemented by a HostClient decorator that can
+// stamp the current repair sequence onto subsequent RPCs. The repairmeter
+// package's decorator satisfies it.
+type repairSequenceStamper interface {
+	SetSequenceForSlab(SlabID, string)
+}
+
 // executeMigration recovers the required shards of a slab, re-encrypts them and
 // uploads them to the candidate hosts. The migrated and lost (root, host) pairs
 // are returned for the caller to persist. A non-nil error indicates recovery
@@ -194,9 +201,9 @@ func (m *Migrator) executeMigration(ctx context.Context, slab Slab, targets []mi
 	// every DISTINCT cause among this sequence's targets, comma-joined, never a single
 	// arbitrarily-picked value.
 	//
-	// No-op unless the HostClient was wrapped with WithRepairRecorder, so stock operation is
-	// untouched.
-	if meter, ok := m.hosts.(*repairMeter); ok {
+	// No-op unless the HostClient was wrapped with repairmeter.WithRepairRecorder, so stock
+	// operation is untouched.
+	if stamper, ok := m.hosts.(repairSequenceStamper); ok {
 		seen := make(map[repairCause]bool, len(targets))
 		var causes []string
 		for _, t := range targets {
@@ -205,7 +212,7 @@ func (m *Migrator) executeMigration(ctx context.Context, slab Slab, targets []mi
 				causes = append(causes, string(t.Cause))
 			}
 		}
-		meter.setSequence(newRepairSequenceID(slab.ID), strings.Join(causes, ","))
+		stamper.SetSequenceForSlab(slab.ID, strings.Join(causes, ","))
 	}
 
 	// indicate what shards are required
@@ -478,7 +485,7 @@ func sectorsToMigrate(slab Slab, state MigrationState) ([]migrationTarget, []typ
 
 	// prepare a map of healthy contracts for sector health checks and track
 	// which hosts have migration eligible contracts for candidate selection
-	healthyContractMap := make(map[types.FileContractID]contracts.Contract)
+	healthyContractMap := make(map[types.FileContractID]contracttypes.Contract)
 	hasAppendContract := make(map[types.PublicKey]struct{})
 	for _, contract := range state.HealthyContracts {
 		host, ok := hostsMap[contract.HostKey]
