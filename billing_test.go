@@ -287,10 +287,11 @@ func TestNewBillingAPI(t *testing.T) {
 }
 
 func TestHTTPBillingAuthSelection(t *testing.T) {
-	var lastPath, lastAuth, lastCookie string
+	var lastPath, lastAuth, lastCookie, lastOrigin string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		lastPath = r.URL.Path
 		lastAuth = r.Header.Get("Authorization")
+		lastOrigin = r.Header.Get("Origin")
 		lastCookie = ""
 		if c, err := r.Cookie(sessionCookieName); err == nil {
 			lastCookie = c.Value
@@ -319,6 +320,11 @@ func TestHTTPBillingAuthSelection(t *testing.T) {
 		if lastCookie != "cookie-value" {
 			t.Fatalf("cookie = %q, want the session cookie", lastCookie)
 		}
+		// moneyd's CSRF guard rejects an unsafe session-cookie request whose
+		// Origin does not match TESSERA_PUBLIC_BASE_URL.
+		if lastOrigin != billingOrigin(srv.URL) {
+			t.Fatalf("Origin = %q, want %q on a session-cookie request", lastOrigin, billingOrigin(srv.URL))
+		}
 	})
 
 	t.Run("agent key when only a bearer is set", func(t *testing.T) {
@@ -332,6 +338,9 @@ func TestHTTPBillingAuthSelection(t *testing.T) {
 		if lastCookie != "" {
 			t.Fatalf("cookie = %q, want none when bearer auth is selected", lastCookie)
 		}
+		if lastOrigin != "" {
+			t.Fatalf("Origin = %q, want none for a bearer request (the CLI never sends cookies then)", lastOrigin)
+		}
 	})
 
 	t.Run("cookie when only a session is set", func(t *testing.T) {
@@ -341,6 +350,9 @@ func TestHTTPBillingAuthSelection(t *testing.T) {
 		}
 		if lastAuth != "" || lastCookie != "cookie-value" {
 			t.Fatalf("auth = %q cookie = %q, want the session cookie only", lastAuth, lastCookie)
+		}
+		if lastOrigin != billingOrigin(srv.URL) {
+			t.Fatalf("Origin = %q, want %q on a session-cookie request", lastOrigin, billingOrigin(srv.URL))
 		}
 	})
 
@@ -356,8 +368,8 @@ func TestHTTPBillingAuthSelection(t *testing.T) {
 		if err := api.MagicLink("user@example.com"); err != nil {
 			t.Fatal(err)
 		}
-		if lastPath != "/auth/magic-link" || lastAuth != "" || lastCookie != "" {
-			t.Fatalf("magic-link sent path=%q auth=%q cookie=%q", lastPath, lastAuth, lastCookie)
+		if lastPath != "/auth/magic-link" || lastAuth != "" || lastCookie != "" || lastOrigin != "" {
+			t.Fatalf("magic-link sent path=%q auth=%q cookie=%q origin=%q", lastPath, lastAuth, lastCookie, lastOrigin)
 		}
 		if _, _, err := api.CreateAgent("", ""); err != nil {
 			t.Fatal(err)
@@ -375,7 +387,26 @@ func TestHTTPBillingAuthSelection(t *testing.T) {
 		if lastPath != "/auth/logout" || lastAuth != "" || lastCookie != "new-session" {
 			t.Fatalf("logout sent path=%q auth=%q cookie=%q", lastPath, lastAuth, lastCookie)
 		}
+		if lastOrigin != billingOrigin(srv.URL) {
+			t.Fatalf("logout Origin = %q, want %q", lastOrigin, billingOrigin(srv.URL))
+		}
 	})
+}
+
+func TestBillingOrigin(t *testing.T) {
+	cases := []struct{ base, want string }{
+		{"https://tessera.storage/api/v1", "https://tessera.storage"},
+		{"https://tessera.storage/api/v1/", "https://tessera.storage"},
+		{"http://127.0.0.1:8110/api/v1", "http://127.0.0.1:8110"},
+		{"https://tessera.storage", "https://tessera.storage"},
+		{"", ""},
+		{"not-a-url", ""},
+	}
+	for _, c := range cases {
+		if got := billingOrigin(c.base); got != c.want {
+			t.Errorf("billingOrigin(%q) = %q, want %q", c.base, got, c.want)
+		}
+	}
 }
 
 func TestHTTPBillingVerifyCapturesSession(t *testing.T) {

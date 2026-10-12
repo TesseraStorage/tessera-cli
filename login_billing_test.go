@@ -43,6 +43,12 @@ type fakeLoginAPI struct {
 	credentialsErr   error
 	activateCalls    int
 	activateErr      error
+
+	recoveryCalls  int
+	recoveryAppID  string
+	recoveryPublic string
+	recoveryKey    string
+	recoveryErr    error
 }
 
 func (f *fakeLoginAPI) MagicLink(email string) error {
@@ -75,6 +81,27 @@ func (f *fakeLoginAPI) Credentials() (string, error) {
 func (f *fakeLoginAPI) Activate() error {
 	f.activateCalls++
 	return f.activateErr
+}
+
+// RecoveryCredential defaults to 404 identity_not_found (no storage identity
+// yet) so every pre-existing mint-path test keeps its behavior; recovery
+// tests set recoveryKey/recoveryAppID/recoveryPublic.
+func (f *fakeLoginAPI) RecoveryCredential() (string, string, string, error) {
+	f.recoveryCalls++
+	if f.recoveryErr != nil {
+		return "", "", "", f.recoveryErr
+	}
+	if f.recoveryKey == "" {
+		return "", "", "", &billingError{Status: http.StatusNotFound, Code: "identity_not_found"}
+	}
+	return f.recoveryAppID, f.recoveryPublic, f.recoveryKey, nil
+}
+
+// publicKeyString renders a private key's public key the way the indexer does
+// ("ed25519:<hex>"), for the recovery public-key comparison.
+func publicKeyString(key types.PrivateKey) string {
+	pk := key.PublicKey()
+	return "ed25519:" + hex.EncodeToString(pk[:])
 }
 
 // TestLoginValueFlagsRegistered guards the positional() trap the plan calls
@@ -683,6 +710,10 @@ func TestBillingLoginRegistersHeadless(t *testing.T) {
 			fmt.Fprint(w, `{}`)
 		case "/account":
 			fmt.Fprint(w, `{"billing_id":"TESS-42","kind":"human","status":"active","balance_usd":"7.50","plan":"payg","days_left":29}`)
+		case "/credentials/recovery":
+			// No existing identity: the flow falls back to minting.
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"detail":{"error":"identity_not_found"}}`)
 		case "/credentials":
 			fmt.Fprint(w, `{"connect_key":"ck_secret","quota":"plan-pending"}`)
 		case "/credentials/activate":
@@ -723,7 +754,7 @@ func TestBillingLoginRegistersHeadless(t *testing.T) {
 		t.Fatalf("billingLogin: %v", loginErr)
 	}
 
-	wantPaths := []string{"/auth/verify", "/account", "/credentials", "/credentials/activate"}
+	wantPaths := []string{"/auth/verify", "/account", "/credentials/recovery", "/credentials", "/credentials/activate"}
 	if strings.Join(paths, ",") != strings.Join(wantPaths, ",") {
 		t.Fatalf("paths = %v, want %v", paths, wantPaths)
 	}
@@ -885,7 +916,9 @@ func TestBillingLoginSkipsRegistrationWhenRegistered(t *testing.T) {
 }
 
 // TestBillingLoginIdentityExistsGuides: POST /credentials 409 identity_exists
-// becomes recovery guidance; no builder call, no activation, no connect key.
+// (reachable only as a race: recovery found no identity but another device
+// linked one before the mint) becomes recovery guidance; no builder call, no
+// activation, no connect key.
 func TestBillingLoginIdentityExistsGuides(t *testing.T) {
 	testConfigHome(t)
 	fake := &fakeLoginAPI{
@@ -904,13 +937,10 @@ func TestBillingLoginIdentityExistsGuides(t *testing.T) {
 	if !errors.Is(loginErr, errIdentityExists) {
 		t.Fatalf("error = %v (%T), want errIdentityExists", loginErr, loginErr)
 	}
-	for _, want := range []string{"identity_exists", "already", "config.json", "contact support"} {
+	for _, want := range []string{"identity_exists", "already", "recovery phrase", "--token"} {
 		if !strings.Contains(loginErr.Error(), want) {
 			t.Errorf("guidance %q missing from error: %v", want, loginErr)
 		}
-	}
-	if strings.Contains(loginErr.Error(), "recovery phrase") {
-		t.Errorf("guidance still points at the recovery-phrase restore this CLI cannot perform: %v", loginErr)
 	}
 	if builder.requestCalls != 0 || len(rec.calls) != 0 {
 		t.Fatalf("registration continued after 409: request %d, approvals %d", builder.requestCalls, len(rec.calls))
@@ -1066,6 +1096,184 @@ func TestBillingLoginMintFailuresSkipRegister(t *testing.T) {
 	}
 }
 
+const testPhrase = "glare own entire dish exact open theme family harsh room scrap rose"
+
+// TestBillingLoginRecoversLinkedIdentity is the fixed new-device flow: an
+// authenticated login whose billing account already has a storage identity
+// gets that identity's original app_id, public key and connect key from
+// /credentials/recovery, re-registers the SUPPLIED phrase with the ORIGINAL
+// app_id, and never mints a new identity or a new phrase.
+func TestBillingLoginRecoversLinkedIdentity(t *testing.T) {
+	testConfigHome(t)
+	t.Setenv("TESSERA_PHRASE", "")
+	key := types.GeneratePrivateKey()
+	fake := &fakeLoginAPI{
+		session:        "sess-1",
+		account:        map[string]any{"billing_id": "TESS-42"},
+		recoveryAppID:  strings.Repeat("ab", 32),
+		recoveryPublic: publicKeyString(key),
+		recoveryKey:    "ck_recovered",
+		credentialsErr: errors.New("must not mint while a linked identity exists"),
+	}
+	builder, rec := stubHeadlessRegistration(t, fake)
+	builder.app = &fakeRegisteredSDK{key: key}
+
+	var loginErr error
+	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok", testPhrase) })
+	if loginErr != nil {
+		t.Fatalf("billingLogin: %v", loginErr)
+	}
+	if fake.recoveryCalls != 1 {
+		t.Fatalf("RecoveryCredential calls = %d, want 1", fake.recoveryCalls)
+	}
+	if fake.credentialsCalls != 0 {
+		t.Fatalf("Credentials calls = %d, want 0: recovery must not mint", fake.credentialsCalls)
+	}
+	if got := builder.appID.String(); got != fake.recoveryAppID {
+		t.Fatalf("builder app id = %q, want the recovered %q", got, fake.recoveryAppID)
+	}
+	if builder.phrase != testPhrase {
+		t.Fatalf("Register phrase = %q, want the supplied recovery phrase", builder.phrase)
+	}
+	if len(rec.calls) != 1 || rec.calls[0].connectKey != "ck_recovered" {
+		t.Fatalf("approvals = %+v, want one with the recovered connect key", rec.calls)
+	}
+	if fake.activateCalls != 1 {
+		t.Fatalf("Activate calls = %d, want 1", fake.activateCalls)
+	}
+	for _, secret := range []string{"ck_recovered", testPhrase, "ck_secret"} {
+		if strings.Contains(out, secret) {
+			t.Errorf("output leaked %q:\n%s", secret, out)
+		}
+	}
+	saved, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.AppID != fake.recoveryAppID {
+		t.Fatalf("saved AppID = %q, want %q", saved.AppID, fake.recoveryAppID)
+	}
+	if saved.AppKey != hex.EncodeToString([]byte(key)) {
+		t.Fatalf("saved AppKey = %q, want the recovered key", saved.AppKey)
+	}
+}
+
+// TestBillingLoginRecoveryRequiresPhrase: a linked identity must never cause a
+// fresh phrase to be minted. With no phrase supplied the command fails before
+// any approval/registration and prints the recovery-phrase guidance.
+func TestBillingLoginRecoveryRequiresPhrase(t *testing.T) {
+	testConfigHome(t)
+	t.Setenv("TESSERA_PHRASE", "")
+	key := types.GeneratePrivateKey()
+	fake := &fakeLoginAPI{
+		session:        "sess-1",
+		account:        map[string]any{"billing_id": "TESS-42"},
+		recoveryAppID:  strings.Repeat("ab", 32),
+		recoveryPublic: publicKeyString(key),
+		recoveryKey:    "ck_recovered",
+	}
+	builder, _ := stubHeadlessRegistration(t, fake)
+
+	var loginErr error
+	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok", "") })
+	if loginErr == nil {
+		t.Fatal("billingLogin = nil, want the recovery-phrase-required error")
+	}
+	if !strings.Contains(loginErr.Error(), "recovery phrase") {
+		t.Errorf("error %q does not mention the recovery phrase", loginErr)
+	}
+	if builder.requestCalls != 0 || builder.registerCalls != 0 {
+		t.Fatalf("builder request %d register %d, want 0/0", builder.requestCalls, builder.registerCalls)
+	}
+	if fake.activateCalls != 0 {
+		t.Fatalf("Activate calls = %d, want 0", fake.activateCalls)
+	}
+	if strings.Contains(out, "RECOVERY PHRASE") {
+		t.Errorf("a fresh phrase was printed for a linked identity:\n%s", out)
+	}
+	saved, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.AppID != "" || saved.AppKey != "" {
+		t.Fatalf("partial app credentials persisted: %q/%q", saved.AppID, saved.AppKey)
+	}
+}
+
+// TestBillingLoginFallsBackToMintWithoutIdentity: a 404 identity_not_found
+// (nothing to recover) still mints a fresh identity exactly as before.
+func TestBillingLoginFallsBackToMintWithoutIdentity(t *testing.T) {
+	testConfigHome(t)
+	t.Setenv("TESSERA_PHRASE", "")
+	fake := &fakeLoginAPI{
+		session: "sess-1", account: map[string]any{"billing_id": "TESS-42"},
+		connectKey: "ck_minted",
+	}
+	builder, rec := stubHeadlessRegistration(t, fake)
+
+	var loginErr error
+	out := captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok", "") })
+	if loginErr != nil {
+		t.Fatalf("billingLogin: %v", loginErr)
+	}
+	if builder.requestCalls != 1 || builder.registerCalls != 1 {
+		t.Fatalf("builder request %d register %d, want 1/1", builder.requestCalls, builder.registerCalls)
+	}
+	if builder.appID == (types.Hash256{}) {
+		t.Fatal("mint path did not generate a fresh app id")
+	}
+	if fake.recoveryCalls != 1 {
+		t.Fatalf("RecoveryCredential calls = %d, want 1", fake.recoveryCalls)
+	}
+	if fake.credentialsCalls != 1 {
+		t.Fatalf("Credentials calls = %d, want 1 after a 404", fake.credentialsCalls)
+	}
+	if len(rec.calls) != 1 || rec.calls[0].connectKey != "ck_minted" {
+		t.Fatalf("approvals = %+v, want one with the minted key", rec.calls)
+	}
+	if !strings.Contains(out, "RECOVERY PHRASE") {
+		t.Errorf("fresh identity did not print its new phrase:\n%s", out)
+	}
+}
+
+// TestBillingLoginRejectsMismatchedPhrase: the recovered app key must equal the
+// account's public key. A mismatch is definitive — no retry, no identity
+// persisted.
+func TestBillingLoginRejectsMismatchedPhrase(t *testing.T) {
+	testConfigHome(t)
+	t.Setenv("TESSERA_PHRASE", "")
+	accountKey := types.GeneratePrivateKey()
+	otherKey := types.GeneratePrivateKey()
+	fake := &fakeLoginAPI{
+		session:        "sess-1",
+		account:        map[string]any{"billing_id": "TESS-42"},
+		recoveryAppID:  strings.Repeat("ab", 32),
+		recoveryPublic: publicKeyString(accountKey),
+		recoveryKey:    "ck_recovered",
+	}
+	builder, _ := stubHeadlessRegistration(t, fake)
+	builder.app = &fakeRegisteredSDK{key: otherKey}
+
+	var loginErr error
+	_ = captureStdout(t, func() { loginErr = billingLogin("u@example.com", "tok", testPhrase) })
+	if loginErr == nil {
+		t.Fatal("billingLogin = nil, want the phrase-mismatch error")
+	}
+	if !strings.Contains(loginErr.Error(), "does not match") {
+		t.Errorf("error %q does not name the phrase mismatch", loginErr)
+	}
+	if builder.registerCalls != 1 {
+		t.Fatalf("Register calls = %d, want 1 (a mismatch must not retry)", builder.registerCalls)
+	}
+	saved, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.AppID != "" || saved.AppKey != "" {
+		t.Fatalf("a mismatched identity was persisted: %q/%q", saved.AppID, saved.AppKey)
+	}
+}
+
 // TestRetryableRegistrationError pins the post-mint retry classification: a
 // typed 4xx rejection is definitive, while transport errors, timeouts, 5xx and
 // the SDK's own errors are transient.
@@ -1085,6 +1293,7 @@ func TestRetryableRegistrationError(t *testing.T) {
 		{"approval 4xx is definitive", &approveHTTPError{Status: 400}, false},
 		{"wrapped client rejection", fmt.Errorf("step: %w", &billingError{Status: 403, Code: "forbidden"}), false},
 		{"wrapped transport error", fmt.Errorf("step: %w", errors.New("unexpected EOF")), true},
+		{"recovery phrase mismatch is definitive", errPhraseMismatch, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1286,9 +1495,9 @@ func TestAgentRegisterFailureNamesFetchedAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := agentRegister(cfg, "")
+	err := storageRegister(cfg, "")
 	if err == nil {
-		t.Fatal("agentRegister with a failing Register = nil, want the annotated error")
+		t.Fatal("storageRegister with a failing Register = nil, want the annotated error")
 	}
 	for _, want := range []string{"registration incomplete", "TESS-77", "minted but not completed", "contact support"} {
 		if !strings.Contains(err.Error(), want) {
@@ -1325,9 +1534,9 @@ func TestAgentRegisterAccountLookupFallback(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		err := agentRegister(cfg, "")
+		err := storageRegister(cfg, "")
 		if err == nil {
-			t.Fatal("agentRegister = nil, want the annotated failure")
+			t.Fatal("storageRegister = nil, want the annotated failure")
 		}
 		for _, want := range []string{"registration incomplete", "(unknown)", "minted but not completed", "contact support"} {
 			if !strings.Contains(err.Error(), want) {
@@ -1349,8 +1558,8 @@ func TestAgentRegisterAccountLookupFallback(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if err := agentRegister(cfg, ""); err != nil {
-			t.Fatalf("agentRegister with a failed account lookup: %v", err)
+		if err := storageRegister(cfg, ""); err != nil {
+			t.Fatalf("storageRegister with a failed account lookup: %v", err)
 		}
 		if builder.requestCalls != 1 || builder.registerCalls != 1 {
 			t.Errorf("builder request %d, register %d; want 1/1", builder.requestCalls, builder.registerCalls)
@@ -1438,27 +1647,29 @@ func TestBillingLoginRegistrationPromptsOnTerminal(t *testing.T) {
 	}
 }
 
-// TestAgentStorageRegistration pins the plain-login dispatch predicate: only a
-// billing agent key with no session and no usable app credentials opts into
-// the headless agent path; everything else keeps the legacy browser flow.
-func TestAgentStorageRegistration(t *testing.T) {
+// TestStorageRegistration pins the plain-login dispatch predicate: any stored
+// billing credential (session or agent key) with no usable app credentials
+// opts into the headless registration/recovery path; everything else keeps the
+// legacy browser flow.
+func TestStorageRegistration(t *testing.T) {
 	cases := []struct {
 		name string
 		cfg  *Config
 		want bool
 	}{
 		{"no billing config", &Config{}, false},
-		{"session only", &Config{BillingSession: "s"}, false},
+		{"session only", &Config{BillingSession: "s"}, true},
 		{"agent key only", &Config{BillingAgentKey: "tsk_x"}, true},
+		{"session with app credentials", &Config{BillingSession: "s", AppID: "a", AppKey: "k"}, false},
 		{"agent key with app credentials", &Config{BillingAgentKey: "tsk_x", AppID: "a", AppKey: "k"}, false},
 		{"agent key with a partial app id", &Config{BillingAgentKey: "tsk_x", AppID: "a"}, true},
 		{"agent key with a partial app key", &Config{BillingAgentKey: "tsk_x", AppKey: "k"}, true},
-		{"session and agent key", &Config{BillingSession: "s", BillingAgentKey: "tsk_x"}, false},
+		{"session and agent key", &Config{BillingSession: "s", BillingAgentKey: "tsk_x"}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := agentStorageRegistration(tc.cfg); got != tc.want {
-				t.Fatalf("agentStorageRegistration(%+v) = %v, want %v", tc.cfg, got, tc.want)
+			if got := storageRegistration(tc.cfg); got != tc.want {
+				t.Fatalf("storageRegistration(%+v) = %v, want %v", tc.cfg, got, tc.want)
 			}
 		})
 	}
@@ -1485,6 +1696,10 @@ func TestCmdLoginAgentKeyRegistersHeadless(t *testing.T) {
 
 	if fake.credentialsCalls != 1 || fake.activateCalls != 1 {
 		t.Fatalf("credentials %d, activate %d; want 1/1", fake.credentialsCalls, fake.activateCalls)
+	}
+	// Recovery is session-only; an agent key must not attempt it.
+	if fake.recoveryCalls != 0 {
+		t.Fatalf("RecoveryCredential calls = %d, want 0 for an agent-key login", fake.recoveryCalls)
 	}
 	if builder.requestCalls != 1 || builder.registerCalls != 1 {
 		t.Fatalf("builder request %d, register %d; want 1/1", builder.requestCalls, builder.registerCalls)
@@ -1518,6 +1733,62 @@ func TestCmdLoginAgentKeyRegistersHeadless(t *testing.T) {
 	}
 }
 
+// TestCmdLoginSessionRecoversHeadless: a magic-link session with no app
+// credentials plus `login "<phrase>"` takes the headless recovery path — the
+// signed-in user restores the account with the phrase, no browser and no
+// connect key.
+func TestCmdLoginSessionRecoversHeadless(t *testing.T) {
+	testConfigHome(t)
+	t.Setenv("TESSERA_PHRASE", "")
+	key := types.GeneratePrivateKey()
+	fake := &fakeLoginAPI{
+		session:        "sess-live",
+		account:        map[string]any{"billing_id": "TESS-9"},
+		recoveryAppID:  strings.Repeat("ab", 32),
+		recoveryPublic: publicKeyString(key),
+		recoveryKey:    "ck_recovered",
+	}
+	builder, rec := stubHeadlessRegistration(t, fake)
+	builder.app = &fakeRegisteredSDK{key: key}
+	if err := saveConfig(&Config{
+		IndexerURL:     defaultIndexer,
+		BillingAPIURL:  defaultBillingURL,
+		BillingSession: "sess-live",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() { cmdLogin([]string{testPhrase}) })
+
+	if fake.credentialsCalls != 0 {
+		t.Fatalf("Credentials calls = %d, want 0: the session already owns the identity", fake.credentialsCalls)
+	}
+	if builder.requestCalls != 1 || builder.registerCalls != 1 {
+		t.Fatalf("builder request %d, register %d; want 1/1", builder.requestCalls, builder.registerCalls)
+	}
+	if len(rec.calls) != 1 || rec.calls[0].connectKey != "ck_recovered" {
+		t.Fatalf("approvals = %+v, want one with the recovered connect key", rec.calls)
+	}
+	if strings.Contains(out, "A browser tab") || strings.Contains(out, "Tessera CLI — Login") {
+		t.Errorf("signed-in login with a phrase took the legacy browser flow:\n%s", out)
+	}
+	for _, secret := range []string{"ck_recovered", testPhrase, "sess-live"} {
+		if strings.Contains(out, secret) {
+			t.Errorf("output leaked %q:\n%s", secret, out)
+		}
+	}
+	saved, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.AppID != fake.recoveryAppID {
+		t.Fatalf("saved AppID = %q, want the recovered %q", saved.AppID, fake.recoveryAppID)
+	}
+	if saved.BillingSession != "sess-live" {
+		t.Fatalf("session = %q, want it untouched", saved.BillingSession)
+	}
+}
+
 // TestLegacyLoginPreservesBillingFields: the legacy completion path rebuilds
 // the config around a new storage identity; the stored billing fields — a
 // custom billing_api_url included — must survive, both on a first login and on
@@ -1529,18 +1800,21 @@ func TestLegacyLoginPreservesBillingFields(t *testing.T) {
 		t.Helper()
 		testConfigHome(t)
 		t.Setenv("TESSERA_PHRASE", "")
-		appKey := ""
-		if existingAppKey {
-			appKey = strings.Repeat("cd", 32)
+		// A stored session with NO app credentials now takes the headless
+		// registration/recovery path (see storageRegistration), so the legacy
+		// flow is only reachable without billing credentials or with complete
+		// app credentials (the re-login case below).
+		cfg := &Config{
+			IndexerURL:    defaultIndexer,
+			BillingAPIURL: "https://billing.example.com/api/v1",
+			AppID:         "app-old",
 		}
-		if err := saveConfig(&Config{
-			IndexerURL:      defaultIndexer,
-			BillingAPIURL:   "https://billing.example.com/api/v1",
-			BillingSession:  "sess-live",
-			BillingAgentKey: "tsk_keep",
-			AppID:           "app-old",
-			AppKey:          appKey,
-		}); err != nil {
+		if existingAppKey {
+			cfg.AppKey = strings.Repeat("cd", 32)
+			cfg.BillingSession = "sess-live"
+			cfg.BillingAgentKey = "tsk_keep"
+		}
+		if err := saveConfig(cfg); err != nil {
 			t.Fatal(err)
 		}
 
@@ -1569,9 +1843,11 @@ func TestLegacyLoginPreservesBillingFields(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if saved.BillingAPIURL != "https://billing.example.com/api/v1" ||
-			saved.BillingSession != "sess-live" || saved.BillingAgentKey != "tsk_keep" {
-			t.Fatalf("billing config lost across the legacy login reset: %+v", saved)
+		if saved.BillingAPIURL != "https://billing.example.com/api/v1" {
+			t.Fatalf("billing_api_url lost across the legacy login reset: %+v", saved)
+		}
+		if existingAppKey && (saved.BillingSession != "sess-live" || saved.BillingAgentKey != "tsk_keep") {
+			t.Fatalf("billing credentials lost across the legacy re-login reset: %+v", saved)
 		}
 		if saved.AppID == "" || saved.AppKey == "" {
 			t.Fatalf("storage identity not persisted: app_id %q app_key %q", saved.AppID, saved.AppKey)

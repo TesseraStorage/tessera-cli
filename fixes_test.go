@@ -90,3 +90,37 @@ func TestApplyIndexerURLRejectsNonTesseraHost(t *testing.T) {
 		t.Fatalf("IndexerURL = %q, want %q", cfg.IndexerURL, defaultIndexer)
 	}
 }
+
+// TestIsTesseraIndexer pins the indexer-URL rule: the production host, or a
+// loopback host for development and tests. Plain http is loopback-only, so an
+// app key can never be sent in clear to a non-local host.
+func TestIsTesseraIndexer(t *testing.T) {
+	valid := []string{
+		defaultIndexer,
+		"https://index.tessera.storage",
+		"http://127.0.0.1:8080",
+		"http://localhost:9000",
+		"http://LOCALHOST",
+		"https://127.0.0.1:9443",
+	}
+	for _, raw := range valid {
+		if !isTesseraIndexer(raw) {
+			t.Errorf("isTesseraIndexer(%q) = false, want true", raw)
+		}
+	}
+	invalid := []string{
+		"",
+		"index.tessera.storage",
+		"ftp://index.tessera.storage",
+		"http://index.tessera.storage",
+		"http://evil.example.com",
+		"https://index.tessera.storage.evil.com",
+		"https://",
+		"://missing-scheme",
+	}
+	for _, raw := range invalid {
+		if isTesseraIndexer(raw) {
+			t.Errorf("isTesseraIndexer(%q) = true, want false", raw)
+		}
+	}
+}
