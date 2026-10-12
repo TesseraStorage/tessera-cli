@@ -107,6 +107,7 @@ type billingAPI interface {
 	CreateAgent(name, contactEmail string) (accountID, apiKey string, err error)
 	Account() (map[string]any, error)
 	Credentials() (connectKey string, err error)
+	RecoveryCredential() (appID, publicKey, connectKey string, err error)
 	Activate() error
 	Topup(amount, rail, payCurrency, paymentHeader string) (resp map[string]any, err error)
 	Promo(code string) (map[string]any, error)
@@ -365,6 +366,34 @@ func (b *httpBilling) Credentials() (string, error) {
 		return "", fmt.Errorf("credentials response is missing connect_key")
 	}
 	return connectKey, nil
+}
+
+// RecoveryCredential returns the material for restoring the account's
+// existing storage identity from its recovery phrase: the original app id,
+// the account public key (so a wrong phrase can be rejected before anything
+// is persisted) and the raw connect key used as the one-time approval
+// password. 404 identity_not_found means the account has no active storage
+// identity yet; the caller mints one with Credentials instead.
+func (b *httpBilling) RecoveryCredential() (appID, publicKey, connectKey string, err error) {
+	req, err := b.request(http.MethodPost, "/credentials/recovery", map[string]any{})
+	if err != nil {
+		return "", "", "", err
+	}
+	_, data, err := b.do(req, authAuto, "")
+	if err != nil {
+		return "", "", "", err
+	}
+	obj, err := decodeBillingObject(data)
+	if err != nil {
+		return "", "", "", err
+	}
+	appID, _ = obj["app_id"].(string)
+	publicKey, _ = obj["public_key"].(string)
+	connectKey, _ = obj["connect_key"].(string)
+	if connectKey == "" {
+		return "", "", "", fmt.Errorf("recovery response is missing connect_key")
+	}
+	return appID, publicKey, connectKey, nil
 }
 
 // Activate runs the storage-identity link synchronously, closing the

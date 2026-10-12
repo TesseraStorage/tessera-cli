@@ -109,20 +109,41 @@ func loadConfig() (*Config, error) {
 	return &cfg, nil
 }
 
-// isTesseraIndexer reports whether a URL is the supported indexer host.
+// isTesseraIndexer reports whether a URL is a supported indexer host: the
+// production indexer, or a loopback host for development and tests. Plain
+// http is allowed only on loopback (mirroring isBillingURL), so an app key is
+// never sent in clear over a network.
 func isTesseraIndexer(raw string) bool {
 	u, err := url.Parse(raw)
-	if err != nil {
+	if err != nil || u.Host == "" {
 		return false
 	}
-	if u.Host == "" {
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+	case "http":
+		if !isLoopbackHost(u.Hostname()) {
+			return false
+		}
+	default:
 		return false
+	}
+	if isLoopbackHost(u.Hostname()) {
+		return true
 	}
 	want, err := url.Parse(defaultIndexer)
 	if err != nil {
 		return false
 	}
 	return strings.EqualFold(u.Host, want.Host)
+}
+
+// isLoopbackHost reports whether a hostname names the local machine.
+func isLoopbackHost(host string) bool {
+	switch strings.ToLower(host) {
+	case "127.0.0.1", "localhost", "::1":
+		return true
+	}
+	return false
 }
 
 // isBillingURL reports whether a URL may be used as the billing API base:
