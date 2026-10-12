@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -178,6 +179,19 @@ const (
 	authCookie                 // the session cookie (an explicit override allowed)
 )
 
+// billingOrigin returns the "scheme://host[:port]" origin of the billing base.
+// moneyd's CSRF guard rejects an unsafe request that carries the
+// tessera_session cookie unless it presents an Origin (or Referer) matching
+// TESSERA_PUBLIC_BASE_URL. A CLI is not a browser, but it holds the same
+// session cookie, so it must prove the same origin a same-site browser would.
+func billingOrigin(base string) string {
+	u, err := url.Parse(strings.TrimRight(base, "/"))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
+}
+
 // do sends req and reads the (bounded) response body. A 401 on a
 // cookie-authenticated request is the session-expiry signal: the dead session
 // is dropped in this client and in the config, and errSessionExpired is
@@ -206,6 +220,12 @@ func (b *httpBilling) do(req *http.Request, mode authMode, sessionOverride strin
 		}
 		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: session})
 		cookieUsed = true
+	}
+	if cookieUsed {
+		// Satisfy moneyd's session-cookie CSRF guard; see billingOrigin.
+		if origin := billingOrigin(b.base); origin != "" {
+			req.Header.Set("Origin", origin)
+		}
 	}
 
 	resp, err := b.client.Do(req)
