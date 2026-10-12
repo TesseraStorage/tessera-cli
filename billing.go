@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -107,6 +108,7 @@ type billingAPI interface {
 	CreateAgent(name, contactEmail string) (accountID, apiKey string, err error)
 	Account() (map[string]any, error)
 	Credentials() (connectKey string, err error)
+	RecoveryCredential() (appID, publicKey, connectKey string, err error)
 	Activate() error
 	Topup(amount, rail, payCurrency, paymentHeader string) (resp map[string]any, err error)
 	Promo(code string) (map[string]any, error)
@@ -177,6 +179,19 @@ const (
 	authCookie                 // the session cookie (an explicit override allowed)
 )
 
+// billingOrigin returns the "scheme://host[:port]" origin of the billing base.
+// moneyd's CSRF guard rejects an unsafe request that carries the
+// tessera_session cookie unless it presents an Origin (or Referer) matching
+// TESSERA_PUBLIC_BASE_URL. A CLI is not a browser, but it holds the same
+// session cookie, so it must prove the same origin a same-site browser would.
+func billingOrigin(base string) string {
+	u, err := url.Parse(strings.TrimRight(base, "/"))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
+}
+
 // do sends req and reads the (bounded) response body. A 401 on a
 // cookie-authenticated request is the session-expiry signal: the dead session
 // is dropped in this client and in the config, and errSessionExpired is
@@ -205,6 +220,12 @@ func (b *httpBilling) do(req *http.Request, mode authMode, sessionOverride strin
 		}
 		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: session})
 		cookieUsed = true
+	}
+	if cookieUsed {
+		// Satisfy moneyd's session-cookie CSRF guard; see billingOrigin.
+		if origin := billingOrigin(b.base); origin != "" {
+			req.Header.Set("Origin", origin)
+		}
 	}
 
 	resp, err := b.client.Do(req)
@@ -365,6 +386,34 @@ func (b *httpBilling) Credentials() (string, error) {
 		return "", fmt.Errorf("credentials response is missing connect_key")
 	}
 	return connectKey, nil
+}
+
+// RecoveryCredential returns the material for restoring the account's
+// existing storage identity from its recovery phrase: the original app id,
+// the account public key (so a wrong phrase can be rejected before anything
+// is persisted) and the raw connect key used as the one-time approval
+// password. 404 identity_not_found means the account has no active storage
+// identity yet; the caller mints one with Credentials instead.
+func (b *httpBilling) RecoveryCredential() (appID, publicKey, connectKey string, err error) {
+	req, err := b.request(http.MethodPost, "/credentials/recovery", map[string]any{})
+	if err != nil {
+		return "", "", "", err
+	}
+	_, data, err := b.do(req, authAuto, "")
+	if err != nil {
+		return "", "", "", err
+	}
+	obj, err := decodeBillingObject(data)
+	if err != nil {
+		return "", "", "", err
+	}
+	appID, _ = obj["app_id"].(string)
+	publicKey, _ = obj["public_key"].(string)
+	connectKey, _ = obj["connect_key"].(string)
+	if connectKey == "" {
+		return "", "", "", fmt.Errorf("recovery response is missing connect_key")
+	}
+	return appID, publicKey, connectKey, nil
 }
 
 // Activate runs the storage-identity link synchronously, closing the

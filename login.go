@@ -379,32 +379,53 @@ func retryableRegistrationError(err error) bool {
 	if errors.As(err, &he) {
 		return he.Status >= 500
 	}
+	// A phrase that does not match the recovered account is a definitive
+	// user error: retrying cannot change the derived key.
+	if errors.Is(err, errPhraseMismatch) {
+		return false
+	}
 	return true
 }
 
 // errIdentityExists is the 409 from POST /credentials: the billing account
-// already has a non-revoked storage identity (spec §6.3.1). One active
-// identity is allowed per account, so there is nothing to mint — and this CLI
-// cannot re-derive the existing app key on a new machine (the recovery phrase
-// alone does not restore it), so the guidance is the config file that holds
-// the identity, or support.
-var errIdentityExists = errors.New("identity_exists: this billing account already has a storage identity — reuse ~/.tessera/config.json from the machine that registered it, or contact support")
+// already has a non-revoked storage identity (spec §6.3.1). Recovery now
+// fetches the existing identity first, so this is only reachable in a race
+// (another device linked the account between the recovery lookup and the
+// mint); the guidance points at the recovery-phrase restore.
+var errIdentityExists = errors.New("identity_exists: this billing account already has a storage identity — restore it with your 12-word recovery phrase: tessera login --email <email> --token <token> \"<words>\"")
 
-// agentStorageRegistration reports whether plain `tessera login` should run the
-// headless agent registration instead of the legacy browser flow: a billing
-// agent key is stored, there is no human session, and no usable app
+// errRecoveryPhraseRequired stops the flow when the account already has a
+// storage identity but no phrase was supplied: minting a fresh phrase there
+// would create a second, empty identity under the same account.
+var errRecoveryPhraseRequired = errors.New("this account already has a storage identity — provide your 12-word recovery phrase to restore it: tessera login \"<words>\" (or set TESSERA_PHRASE)")
+
+// errPhraseMismatch is returned when the app key derived from the supplied
+// phrase does not equal the recovered account's public key. It is definitive
+// (never retried) and nothing is persisted.
+var errPhraseMismatch = errors.New("that recovery phrase does not match this account")
+
+// isIdentityNotFound reports the 404 from POST /credentials/recovery: the
+// billing account has no active storage identity yet, so the flow mints one.
+func isIdentityNotFound(err error) bool {
+	var be *billingError
+	return errors.As(err, &be) && be.Status == http.StatusNotFound && be.Code == "identity_not_found"
+}
+
+// storageRegistration reports whether plain `tessera login` should run the
+// headless storage registration/recovery instead of the legacy browser flow:
+// a billing credential (session or agent key) is stored and no usable app
 // credentials exist yet.
-func agentStorageRegistration(cfg *Config) bool {
-	return cfg.BillingAgentKey != "" && cfg.BillingSession == "" &&
+func storageRegistration(cfg *Config) bool {
+	return (cfg.BillingSession != "" || cfg.BillingAgentKey != "") &&
 		(cfg.AppID == "" || cfg.AppKey == "")
 }
 
-// agentRegister performs the plain-login agent registration. The GET /account
-// lookup is best-effort only: it lets a post-mint failure name the billing
-// account, and any failure falls back to "(unknown)" without blocking
-// registration. Split out of cmdLogin so tests can drive the failure paths
-// without os.Exit.
-func agentRegister(cfg *Config, phraseArg string) error {
+// storageRegister performs the plain-login storage registration/recovery. The
+// GET /account lookup is best-effort only: it lets a post-mint failure name
+// the billing account, and any failure falls back to "(unknown)" without
+// blocking registration. Split out of cmdLogin so tests can drive the failure
+// paths without os.Exit.
+func storageRegister(cfg *Config, phraseArg string) error {
 	billingID := ""
 	if acct, err := newBillingClient(cfg).Account(); err == nil {
 		billingID = accountString(acct, "billing_id")
@@ -427,17 +448,26 @@ func wrapRegistrationIncomplete(err error, billingID string) error {
 	return fmt.Errorf("registration incomplete: the storage identity for billing account %s was minted but not completed; contact support — %w", billingID, err)
 }
 
-// registerStorageIdentity performs the headless storage registration of spec
-// §6.3: mint a one-time connect key with the billing credential, approve the
-// SDK connection request with it, register the app key derived from the
-// recovery phrase, persist app_id/app_key exactly like the legacy flow, then
-// activate the link so the account leaves the fail-closed window (§6.3.6).
+// registerStorageIdentity performs the headless storage registration or
+// recovery: with an authenticated billing credential it first asks the server
+// whether this account already has a storage identity.
 //
-// The connect key is never printed. phraseArg "" generates and prints a fresh
-// phrase (TESSERA_PHRASE is honored like the legacy flow). billingID is the
-// GET /account billing_id when the caller fetched one ("" otherwise); any
-// failure after the connect key was minted is annotated with it. cfg must
-// already carry the authenticated billing credential; it is saved on success.
+//   - Linked identity: the account is restored from the supplied 12-word
+//     phrase. The server returns the identity's ORIGINAL app id, account
+//     public key and connect key; the CLI approves the connection with that
+//     key and re-registers the phrase under the original app id, re-deriving
+//     the same app key. No fresh phrase is ever minted for a linked account,
+//     and a phrase whose derived key does not match the account is refused
+//     before anything is persisted.
+//   - No identity (404): the previous behavior — mint a one-time connect key,
+//     approve, register, persist app_id/app_key, activate.
+//
+// The connect key is never printed. For a fresh identity phraseArg ""
+// generates and prints a new phrase (TESSERA_PHRASE is honored like the
+// legacy flow). billingID is the GET /account billing_id when the caller
+// fetched one ("" otherwise); any failure after a connect key was minted is
+// annotated with it. cfg must already carry the authenticated billing
+// credential; it is saved on success.
 func registerStorageIdentity(cfg *Config, phraseArg, billingID string) error {
 	if cfg.BillingSession == "" && cfg.BillingAgentKey == "" {
 		return errNoBillingCredentials
@@ -446,24 +476,54 @@ func registerStorageIdentity(cfg *Config, phraseArg, billingID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	// Mint with the credential the user just authenticated as: when a session
-	// is stored, keep a possibly different agent key out of this call.
+	// Talk to the server with the credential the user just authenticated as:
+	// when a session is stored, keep a possibly different agent key out of
+	// this call.
 	bc := *cfg
 	if bc.BillingSession != "" {
 		bc.BillingAgentKey = ""
 	}
-	connectKey, err := newBillingClient(&bc).Credentials()
-	if err != nil {
-		var be *billingError
-		if errors.As(err, &be) && be.Code == "identity_exists" {
-			return errIdentityExists
-		}
-		return err
-	}
-	// connectKey stays in memory: single-use, sent only in the Basic header
-	// below, never printed or persisted.
 
+	// RECOVERY FIRST, for a signed-in human: the server's recovery endpoint is
+	// session-only (it hands out the raw connect key, so a magic-link session
+	// is the ownership proof). With only a machine/bearer agent key there is
+	// nothing to self-recover, so that path keeps minting exactly as before.
+	// A 404 from recovery means no identity exists yet -- also mint.
 	appID := siastorage.GenerateAppID()
+	var connectKey, expectedPublicKey string
+	linked := false
+	if bc.BillingSession != "" {
+		recAppID, recPublicKey, recConnectKey, recErr := newBillingClient(&bc).RecoveryCredential()
+		switch {
+		case recErr == nil:
+			connectKey = recConnectKey
+			expectedPublicKey = recPublicKey
+			if recAppID != "" {
+				linked = true
+				if err := appID.UnmarshalText([]byte(recAppID)); err != nil {
+					return fmt.Errorf("recovery: invalid app id from server: %w", err)
+				}
+			}
+		case isIdentityNotFound(recErr):
+			// no identity yet -- fall through to mint
+		default:
+			return recErr
+		}
+	}
+	if connectKey == "" {
+		key, err := newBillingClient(&bc).Credentials()
+		if err != nil {
+			var be *billingError
+			if errors.As(err, &be) && be.Code == "identity_exists" {
+				return errIdentityExists
+			}
+			return err
+		}
+		connectKey = key
+	}
+	// connectKey stays in memory: sent only in the Basic header below, never
+	// printed or persisted.
+
 	builder := newSDKBuilder(cfg.IndexerURL, appID)
 
 	// The recovery phrase is resolved exactly once, on the first attempt that
@@ -471,6 +531,11 @@ func registerStorageIdentity(cfg *Config, phraseArg, billingID string) error {
 	phrase := phraseArg
 	if phrase == "" {
 		phrase = os.Getenv("TESSERA_PHRASE")
+	}
+	if linked && phrase == "" {
+		// Minting a fresh phrase here would create a second, empty identity
+		// under the same account; the caller must supply the one they saved.
+		return errRecoveryPhraseRequired
 	}
 	phraseResolved := false
 	resolvePhrase := func() {
@@ -525,6 +590,14 @@ func registerStorageIdentity(cfg *Config, phraseArg, billingID string) error {
 			}
 			appKey = sdk.AppKey()
 			sdk.Close()
+			// A wrong phrase derives a different key: refuse it before it is
+			// persisted as this machine's identity.
+			if expectedPublicKey != "" {
+				pk := appKey.PublicKey()
+				if got := "ed25519:" + hex.EncodeToString(pk[:]); got != expectedPublicKey {
+					return errPhraseMismatch
+				}
+			}
 			// Optional local encryption of the phrase, exactly like the legacy
 			// flow; non-interactive logins skip the prompt entirely.
 			if phraseArg == "" && stdinIsTerminal() {
@@ -554,6 +627,11 @@ func registerStorageIdentity(cfg *Config, phraseArg, billingID string) error {
 		}
 	}
 	if regErr != nil {
+		// A phrase mismatch is a user error, not a stranded identity: the
+		// "minted but not completed" wrapper would mislead.
+		if errors.Is(regErr, errPhraseMismatch) {
+			return regErr
+		}
 		return wrapRegistrationIncomplete(regErr, billingID)
 	}
 
@@ -674,11 +752,13 @@ func cmdLogin(args []string) {
 		phraseArg = env
 	}
 
-	// A stored billing agent key with no storage identity yet: `signup` then
-	// `login` registers headlessly, without a browser (spec §6.3.4). A config
-	// without billing credentials keeps the legacy flow below unchanged.
-	if cfg, err := loadConfig(); err == nil && agentStorageRegistration(cfg) {
-		if err := agentRegister(cfg, argPhrase); err != nil {
+	// A stored billing credential (agent key, or a magic-link session) with
+	// no storage identity yet: plain `login [<phrase>]` registers headlessly,
+	// without a browser, and recovers the account when one already exists
+	// (spec §6.3.4). A config without billing credentials keeps the legacy
+	// flow below unchanged.
+	if cfg, err := loadConfig(); err == nil && storageRegistration(cfg) {
+		if err := storageRegister(cfg, argPhrase); err != nil {
 			fatal("%v", err)
 		}
 		return
