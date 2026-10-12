@@ -38,6 +38,20 @@ import (
 // cmdStatus's network calls.
 var statusCommand = cmdStatus
 
+// version is the build version. CI injects it from the release tag so it can
+// never drift from the release:
+//
+//	go build -ldflags "-X main.version=${GITHUB_REF_NAME}" .
+//
+// It stays "dev" for local and non-tag builds.
+var version = "dev"
+
+// cmdVersion prints this build's version. The value is injected at release
+// time from the git tag (see the `version` var), so it always matches the tag.
+func cmdVersion() {
+	fmt.Println("tessera " + version)
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -48,6 +62,8 @@ func main() {
 	args := os.Args[2:]
 
 	switch cmd {
+	case "version", "--version":
+		cmdVersion()
 	case "login":
 		cmdLogin(args)
 	case "signup":
@@ -175,6 +191,7 @@ More:
                              Storage usage; --cost adds the netted egress estimate
   %s index --rebuild         Rebuild the local metadata index
   %s config [--json]         Show or change settings
+  %s version                 Print this build's version (from the release tag)
   %s service install|start|stop|status
                              Run the watcher as a background service
   %s uninstall               Remove the watcher, this binary, and (optionally) local state
@@ -198,5 +215,5 @@ Docs:    https://tessera.storage
 `, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe,
 		exe, exe, exe, exe, exe, exe,
 		exe, exe, exe, exe, exe, exe,
-		exe, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe)
+		exe, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe)
 }

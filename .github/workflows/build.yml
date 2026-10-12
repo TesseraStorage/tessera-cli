@@ -63,10 +63,21 @@ jobs:
         with:
           go-version: "1.26"
 
+      - name: Resolve version
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0-0-${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build
         run: |
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
-            go build -mod=vendor -o tessera-${{ matrix.target }}${{ matrix.ext }} .
+            go build -mod=vendor \
+              -ldflags "-X main.version=${{ steps.ver.outputs.version }}" \
+              -o tessera-${{ matrix.target }}${{ matrix.ext }} .
 
       - uses: actions/upload-artifact@v4
         with:
