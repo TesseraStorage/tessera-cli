@@ -91,8 +91,18 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
 
+      # The installers verify against this file; it must list the bare asset
+      # names (download-artifact puts each asset in its own tessera-<target>/
+      # directory, so strip that prefix).
+      - name: Generate SHA256SUMS
+        run: |
+          sha256sum tessera-*/* | sed -E 's#  tessera-[^/]*/#  #' > SHA256SUMS
+          cat SHA256SUMS
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: tessera-*/*
+          files: |
+            tessera-*/*
+            SHA256SUMS
           generate_release_notes: true

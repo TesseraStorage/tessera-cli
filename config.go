@@ -42,6 +42,11 @@ type Config struct {
 	// operator keep forecasts in step with real pricing.
 	IndexerCostPerTBMonth float64 `json:"indexer_cost_per_tb_month,omitempty"`
 
+	// UpdateCheckDisabled turns off the quiet "a newer version is available"
+	// check (tessera config --update-check off). The check is throttled,
+	// best-effort and only ever prints; it never installs anything.
+	UpdateCheckDisabled bool `json:"update_check_disabled,omitempty"`
+
 	// BillingAPIURL is the moneyd API base (…/api/v1). BillingSession holds
 	// the tessera_session cookie for human logins; BillingAgentKey holds an
 	// agent's tsk_… bearer key. Both secrets live only in this 0600 file.

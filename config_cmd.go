@@ -79,6 +79,17 @@ func cmdConfig(args []string) {
 		}
 		changed = true
 	}
+	if v, ok := flagValue(args, "--update-check"); ok {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "on", "true", "1", "yes":
+			cfg.UpdateCheckDisabled = false
+		case "off", "false", "0", "no":
+			cfg.UpdateCheckDisabled = true
+		default:
+			fatal("--update-check expects on or off")
+		}
+		changed = true
+	}
 
 	if changed {
 		if err := saveConfig(cfg); err != nil {
@@ -103,6 +114,7 @@ func cmdConfig(args []string) {
 			"version_retention":     cfg.VersionRetention,
 			"trash_retention_days":  cfg.TrashRetentionDays,
 			"default_jobs":          cfg.DefaultJobs,
+			"update_check":          !cfg.UpdateCheckDisabled,
 			"sync_folders":          len(roots),
 			"trashed_items":         len(trash.Entries),
 		})
@@ -120,10 +132,12 @@ func cmdConfig(args []string) {
 	fmt.Printf("Version retention:  %s\n", describeVersions(cfg.VersionRetention))
 	fmt.Printf("Trash retention:    %s\n", describeTrash(cfg.TrashRetentionDays))
 	fmt.Printf("Default jobs:       %s\n", describeJobs(cfg.DefaultJobs))
+	fmt.Printf("Update check:       %s\n", describeUpdateCheck(cfg.UpdateCheckDisabled))
 	fmt.Println()
 	fmt.Println("Change with: tessera config --version-retention 5")
 	fmt.Println("             tessera config --trash-retention 14")
 	fmt.Println("             tessera config --default-jobs 4")
+	fmt.Println("             tessera config --update-check off")
 	fmt.Println("             tessera config --billing-url https://tessera.storage/api/v1")
 	fmt.Println()
 	fmt.Println("Per-folder options live in 'tessera sync list' and .tesseraignore.")
@@ -171,6 +185,13 @@ func describeJobs(n int) string {
 		return "automatic"
 	}
 	return fmt.Sprintf("%d parallel transfer(s)", n)
+}
+
+func describeUpdateCheck(disabled bool) string {
+	if disabled {
+		return "off"
+	}
+	return "on (throttled, best-effort; never installs)"
 }
 
 // describeBillingSignIn reports how billing calls authenticate without ever
