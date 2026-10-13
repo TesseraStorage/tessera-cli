@@ -48,8 +48,14 @@ var version = "dev"
 
 // cmdVersion prints this build's version. The value is injected at release
 // time from the git tag (see the `version` var), so it always matches the tag.
+// It also reports a newer release when one is known (best-effort, throttled).
 func cmdVersion() {
 	fmt.Println("tessera " + version)
+	if cfg, err := loadConfig(); err == nil {
+		if msg := updateNotice(cfg); msg != "" {
+			fmt.Println(msg)
+		}
+	}
 }
 
 func main() {
@@ -148,6 +154,17 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		printUsage()
 		os.Exit(1)
+	}
+
+	// Quiet, throttled "newer version" notice (Packet 4). Best-effort: any
+	// failure is silent, it is opt-out via 'tessera config --update-check off',
+	// and it never installs anything. cmdVersion prints it itself.
+	if cmd != "version" && cmd != "--version" {
+		if cfg, err := loadConfig(); err == nil {
+			if msg := updateNotice(cfg); msg != "" {
+				fmt.Fprintln(os.Stderr, msg)
+			}
+		}
 	}
 }
 
