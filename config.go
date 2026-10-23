@@ -26,7 +26,16 @@ const (
 type Config struct {
 	IndexerURL      string `json:"indexer_url"`
 	AppID           string `json:"app_id"`
-	AppKey          string `json:"app_key"`          // hex-encoded 32-byte seed
+	// AppKey is the full Ed25519 private key as 128 hex characters (64 bytes:
+	// seed(32) || public_key(32)) -- exactly what the SDK's appKey().export()
+	// produces and what connectSDK/connectAPI require. NOT a 32-byte seed: an
+	// account's 12-word recovery PHRASE derives a 32-byte seed, but
+	// siastorage's deriveAppKey (vendor/go.sia.tech/siastorage/connect.go)
+	// expands that seed into the full 64-byte key before it is ever written
+	// here. A pre-issued credential handed to you directly
+	// (e.g. by an operator or a headless redemption flow) is already in this
+	// 128-hex-char shape -- write it here as-is, do not truncate it to 32 bytes.
+	AppKey          string `json:"app_key"`
 	PhraseEncrypted string `json:"phrase_encrypted"` // AES-GCM encrypted, hex-encoded
 	PhraseSalt      string `json:"phrase_salt"`      // argon2 salt, hex-encoded
 
