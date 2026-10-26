@@ -132,11 +132,6 @@ func cmdAudit(args []string) {
 	}
 }
 
-// redundancyFactor is how many network bytes each logical byte occupies with
-// the erasure coding the CLI requests (30 shards for every 10 data shards), so
-// the bytes billed on the network are roughly triple the logical size.
-const redundancyFactor = float64(dataShards+parityShards) / float64(dataShards)
-
 // cmdUsage reports storage usage, a cost forecast, and (with billing
 // credentials) the billing account section.
 func cmdUsage(args []string) {
@@ -195,12 +190,13 @@ func collectUsageStorage(idx *Index) (map[string]usageFolder, uint64) {
 	return byFolder, total
 }
 
-// usageReport renders `usage`. The storage block always prints exactly as it
-// did before billing existed. When a billing credential is stored it appends
-// the account section (and, with --cost, the netted PAYG egress estimate);
-// a billing fetch failure degrades to a warning so the storage report — and
-// the command's exit status — stand alone. The no-credential --cost hint goes
-// to stderr so --json stdout stays parseable.
+// usageReport renders `usage`. The storage block prints the same local-file
+// view with or without billing; when a billing credential is stored it appends
+// the account section (network size from GET /account, open slabs, egress,
+// balance, period end, days left; and, with --cost, the netted PAYG egress
+// estimate). A billing fetch failure degrades to a warning so the storage
+// report — and the command's exit status — stand alone. The no-credential
+// --cost hint goes to stderr so --json stdout stays parseable.
 func usageReport(args []string, cfg *Config, idx *Index) {
 	byFolder, total := collectUsageStorage(idx)
 	cost := hasFlag(args, "--cost")
@@ -241,8 +237,10 @@ func usageReport(args []string, cfg *Config, idx *Index) {
 	}
 }
 
-// usageStorageJSON is the storage half of `usage --json`; its four keys are the
-// pre-billing contract and must stay byte-compatible.
+// usageStorageJSON is the local storage half of `usage --json`: the files this
+// machine synced and their logical sizes. Network size is not estimated here;
+// with a billing credential the backend's real network_bytes appears in the
+// billing object.
 func usageStorageJSON(idx *Index, total uint64, byFolder map[string]usageFolder) map[string]interface{} {
 	type row struct {
 		Folder string `json:"folder"`
@@ -255,10 +253,9 @@ func usageStorageJSON(idx *Index, total uint64, byFolder map[string]usageFolder)
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Bytes > rows[j].Bytes })
 	return map[string]interface{}{
-		"files":               len(idx.Paths),
-		"logical_bytes":       total,
-		"stored_bytes_approx": uint64(float64(total) * redundancyFactor),
-		"folders":             rows,
+		"files":         len(idx.Paths),
+		"logical_bytes": total,
+		"folders":       rows,
 	}
 }
 
@@ -267,8 +264,7 @@ func usageStorageJSON(idx *Index, total uint64, byFolder map[string]usageFolder)
 func printUsageStorage(idx *Index, total uint64, byFolder map[string]usageFolder, byFolderTable bool) {
 	fmt.Printf("Storage usage\n\n")
 	fmt.Printf("  files:           %d\n", len(idx.Paths))
-	fmt.Printf("  logical size:    %s\n", formatBytes(total))
-	fmt.Printf("  network (≈%dx):  %s (10 data + 20 parity shards)\n", int(redundancyFactor), formatBytes(uint64(float64(total)*redundancyFactor)))
+	fmt.Printf("  your files:      %s\n", formatBytes(total))
 
 	if byFolderTable && len(byFolder) > 0 {
 		fmt.Println()
@@ -330,6 +326,8 @@ func usageCostHint() {
 // --cost adds the estimate field.
 func usageBillingJSON(acct map[string]any, cost bool) map[string]any {
 	out := map[string]any{
+		"network_bytes":          acct["network_bytes"],
+		"raw_bytes":              acct["raw_bytes"],
 		"open_slabs":             acct["open_slabs"],
 		"egress_used_bytes":      acct["egress_used_bytes"],
 		"allowance_egress_bytes": acct["allowance_egress_bytes"],
@@ -345,9 +343,10 @@ func usageBillingJSON(acct map[string]any, cost bool) map[string]any {
 	return out
 }
 
-// printUsageBilling renders the appended billing section. Missing and null
-// fields render as an em dash; --cost appends the netted PAYG egress estimate
-// with its exact disclaimer label.
+// printUsageBilling renders the appended billing section. Network size is the
+// backend's real network_bytes from GET /account, never a client-side estimate;
+// missing and null fields render as an em dash. --cost appends the netted PAYG
+// egress estimate with its exact disclaimer label.
 func printUsageBilling(acct map[string]any, cost bool) {
 	fmt.Println()
 	fmt.Println("Billing")
@@ -355,6 +354,7 @@ func printUsageBilling(acct map[string]any, cost bool) {
 	field := func(label, value string) {
 		fmt.Printf("  %-16s %s\n", label+":", dashIfEmpty(value))
 	}
+	field("network size", accountBytes(acct, "network_bytes"))
 	if slabs, ok := accountUint64(acct, "open_slabs"); ok {
 		field("open slabs", strconv.FormatUint(slabs, 10))
 	} else {

@@ -70,19 +70,20 @@ func usageTestIndex() *Index {
 	}
 }
 
-// usageTestStorageHuman is the exact pre-billing human output for
-// usageTestIndex. It must not change for users without billing config.
+// usageTestStorageHuman is the exact human storage output for usageTestIndex
+// without a billing credential. It reports only what this machine knows: the
+// synced files and their logical sizes. Network size is never estimated here;
+// a billing credential adds the backend's real network_bytes.
 const usageTestStorageHuman = "Storage usage\n" +
 	"\n" +
 	"  files:           2\n" +
-	"  logical size:    1.5 KB\n" +
-	"  network (\u22483x):  4.5 KB (10 data + 20 parity shards)\n" +
+	"  your files:      1.5 KB\n" +
 	"\n" +
 	"  Note: Sia costs depend on your contracts and current host prices.\n" +
 	"  Run 'tessera status' for account readiness.\n"
 
-// usageTestStorageJSON is the exact pre-billing --json output for
-// usageTestIndex (keys sorted by encoding/json, the original key set).
+// usageTestStorageJSON is the exact --json storage output for usageTestIndex
+// without a billing credential (keys sorted by encoding/json).
 const usageTestStorageJSON = `{
   "files": 2,
   "folders": [
@@ -92,15 +93,14 @@ const usageTestStorageJSON = `{
       "bytes": 1536
     }
   ],
-  "logical_bytes": 1536,
-  "stored_bytes_approx": 4608
+  "logical_bytes": 1536
 }
 `
 
-// TestUsageStorageOutputUnchanged pins byte-compatibility: with no billing
-// credential the human output is exactly the pre-billing output and nothing is
-// written to stderr.
-func TestUsageStorageOutputUnchanged(t *testing.T) {
+// TestUsageStorageHumanWithoutBilling pins the local-only storage output: with
+// no billing credential it reports the synced files and logical sizes, with no
+// network estimate, and writes nothing to stderr.
+func TestUsageStorageHumanWithoutBilling(t *testing.T) {
 	stdout, stderr := captureOutput(t, func() {
 		usageReport(nil, &Config{IndexerURL: defaultIndexer}, usageTestIndex())
 	})
@@ -112,16 +112,15 @@ func TestUsageStorageOutputUnchanged(t *testing.T) {
 	}
 }
 
-// TestUsageStorageByFolderUnchanged keeps the --by-folder table layout intact.
-func TestUsageStorageByFolderUnchanged(t *testing.T) {
+// TestUsageStorageByFolder keeps the --by-folder table layout intact.
+func TestUsageStorageByFolder(t *testing.T) {
 	stdout, _ := captureOutput(t, func() {
 		usageReport([]string{"--by-folder"}, &Config{IndexerURL: defaultIndexer}, usageTestIndex())
 	})
 	want := "Storage usage\n" +
 		"\n" +
 		"  files:           2\n" +
-		"  logical size:    1.5 KB\n" +
-		"  network (\u22483x):  4.5 KB (10 data + 20 parity shards)\n" +
+		"  your files:      1.5 KB\n" +
 		"\n" +
 		"  " + fmt.Sprintf("%-40s  %8s  %12s", "FOLDER", "FILES", "SIZE") + "\n" +
 		"  " + strings.Repeat("-", 64) + "\n" +
@@ -134,9 +133,10 @@ func TestUsageStorageByFolderUnchanged(t *testing.T) {
 	}
 }
 
-// TestUsageStorageJSONUnchanged pins byte-compatibility for --json: the four
-// storage keys only, no billing key, nothing on stderr.
-func TestUsageStorageJSONUnchanged(t *testing.T) {
+// TestUsageStorageJSONWithoutBilling pins --json without a billing credential:
+// the local storage keys only, no fabricated network estimate and no billing
+// key, nothing on stderr.
+func TestUsageStorageJSONWithoutBilling(t *testing.T) {
 	stdout, stderr := captureOutput(t, func() {
 		usageReport([]string{"--json"}, &Config{IndexerURL: defaultIndexer}, usageTestIndex())
 	})
@@ -211,8 +211,10 @@ func TestEgressEstimateUSD(t *testing.T) {
 }
 
 // TestUsageBillingSectionHuman: with a billing credential the storage block is
-// followed by the billing section (open slabs, egress used of allowance,
-// balance, period end, days left) and no estimate unless --cost was asked for.
+// followed by the billing section (network size from GET /account, open slabs,
+// egress used of allowance, balance, period end, days left) and no estimate
+// unless --cost was asked for. Network size must be the backend fixture's real
+// value, not a client-side estimate.
 func TestUsageBillingSectionHuman(t *testing.T) {
 	testConfigHome(t)
 	fake := &fakeUsageAPI{acct: accountObject(t, accountServerJSON)}
@@ -233,10 +235,15 @@ func TestUsageBillingSectionHuman(t *testing.T) {
 		t.Fatalf("usage with billing config wrote to stderr: %q", stderr)
 	}
 	if !strings.HasPrefix(stdout, usageTestStorageHuman) {
-		t.Fatalf("billing output no longer starts with the unchanged storage block:\n%s", stdout)
+		t.Fatalf("billing output no longer starts with the storage block:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "network (\u2248") {
+		t.Errorf("client-side network estimate still printed:\n%s", stdout)
 	}
 	for _, want := range []string{
 		"Billing",
+		"network size",
+		"360.00 MB",
 		"open slabs",
 		"3",
 		"egress used",
@@ -308,6 +315,8 @@ func TestUsageCostHuman(t *testing.T) {
 func TestUsageJSONBillingAdditive(t *testing.T) {
 	testConfigHome(t)
 	fake := &fakeUsageAPI{acct: map[string]any{
+		"network_bytes":          float64(3e12),
+		"raw_bytes":              float64(4e12),
 		"open_slabs":             float64(3),
 		"egress_used_bytes":      float64(3e12),
 		"allowance_egress_bytes": float64(1e12),
@@ -327,8 +336,11 @@ func TestUsageJSONBillingAdditive(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
 		t.Fatalf("usage --json is not JSON: %v\n%s", err, stdout)
 	}
-	if got["files"] != float64(2) || got["logical_bytes"] != float64(1536) || got["stored_bytes_approx"] != float64(4608) {
+	if got["files"] != float64(2) || got["logical_bytes"] != float64(1536) {
 		t.Fatalf("storage keys changed: %#v", got)
+	}
+	if _, exists := got["stored_bytes_approx"]; exists {
+		t.Fatalf("client-side network estimate still present: %#v", got)
 	}
 	folders, ok := got["folders"].([]any)
 	if !ok || len(folders) != 1 || folders[0].(map[string]any)["folder"] != "photos" {
@@ -338,7 +350,8 @@ func TestUsageJSONBillingAdditive(t *testing.T) {
 	if !ok {
 		t.Fatalf("billing object missing with a billing credential: %#v", got)
 	}
-	if billing["open_slabs"] != float64(3) || billing["egress_used_bytes"] != float64(3e12) ||
+	if billing["network_bytes"] != float64(3e12) || billing["raw_bytes"] != float64(4e12) ||
+		billing["open_slabs"] != float64(3) || billing["egress_used_bytes"] != float64(3e12) ||
 		billing["allowance_egress_bytes"] != float64(1e12) || billing["balance_usd"] != "7.50" ||
 		billing["days_left"] != float64(29) || billing["period_end"] != nil {
 		t.Fatalf("billing fields = %#v, want the server values with nulls preserved", billing)
