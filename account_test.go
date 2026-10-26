@@ -12,9 +12,11 @@ import (
 )
 
 // accountServerJSON mirrors moneyd's GET /account projection
-// (dataplane/moneyd/routers/account.py): all 13 fields, with period_end and
+// (dataplane/moneyd/routers/account.py): all 15 fields, with period_end and
 // days_left null when the account has nothing to burn (dunning.py:171-175).
-// balance_usd is the JSON number FastAPI sends, not a quoted decimal.
+// network_bytes is indexd's redundant network total; raw_bytes is the sum of
+// live object slab lengths. balance_usd is the JSON number FastAPI sends, not
+// a quoted decimal.
 const accountServerJSON = `{
   "billing_id": "TESS-000000000042",
   "kind": "human",
@@ -23,6 +25,8 @@ const accountServerJSON = `{
   "plan": "payg",
   "period_end": null,
   "included_storage_bytes": 0,
+  "network_bytes": 377487360,
+  "raw_bytes": 125829120,
   "open_slabs": 3,
   "allowance_egress_bytes": 5000000,
   "egress_used_bytes": 1250000,
