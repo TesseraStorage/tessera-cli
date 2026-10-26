@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -274,6 +275,293 @@ func (r *Remote) Upload(ctx context.Context, req uploadRequest, onProgress func(
 		Machine:  machineName(),
 		Updated:  time.Now(),
 	}, nil
+}
+
+// PackedUploadOutcome is the result of uploading one file in a batch. Err is
+// set for that file only; a failure never invalidates the other outcomes.
+type PackedUploadOutcome struct {
+	Info PathInfo
+	Err  error
+}
+
+// uploadCandidate pairs one local file with the logical path it should be
+// stored at remotely. It is the unit uploadMany prepares and transfers.
+type uploadCandidate struct {
+	LocalPath  string
+	RemotePath string
+}
+
+// uploadError reports one candidate's failure without aborting the batch.
+type uploadError struct {
+	RemotePath string
+	Err        error
+}
+
+// uploadMany prepares every candidate (hash plus content short-circuit) and
+// transfers only the files that still need it. Exactly one remaining file goes
+// through uploadOne so the single-file path's behavior is preserved; two or
+// more share one packed session. Per-file failures are returned without
+// stopping the rest. It returns the number of files accounted for as uploaded
+// (including already-stored short-circuits) and the bytes actually transferred.
+func uploadMany(ctx context.Context, rt *Remote, idx *Index, candidates []uploadCandidate) (uploaded int, bytes int64, errs []uploadError) {
+	var pending []uploadRequest
+	for _, c := range candidates {
+		req, already, err := prepareUpload(ctx, rt, idx, c.LocalPath, c.RemotePath)
+		if err != nil {
+			errs = append(errs, uploadError{RemotePath: c.RemotePath, Err: err})
+			continue
+		}
+		if already {
+			uploaded++
+			continue
+		}
+		pending = append(pending, req)
+	}
+	if len(pending) == 0 {
+		return uploaded, 0, errs
+	}
+
+	// Nothing to pack against: keep uploadOne's single-file behavior exactly.
+	if len(pending) == 1 {
+		req := pending[0]
+		start := time.Now()
+		info, err := rt.Upload(ctx, req, nil)
+		if err != nil {
+			errs = append(errs, uploadError{RemotePath: req.RelPath, Err: err})
+		} else if rerr := recordUploaded(rt, idx, req, info, start); rerr != nil {
+			errs = append(errs, uploadError{RemotePath: req.RelPath, Err: rerr})
+		} else {
+			uploaded++
+			bytes += req.Size
+		}
+		return uploaded, bytes, errs
+	}
+
+	start := time.Now()
+	outcomes := rt.UploadBatch(ctx, pending, nil)
+	for i, outcome := range outcomes {
+		req := pending[i]
+		if outcome.Err != nil {
+			errs = append(errs, uploadError{RemotePath: req.RelPath, Err: outcome.Err})
+			continue
+		}
+		if err := recordUploaded(rt, idx, req, outcome.Info, start); err != nil {
+			errs = append(errs, uploadError{RemotePath: req.RelPath, Err: err})
+			continue
+		}
+		uploaded++
+		bytes += req.Size
+	}
+	return uploaded, bytes, errs
+}
+
+// uploadDir walks a local directory and uploads every regular file under the
+// remote prefix, preserving relative paths. It batches with uploadMany so small
+// files share slabs; the single-file command still goes through uploadOne.
+func uploadDir(ctx context.Context, rt *Remote, idx *Index, root, prefix string) error {
+	// A directory upload treats --as as a prefix so that nested files keep
+	// their structure instead of all collapsing onto one remote path.
+	clean, err := NormalizeRelPath(prefix)
+	switch {
+	case err != nil:
+		// No --as given: namespace it under tessera/ so a plain directory
+		// upload cannot collide with another folder of the same name.
+		prefix = path.Join("tessera", path.Base(filepath.ToSlash(root)))
+	default:
+		prefix = clean
+	}
+
+	ig, _ := newIgnore(root, nil)
+
+	var candidates []uploadCandidate
+	var skipped int
+	if err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel := p
+		if r, rerr := filepath.Rel(root, p); rerr == nil {
+			rel = filepath.ToSlash(r)
+		}
+		if info.IsDir() {
+			if rel != "." && ig.Match(rel, true) {
+				skipped++
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		if ig.Match(rel, false) || strings.HasPrefix(filepath.Base(p), ".tessera-tmp-") {
+			skipped++
+			return nil
+		}
+		candidates = append(candidates, uploadCandidate{
+			LocalPath:  p,
+			RemotePath: path.Join(prefix, filepath.ToSlash(rel)),
+		})
+		return nil
+	}); err != nil {
+		return fmt.Errorf("walk %s: %w", root, err)
+	}
+	if skipped > 0 {
+		fmt.Printf("Skipped %d ignored file(s) (see .tesseraignore).\n", skipped)
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].RemotePath < candidates[j].RemotePath })
+
+	fmt.Printf("Uploading %d file(s) from %s → %s/\n", len(candidates), root, prefix)
+	uploaded, bytes, errs := uploadMany(ctx, rt, idx, candidates)
+	for _, e := range errs {
+		fmt.Fprintf(os.Stderr, "  ! %s: %v\n", e.RemotePath, e.Err)
+	}
+	fmt.Printf("Done: %d/%d uploaded, %s\n", uploaded, len(candidates), formatBytes(uint64(bytes)))
+	return nil
+}
+
+// UploadBatch uploads multiple files through one PackedUpload session so small
+// files share slabs instead of each paying a full slab of padding. It returns
+// one outcome per request, in the same order as reqs.
+//
+// A file that cannot be opened, is empty, or errors while being read is
+// reported in its own outcome and the remaining files still upload and pin.
+// That is the SDK's documented dead-padding behaviour: bytes read before a
+// failed Add stay in the current slab as padding, and Add remains usable.
+func (r *Remote) UploadBatch(ctx context.Context, reqs []uploadRequest, onProgress func(int64)) []PackedUploadOutcome {
+	out := make([]PackedUploadOutcome, len(reqs))
+	if len(reqs) == 0 {
+		return out
+	}
+	// Nothing to pack against: keep the existing single-file path, including
+	// its handling of zero-byte files.
+	if len(reqs) == 1 {
+		info, err := r.Upload(ctx, reqs[0], onProgress)
+		out[0] = PackedUploadOutcome{Info: info, Err: err}
+		return out
+	}
+
+	pu, err := r.sdk.UploadPacked(siastorage.WithRedundancy(dataShards, parityShards))
+	if err != nil {
+		for i := range out {
+			out[i].Err = fmt.Errorf("start packed upload: %w", err)
+		}
+		return out
+	}
+	defer pu.Close()
+
+	// Metadata is independent of the packed byte stream, so encode it up front
+	// and fail only the file whose descriptor is too large.
+	metas := make([][]byte, len(reqs))
+	pending := make([]int, 0, len(reqs))
+	for i, req := range reqs {
+		meta, err := encodeMetadata(req.Name, &tsMeta{
+			Root:    req.Root,
+			Path:    req.RelPath,
+			SHA256:  req.Hash,
+			Size:    req.Size,
+			Mode:    fmt.Sprintf("%04o", req.Mode.Perm()),
+			ModTime: req.ModTime.UTC().Truncate(time.Millisecond),
+			Machine: machineName(),
+		})
+		if err != nil {
+			out[i].Err = err
+			continue
+		}
+		metas[i] = meta
+		pending = append(pending, i)
+	}
+
+	var added []int
+	var emptyIdxs []int
+	for len(pending) > 0 {
+		// Prefer a file that fits in the current slab, per PackedUpload's own
+		// guidance; a file larger than Remaining simply spans into the next.
+		pick := 0
+		remaining := pu.Remaining()
+		for j, idx := range pending {
+			if reqs[idx].Size <= remaining {
+				pick = j
+				break
+			}
+		}
+		idx := pending[pick]
+		pending = append(pending[:pick], pending[pick+1:]...)
+
+		f, err := os.Open(reqs[idx].LocalPath)
+		if err != nil {
+			out[idx].Err = fmt.Errorf("open %s: %w", reqs[idx].RelPath, err)
+			continue
+		}
+		// PackedUpload rejects empty objects. Defer zero-byte files until
+		// after the packed session has settled so a separate upload never
+		// races the packed stream's background worker.
+		if fi, statErr := f.Stat(); statErr == nil && fi.Size() == 0 {
+			f.Close()
+			emptyIdxs = append(emptyIdxs, idx)
+			continue
+		}
+		_, addErr := pu.Add(ctx, f)
+		f.Close()
+		if addErr != nil {
+			out[idx].Err = fmt.Errorf("upload %s: %w", reqs[idx].RelPath, addErr)
+			continue
+		}
+		added = append(added, idx)
+	}
+
+	if len(added) > 0 {
+		objects, err := pu.Finalize(ctx)
+		if err != nil {
+			for _, idx := range added {
+				out[idx].Err = fmt.Errorf("finalize packed upload: %w", err)
+			}
+		} else if len(objects) != len(added) {
+			for _, idx := range added {
+				out[idx].Err = fmt.Errorf("packed upload returned %d objects for %d files", len(objects), len(added))
+			}
+		} else {
+			for i, obj := range objects {
+				idx := added[i]
+				req := reqs[idx]
+				// Object IDs hash the slab layout only, so attaching the per-file
+				// descriptor after Finalize is safe and is what makes each file
+				// independently addressable.
+				obj.UpdateMetadata(metas[idx])
+				if err := r.sdk.PinObject(ctx, obj); err != nil {
+					out[idx].Err = fmt.Errorf("pin %s: %w", req.RelPath, err)
+					continue
+				}
+				if onProgress != nil {
+					onProgress(req.Size)
+				}
+				out[idx] = PackedUploadOutcome{Info: PathInfo{
+					ObjectID: obj.ID().String(),
+					Path:     req.RelPath,
+					Name:     req.Name,
+					Root:     req.Root,
+					SHA256:   req.Hash,
+					Size:     req.Size,
+					ModTime:  req.ModTime,
+					Machine:  machineName(),
+					Updated:  time.Now(),
+				}}
+			}
+		}
+	}
+
+	// Zero-byte files cannot join a PackedUpload (it rejects empty objects).
+	// Upload them through the ordinary single-file path once the packed
+	// session has settled. Close first so the packed worker is never racing
+	// this separate upload; Close is idempotent and the deferred Close is a
+	// no-op afterwards.
+	if len(emptyIdxs) > 0 {
+		_ = pu.Close()
+		for _, idx := range emptyIdxs {
+			info, err := r.Upload(ctx, reqs[idx], onProgress)
+			out[idx] = PackedUploadOutcome{Info: info, Err: err}
+		}
+	}
+	return out
 }
 
 // DeleteObject unpins an object by its hex key. Deleting a nonexistent object

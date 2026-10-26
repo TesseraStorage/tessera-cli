@@ -733,7 +733,8 @@ func (e *SyncEngine) Apply(ctx context.Context, ops []Op) (*Result, error) {
 		DryRun:    e.opts.DryRun,
 	}
 
-	for _, op := range ops {
+	for i := 0; i < len(ops); i++ {
+		op := ops[i]
 		if err := ctx.Err(); err != nil {
 			res.Errors = append(res.Errors, err.Error())
 			break
@@ -751,6 +752,20 @@ func (e *SyncEngine) Apply(ctx context.Context, ops []Op) (*Result, error) {
 				res.Adopted++
 			}
 			continue
+		}
+		// A run of uploads is one packed session: small files share slabs
+		// instead of each paying a full slab of padding. Conflict uploads and
+		// other operations keep their existing per-op handling.
+		if op.Kind == OpUpload {
+			j := i
+			for j+1 < len(ops) && ops[j+1].Kind == OpUpload {
+				j++
+			}
+			if j > i {
+				e.applyUploadBatch(ctx, ops[i:j+1], res)
+				i = j
+				continue
+			}
 		}
 		if err := e.applyOp(ctx, op, res); err != nil {
 			msg := fmt.Sprintf("%s: %v", op.Path, err)
@@ -799,11 +814,6 @@ func (e *SyncEngine) doUpload(ctx context.Context, p string, res *Result) error 
 	if !ok {
 		return fmt.Errorf("local file disappeared")
 	}
-	st := e.state.Entries[p]
-	oldID := ""
-	if st != nil {
-		oldID = st.ObjectID
-	}
 
 	info, err := e.rt.Upload(ctx, uploadRequest{
 		LocalPath: lf.AbsPath,
@@ -817,6 +827,19 @@ func (e *SyncEngine) doUpload(ctx context.Context, p string, res *Result) error 
 	}, nil)
 	if err != nil {
 		return err
+	}
+	e.recordUploadResult(ctx, p, lf, info, res)
+	return e.state.save()
+}
+
+// recordUploadResult applies the bookkeeping for one successful upload: retire
+// the object it replaced, update the sync ledger, and account the bytes. It
+// deliberately does not save state, so a batch can persist once at the end.
+func (e *SyncEngine) recordUploadResult(ctx context.Context, p string, lf localFile, info PathInfo, res *Result) {
+	st := e.state.Entries[p]
+	oldID := ""
+	if st != nil {
+		oldID = st.ObjectID
 	}
 	// Retire the object this upload replaced: retained as a version, or moved
 	// to trash when version retention is switched off.
@@ -840,7 +863,53 @@ func (e *SyncEngine) doUpload(ctx context.Context, p string, res *Result) error 
 	res.Uploaded++
 	res.BytesUp += lf.Size
 	e.log("  ↑ %s (%s)", p, formatBytes(uint64(lf.Size)))
-	return e.state.save()
+}
+
+// applyUploadBatch uploads a run of OpUpload files through one packed session.
+// Per-file failures are recorded individually; the rest of the batch still
+// pins. It saves state once after the whole run.
+func (e *SyncEngine) applyUploadBatch(ctx context.Context, ops []Op, res *Result) {
+	reqs := make([]uploadRequest, 0, len(ops))
+	paths := make([]string, 0, len(ops))
+	for _, op := range ops {
+		lf, ok := e.local[op.Path]
+		if !ok {
+			msg := fmt.Sprintf("%s: local file disappeared", op.Path)
+			res.Errors = append(res.Errors, msg)
+			e.log("  error: %s", msg)
+			continue
+		}
+		reqs = append(reqs, uploadRequest{
+			LocalPath: lf.AbsPath,
+			RelPath:   e.remotePath(op.Path),
+			Name:      path.Base(op.Path),
+			Hash:      lf.Hash,
+			Size:      lf.Size,
+			Mode:      lf.Mode,
+			ModTime:   lf.ModTime,
+			Root:      e.cfg.ID,
+		})
+		paths = append(paths, op.Path)
+	}
+	if len(reqs) == 0 {
+		return
+	}
+
+	outcomes := e.rt.UploadBatch(ctx, reqs, nil)
+	for i, outcome := range outcomes {
+		p := paths[i]
+		if outcome.Err != nil {
+			msg := fmt.Sprintf("%s: %v", p, outcome.Err)
+			res.Errors = append(res.Errors, msg)
+			e.log("  error: %s", msg)
+			continue
+		}
+		lf := e.local[p]
+		e.recordUploadResult(ctx, p, lf, outcome.Info, res)
+	}
+	if err := e.state.save(); err != nil {
+		res.Errors = append(res.Errors, err.Error())
+	}
 }
 
 // clearConflictFor drops every conflict record that referenced the given
