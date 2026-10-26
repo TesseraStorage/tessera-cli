@@ -131,7 +131,9 @@ func cmdUploadPath(src string, args []string) {
 	defer cleanup()
 
 	if fi.IsDir() {
-		uploadDirectory(ctx, rt, idx, src, asFlag)
+		if err := uploadDir(ctx, rt, idx, src, asFlag); err != nil {
+			fatal("%v", err)
+		}
 		return
 	}
 
@@ -149,90 +151,17 @@ func cmdUploadPath(src string, args []string) {
 	}
 }
 
-// uploadDirectory walks a local directory and uploads each regular file under
-// the remote prefix, preserving relative paths.
-func uploadDirectory(ctx context.Context, rt *Remote, idx *Index, root, prefix string) {
-	// A directory upload treats --as as a prefix so that nested files keep
-	// their structure instead of all collapsing onto one remote path.
-	clean, err := NormalizeRelPath(prefix)
-	switch {
-	case err != nil:
-		// No --as given: namespace it under tessera/ so a plain directory
-		// upload cannot collide with another folder of the same name.
-		prefix = path.Join("tessera", path.Base(filepath.ToSlash(root)))
-	default:
-		prefix = clean
-	}
-
-	ig, _ := newIgnore(root, nil)
-
-	var files []string
-	var skipped int
-	if err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		rel := p
-		if r, rerr := filepath.Rel(root, p); rerr == nil {
-			rel = filepath.ToSlash(r)
-		}
-		if info.IsDir() {
-			if rel != "." && ig.Match(rel, true) {
-				skipped++
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		if ig.Match(rel, false) || strings.HasPrefix(filepath.Base(p), ".tessera-tmp-") {
-			skipped++
-			return nil
-		}
-		files = append(files, p)
-		return nil
-	}); err != nil {
-		fatal("walk %s: %v", root, err)
-	}
-	if skipped > 0 {
-		fmt.Printf("Skipped %d ignored file(s) (see .tesseraignore).\n", skipped)
-	}
-	sort.Strings(files)
-
-	fmt.Printf("Uploading %d file(s) from %s → %s/\n", len(files), root, prefix)
-	var uploaded int
-	var bytes int64
-	for i, p := range files {
-		rel, err := filepath.Rel(root, p)
-		if err != nil {
-			continue
-		}
-		remotePath := path.Join(prefix, filepath.ToSlash(rel))
-		if err := uploadOne(ctx, rt, idx, p, remotePath); err != nil {
-			fmt.Fprintf(os.Stderr, "  ! %s: %v\n", rel, err)
-			continue
-		}
-		uploaded++
-		if fi, err := os.Stat(p); err == nil {
-			bytes += fi.Size()
-		}
-		if (i+1)%10 == 0 || i+1 == len(files) {
-			fmt.Printf("  %d/%d (%.1f%%)\n", i+1, len(files), float64(i+1)/float64(len(files))*100)
-		}
-	}
-	fmt.Printf("Done: %d/%d uploaded, %s\n", uploaded, len(files), formatBytes(uint64(bytes)))
-}
-
-// uploadOne uploads a single file and updates the local index.
-func uploadOne(ctx context.Context, rt *Remote, idx *Index, localPath, remotePath string) error {
+// prepareUpload hashes one file and builds its upload request. It returns
+// already=true (and updates the local index) when identical content is already
+// stored at this very path, so no transfer is needed.
+func prepareUpload(ctx context.Context, rt *Remote, idx *Index, localPath, remotePath string) (req uploadRequest, already bool, err error) {
 	fi, err := os.Stat(localPath)
 	if err != nil {
-		return err
+		return uploadRequest{}, false, err
 	}
 	hash, err := hashFile(localPath)
 	if err != nil {
-		return fmt.Errorf("hash %s: %w", localPath, err)
+		return uploadRequest{}, false, fmt.Errorf("hash %s: %w", localPath, err)
 	}
 
 	// Content-addressed short circuit: an object has exactly one logical path,
@@ -251,12 +180,11 @@ func uploadOne(ctx context.Context, rt *Remote, idx *Index, localPath, remotePat
 			_ = idx.save()
 			recordUploadInSyncState(dinfo, fi.ModTime())
 			fmt.Printf("  = %s already stored with identical content\n", remotePath)
-			return nil
+			return uploadRequest{}, true, nil
 		}
 	}
 
-	start := time.Now()
-	info, err := rt.Upload(ctx, uploadRequest{
+	return uploadRequest{
 		LocalPath: localPath,
 		RelPath:   remotePath,
 		Name:      path.Base(remotePath),
@@ -264,10 +192,12 @@ func uploadOne(ctx context.Context, rt *Remote, idx *Index, localPath, remotePat
 		Size:      fi.Size(),
 		Mode:      fi.Mode(),
 		ModTime:   fi.ModTime(),
-	}, nil)
-	if err != nil {
-		return err
-	}
+	}, false, nil
+}
+
+// recordUploaded stores one completed upload in the local index and sync
+// bookkeeping, and prints the same line the single-file path always has.
+func recordUploaded(rt *Remote, idx *Index, req uploadRequest, info PathInfo, started time.Time) error {
 	idx.put(info)
 	if err := idx.save(); err != nil {
 		return err
@@ -275,9 +205,27 @@ func uploadOne(ctx context.Context, rt *Remote, idx *Index, localPath, remotePat
 	// If this path belongs to a registered sync folder, record it there as
 	// well. Otherwise the next `tessera sync` would treat the file as both new
 	// locally and new remotely and download its own upload back.
-	recordUploadInSyncState(info, fi.ModTime())
-	fmt.Printf("  ↑ %s (%s, %.1fs)\n", remotePath, formatBytes(uint64(fi.Size())), time.Since(start).Seconds())
+	recordUploadInSyncState(info, req.ModTime)
+	fmt.Printf("  ↑ %s (%s, %.1fs)\n", req.RelPath, formatBytes(uint64(req.Size)), time.Since(started).Seconds())
 	return nil
+}
+
+// uploadOne uploads a single file and updates the local index.
+func uploadOne(ctx context.Context, rt *Remote, idx *Index, localPath, remotePath string) error {
+	req, already, err := prepareUpload(ctx, rt, idx, localPath, remotePath)
+	if err != nil {
+		return err
+	}
+	if already {
+		return nil
+	}
+
+	start := time.Now()
+	info, err := rt.Upload(ctx, req, nil)
+	if err != nil {
+		return err
+	}
+	return recordUploaded(rt, idx, req, info, start)
 }
 
 // recordUploadInSyncState updates a sync root's state after an upload made
