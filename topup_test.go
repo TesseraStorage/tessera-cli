@@ -366,14 +366,14 @@ func TestRunTopupErrorOutcomes(t *testing.T) {
 		want []string
 	}{
 		{
-			name: "409 below_asset_minimum keeps the minimum",
-			err:  parseBillingError(http.StatusConflict, []byte(`{"detail":{"error":"below_asset_minimum","minimum_usd":"10.00"}}`)),
-			want: []string{"below_asset_minimum", "$10.00"},
+			name: "409 below_asset_minimum keeps the minimum and points at --invoice",
+			err:  parseBillingError(http.StatusConflict, []byte(`{"error":"below_asset_minimum","minimum_usd":"10.00"}`)),
+			want: []string{"below_asset_minimum", "$10.00", "--invoice"},
 		},
 		{
-			name: "422 amount_out_of_range points at the server range",
+			name: "422 amount_out_of_range does not invent a range",
 			err:  parseBillingError(http.StatusUnprocessableEntity, []byte(`{"detail":{"error":"amount_out_of_range"}}`)),
-			want: []string{"amount_out_of_range", "$5", "$10000"},
+			want: []string{"amount_out_of_range", "outside its accepted range"},
 		},
 		{
 			name: "422 unknown_rail",
