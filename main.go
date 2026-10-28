@@ -77,10 +77,14 @@ func main() {
 	case "account":
 		cmdAccount(args)
 	case "topup":
-		if len(positional(args)) < 1 {
-			usageError("topup <amount> [--x402] [--pay-currency <asset>] [--payment <base64 X-PAYMENT>]")
+		if !hasFlag(args, "--coins") && len(positional(args)) < 1 {
+			usageError("topup <amount> [--coin <code>] [--invoice] [--wallet] [--json] [--wait|--no-wait]")
 		}
 		cmdTopup(args)
+	case "wallet":
+		if err := runWallet(args); err != nil {
+			fatal("%v", err)
+		}
 	case "promo":
 		if len(positional(args)) < 1 {
 			usageError("promo <code>")
@@ -216,10 +220,14 @@ More:
 
 Billing:
   %s account [--json]        Show billing account, balance, and usage
-  %s topup <amount> [--x402] [--pay-currency <asset>]
-                             Add funds: NOWPayments invoice, or an x402 USDC challenge
+  %s topup <amount> [--coin <code>] [--invoice] [--wallet]
+                             Add funds by address (default), invoice, or x402 wallet
+  %s topup <amount> [--json] [--wait|--no-wait]
+                             Machine-readable output; poll until a terminal state
   %s topup <amount> --payment <base64 X-PAYMENT>
                              Submit a signed x402 authorization to settle
+  %s topup --coins           List coins accepted for top-ups
+  %s wallet init|show|fund   Local x402 wallet (opt-in)
   %s signup [--name <name>] [--contact-email <email>] [--force] [--json]
                              Create an agent account; the API key is shown once
   %s login --email <email> [--token <token>]
@@ -232,5 +240,5 @@ Docs:    https://tessera.storage
 `, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe,
 		exe, exe, exe, exe, exe, exe,
 		exe, exe, exe, exe, exe, exe,
-		exe, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe)
+		exe, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe)
 }
