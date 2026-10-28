@@ -20,6 +20,7 @@ replace go.sia.tech/siastorage => /root/siastorage-fork
 replace go.sia.tech/indexd => /root/tessera
 
 require (
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
 	github.com/dunglas/httpsfv v1.1.0 // indirect
 	github.com/julienschmidt/httprouter v1.3.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
