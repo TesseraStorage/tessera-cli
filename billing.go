@@ -114,6 +114,25 @@ type billingAPI interface {
 	Promo(code string) (map[string]any, error)
 }
 
+// Optional billing capabilities. They are separate interfaces so the existing
+// fakes and any older client keep satisfying billingAPI; callers type-assert
+// and fall back to the original behaviour when a capability is absent.
+type topupModeAPI interface {
+	TopupWithMode(amount, rail, payCurrency, paymentHeader, mode string) (map[string]any, error)
+}
+
+type topupStatusAPI interface {
+	TopupStatus(paymentIntentID string) (map[string]any, error)
+}
+
+type currencyAPI interface {
+	Currencies() ([]map[string]any, error)
+}
+
+type x402ChallengeAPI interface {
+	X402Challenge(amount string) (map[string]any, error)
+}
+
 // httpBilling speaks moneyd's public /api/v1 surface over net/http.
 type httpBilling struct {
 	base     string
@@ -435,6 +454,13 @@ func (b *httpBilling) Activate() error {
 // below_asset_minimum with Extra["minimum_usd"], 422, 502 settlement_pending
 // with Extra["transaction"], 503 are all reachable this way).
 func (b *httpBilling) Topup(amount, rail, payCurrency, paymentHeader string) (map[string]any, error) {
+	return b.TopupWithMode(amount, rail, payCurrency, paymentHeader, "")
+}
+
+// TopupWithMode is Topup plus the API's optional `mode` field ("direct" or
+// "invoice"). An empty mode sends no field, so the server's own default
+// applies; older servers ignore the extra field.
+func (b *httpBilling) TopupWithMode(amount, rail, payCurrency, paymentHeader, mode string) (map[string]any, error) {
 	body := map[string]any{"amount_usd": amount}
 	if rail != "" {
 		body["rail"] = rail
@@ -442,15 +468,71 @@ func (b *httpBilling) Topup(amount, rail, payCurrency, paymentHeader string) (ma
 	if payCurrency != "" {
 		body["pay_currency"] = payCurrency
 	}
+	if mode != "" {
+		body["mode"] = mode
+	}
 	req, err := b.request(http.MethodPost, "/billing/topup", body)
 	if err != nil {
 		return nil, err
 	}
 	if paymentHeader != "" {
 		req.Header.Set("X-PAYMENT", paymentHeader)
+		// The v2 wire name is PAYMENT-SIGNATURE; the server accepts either, so
+		// set both for compatibility and keep X-PAYMENT for older deployments.
+		if rail == "x402" {
+			req.Header.Set("PAYMENT-SIGNATURE", paymentHeader)
+		}
 	}
 	_, data, err := b.do(req, authAuto, "")
 	if err != nil {
+		return nil, err
+	}
+	return decodeBillingObject(data)
+}
+
+// TopupStatus polls one of the caller's top-up intents.
+func (b *httpBilling) TopupStatus(paymentIntentID string) (map[string]any, error) {
+	req, err := b.request(http.MethodGet, "/billing/topup/"+url.PathEscape(paymentIntentID), nil)
+	if err != nil {
+		return nil, err
+	}
+	_, data, err := b.do(req, authAuto, "")
+	if err != nil {
+		return nil, err
+	}
+	return decodeBillingObject(data)
+}
+
+// Currencies lists the coins the rail currently accepts (public endpoint).
+func (b *httpBilling) Currencies() ([]map[string]any, error) {
+	req, err := b.request(http.MethodGet, "/billing/currencies", nil)
+	if err != nil {
+		return nil, err
+	}
+	_, data, err := b.do(req, authNone, "")
+	if err != nil {
+		return nil, err
+	}
+	var out []map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("decode currency list: %w", err)
+	}
+	return out, nil
+}
+
+// X402Challenge requests an x402 PaymentRequired document without a payment
+// signature. The API answers 402; the document is preserved in billingError.Extra.
+func (b *httpBilling) X402Challenge(amount string) (map[string]any, error) {
+	req, err := b.request(http.MethodGet, "/billing/x402/challenge?amount_usd="+url.QueryEscape(amount), nil)
+	if err != nil {
+		return nil, err
+	}
+	_, data, err := b.do(req, authAuto, "")
+	if err != nil {
+		var be *billingError
+		if errors.As(err, &be) && be.Status == http.StatusPaymentRequired {
+			return be.Extra, nil
+		}
 		return nil, err
 	}
 	return decodeBillingObject(data)

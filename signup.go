@@ -118,4 +118,6 @@ func printSignupResult(result signupResult, asJSON bool) {
 	fmt.Println()
 	fmt.Println("IMPORTANT: store this API key now. It will not be shown again;")
 	fmt.Println("it is saved in your local config file (keep that file private).")
+	fmt.Println()
+	fmt.Println("Next: run 'tessera topup 10' to add funds.")
 }

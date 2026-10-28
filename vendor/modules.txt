@@ -1,3 +1,7 @@
+# github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
+## explicit; go 1.17
+github.com/decred/dcrd/dcrec/secp256k1/v4
+github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa
 # github.com/dunglas/httpsfv v1.1.0
 ## explicit; go 1.14
 github.com/dunglas/httpsfv
@@ -105,6 +109,7 @@ golang.org/x/crypto/hkdf
 golang.org/x/crypto/internal/alias
 golang.org/x/crypto/internal/poly1305
 golang.org/x/crypto/poly1305
+golang.org/x/crypto/sha3
 # golang.org/x/net v0.57.0
 ## explicit; go 1.25.0
 golang.org/x/net/bpf
