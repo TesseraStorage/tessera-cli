@@ -3,6 +3,7 @@ module github.com/TesseraStorage/tessera-cli
 go 1.26.0
 
 require (
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
 	go.sia.tech/core v0.21.7
 	go.sia.tech/indexd v0.4.3-0.20260811102619-b064dc9575d1
 	go.sia.tech/siastorage v0.2.0
@@ -20,7 +21,6 @@ replace go.sia.tech/siastorage => /root/siastorage-fork
 replace go.sia.tech/indexd => /root/tessera
 
 require (
-	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
 	github.com/dunglas/httpsfv v1.1.0 // indirect
 	github.com/julienschmidt/httprouter v1.3.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
