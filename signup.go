@@ -34,6 +34,16 @@ var errSignupKeyExists = errors.New("already signed up on this machine; pass --f
 // the cold-start path; no storage credentials are minted here (registration
 // happens after login).
 func cmdSignup(args []string) {
+	// Side-effect free out: cmdSignup never checked --help/-h, so
+	// `tessera signup --help` created a real agent account and printed a
+	// real one-time API key. Fixed per the same login.go --help bug.
+	if hasFlag(args, "--help") || hasFlag(args, "-h") {
+		fmt.Println("Usage: tessera signup [--name <name>] [--contact-email <email>] [--force] [--json]")
+		fmt.Println()
+		fmt.Println("Creates a new agent account and stores its one-time API key.")
+		fmt.Println("This command does not run when only --help/-h is given.")
+		return
+	}
 	result, err := signup(args)
 	if err != nil && result.APIKey == "" {
 		fatal("%v", err)
