@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -689,3 +690,59 @@ var (
 	_ currencyAPI      = (*fakeDirectAPI)(nil)
 	_ x402ChallengeAPI = (*fakeDirectAPI)(nil)
 )
+
+func TestBelowMinimumGuidanceMentionsAmountAndInvoice(t *testing.T) {
+	err := &billingError{
+		Status: http.StatusConflict,
+		Code:   "below_asset_minimum",
+		Extra:  map[string]any{"minimum_usd": "8.64"},
+	}
+	msg := describeTopupError(err)
+	for _, want := range []string{"below_asset_minimum", "$8.64", "--invoice"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("describeTopupError = %q, missing %q", msg, want)
+		}
+	}
+}
+
+func TestEmitTopupErrorJSONCarriesTheMinimum(t *testing.T) {
+	out := captureStdout(t, func() {
+		emitTopupErrorJSON(&billingError{
+			Status: http.StatusConflict,
+			Code:   "below_asset_minimum",
+			Extra:  map[string]any{"minimum_usd": "8.64"},
+		})
+	})
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("error output is not one JSON object: %v\n%s", err, out)
+	}
+	if doc["error"] != "below_asset_minimum" {
+		t.Errorf("error = %v", doc["error"])
+	}
+	if doc["minimum_usd"] != "8.64" {
+		t.Errorf("minimum_usd = %v", doc["minimum_usd"])
+	}
+	if doc["status"] != float64(http.StatusConflict) {
+		t.Errorf("status = %v", doc["status"])
+	}
+	if !strings.Contains(topupField(doc, "message"), "$8.64") {
+		t.Errorf("message = %v", doc["message"])
+	}
+}
+
+func TestEmitTopupErrorJSONForANonBillingError(t *testing.T) {
+	out := captureStdout(t, func() {
+		emitTopupErrorJSON(errors.New("dial tcp: connection refused"))
+	})
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("error output is not JSON: %v\n%s", err, out)
+	}
+	if doc["error"] != "client_error" {
+		t.Errorf("error = %v", doc["error"])
+	}
+	if !strings.Contains(topupField(doc, "message"), "connection refused") {
+		t.Errorf("message = %v", doc["message"])
+	}
+}

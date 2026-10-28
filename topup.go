@@ -50,8 +50,40 @@ func cmdTopup(args []string) {
 		fatal("%v", err)
 	}
 	if err := runTopup(api, req); err != nil {
+		if req.json {
+			// One JSON document on stdout whether the request succeeded or
+			// failed, so an agent never has to parse a human sentence.
+			emitTopupErrorJSON(err)
+			os.Exit(1)
+		}
 		fatal("%s", describeTopupError(err))
 	}
+}
+
+// emitTopupErrorJSON renders a failed top-up as one machine-readable object.
+// It carries the API's error code, HTTP status and the actionable fields
+// (minimum_usd, transaction) when present.
+func emitTopupErrorJSON(err error) {
+	out := map[string]any{
+		"error":   "client_error",
+		"message": describeTopupError(err),
+	}
+	var be *billingError
+	if errors.As(err, &be) {
+		code := be.Code
+		if code == "" {
+			code = "http_error"
+		}
+		out["error"] = code
+		out["status"] = be.Status
+		if minimum := topupField(be.Extra, "minimum_usd"); minimum != "—" {
+			out["minimum_usd"] = minimum
+		}
+		if tx := topupField(be.Extra, "transaction"); tx != "—" {
+			out["transaction"] = tx
+		}
+	}
+	emitJSON(out)
 }
 
 // topupRequest is one parsed topup invocation.
@@ -598,7 +630,7 @@ func topupField(m map[string]any, key string) string {
 }
 
 // describeTopupError maps a failed topup to the guidance printed before the
-// command exits non-zero. moneyd's codes become the action to take; anything
+// command exits non-zero. The API's codes become the action to take; anything
 // unexpected passes through as the client rendered it. The X-PAYMENT contents
 // and stored credentials are never part of err.
 func describeTopupError(err error) string {
@@ -609,13 +641,16 @@ func describeTopupError(err error) string {
 	switch {
 	case be.Status == http.StatusConflict && be.Code == "below_asset_minimum":
 		if minimum := topupField(be.Extra, "minimum_usd"); minimum != "—" {
-			return fmt.Sprintf("below_asset_minimum — the minimum for this payment asset is $%s; retry with at least that amount", minimum)
+			return fmt.Sprintf(
+				"below_asset_minimum — the minimum for a direct top-up in this asset is $%s; retry with at least $%s, or pass --invoice to pay a smaller amount in a browser",
+				minimum, minimum,
+			)
 		}
-		return "below_asset_minimum — retry with a larger amount"
+		return "below_asset_minimum — retry with a larger amount, or pass --invoice"
 	case be.Status == http.StatusUnprocessableEntity && be.Code == "amount_out_of_range":
-		return "amount_out_of_range — moneyd accepts top-ups from $5 to $10000"
+		return "amount_out_of_range — the server rejected this amount as outside its accepted range"
 	case be.Status == http.StatusUnprocessableEntity && be.Code == "unknown_rail":
-		return "unknown_rail — moneyd does not support that payment rail"
+		return "unknown_rail — the server does not support that payment rail"
 	case be.Status == http.StatusServiceUnavailable && be.Code == "payments_unconfigured":
 		return "payments_unconfigured — payments are not configured on the server yet; try again later"
 	case be.Status == http.StatusBadGateway && be.Code == "settlement_pending":
