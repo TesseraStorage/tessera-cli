@@ -713,6 +713,30 @@ func promptProtectPhrase(cfg *Config, phrase string) {
 // should answer 202) and, if it is not, add an access rule for it. That is an
 // operational precondition, not something this command can work around.
 func cmdLogin(args []string) {
+	// Side-effect free out: every other cmd* in this CLI checks --help/-h
+	// before doing anything (config_cmd.go, sync_cmd.go, folder.go,
+	// uninstall.go, cmdPhrase). cmdLogin never did, so `tessera login --help`
+	// fell through to the real dispatch below and could mint/link a storage
+	// identity, write secrets to config, and print a fresh recovery phrase --
+	// a destructive side effect from what looks like a pure help invocation.
+	// This must be the first thing checked, before any flag/credential
+	// inspection below.
+	if hasFlag(args, "--help") || hasFlag(args, "-h") {
+		fmt.Println(`Usage:
+  tessera login                                   legacy connect-key + browser flow
+  tessera login <phrase>                          legacy flow with a supplied phrase
+  tessera login --email <e>                       request a magic-link sign-in link
+  tessera login --email <e> --token <t> [phrase]  exchange the link and register headlessly
+  tessera login --billing-logout                  revoke and clear the billing session
+
+Env:
+  TESSERA_PHRASE    recovery phrase, used like a positional phrase argument
+
+This command does not run, link an identity, or print a recovery phrase
+when only --help/-h is given.`)
+		return
+	}
+
 	// A seed phrase supplied up front makes the resulting app key
 	// deterministic, which is what the test key documented in TESTING.md
 	// relies on. It is also useful for restoring an existing account. It is
@@ -997,6 +1021,7 @@ func cmdStatus(args ...string) {
 	if hasFlag(args, "--json") {
 		emitJSON(map[string]interface{}{
 			"ready":        acct.Ready,
+			"ready_note":   readyNote(acct.Ready),
 			"indexer":      cfg.IndexerURL,
 			"app_id":       cfg.AppID,
 			"files":        len(idx.Paths),
@@ -1008,6 +1033,9 @@ func cmdStatus(args ...string) {
 	}
 
 	fmt.Printf("Ready:     %v\n", acct.Ready)
+	if !acct.Ready {
+		fmt.Printf("           (%s)\n", readyNote(acct.Ready))
+	}
 	fmt.Printf("Files:     %d\n", len(idx.Paths))
 	fmt.Printf("Total:     %s\n", formatBytes(idx.TotalSize()))
 	if len(roots) > 0 {
@@ -1021,6 +1049,22 @@ func cmdStatus(args ...string) {
 
 func sameCursor(a, b slabs.Cursor) bool {
 	return a.Key == b.Key && a.After.Equal(b.After)
+}
+
+// readyNote explains what the server's Ready flag actually gates: a
+// repair-redundancy host-funding threshold (indexd side, accounts/manager.go
+// ReadyHostThreshold), not "can this account store/retrieve at all." Basic
+// upload/download works against whatever hosts are already funded, below or
+// above that threshold -- Ready:false only means fewer hosts are funded than
+// the threshold wants for full repair headroom. The CLI cannot change or
+// re-derive the underlying flag (that's indexd, out of scope here); this
+// only makes the existing value intelligible instead of unexplained.
+func readyNote(ready bool) string {
+	if ready {
+		return "funded past the repair-redundancy threshold"
+	}
+	return "contracts not yet funded past the repair-redundancy threshold -- " +
+		"this does not block normal upload/download"
 }
 
 func readPassword(prompt string) string {
