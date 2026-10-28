@@ -1873,6 +1873,49 @@ func TestLegacyLoginPreservesBillingFields(t *testing.T) {
 	})
 }
 
+// TestCmdLoginHelpIsSideEffectFree is the regression test for the packet
+// "cli-ready-and-help" bug: `tessera login --help` used to fall straight
+// through to the real dispatch (billingLoginFlags -> storageRegistration ->
+// storageRegister), which could mint/link a storage identity, write secrets
+// to config, and print a fresh recovery phrase. --help/-h must now return
+// before any of that runs, with zero filesystem side effects.
+func TestCmdLoginHelpIsSideEffectFree(t *testing.T) {
+	for _, flag := range []string{"--help", "-h"} {
+		t.Run(flag, func(t *testing.T) {
+			home := testConfigHome(t)
+			out := captureStdout(t, func() { cmdLogin([]string{flag}) })
+			if !strings.Contains(out, "Usage:") {
+				t.Errorf("login %s did not print usage:\n%s", flag, out)
+			}
+			if strings.Contains(out, "RECOVERY PHRASE") {
+				t.Errorf("login %s printed a recovery phrase:\n%s", flag, out)
+			}
+			entries, _ := os.ReadDir(home)
+			if len(entries) != 0 {
+				t.Errorf("login %s wrote to TESSERA_HOME (%s): %v", flag, home, entries)
+			}
+		})
+	}
+}
+
+// TestCmdSignupHelpIsSideEffectFree mirrors the login case: `tessera signup
+// --help` must not create a real agent account or print a real API key.
+func TestCmdSignupHelpIsSideEffectFree(t *testing.T) {
+	for _, flag := range []string{"--help", "-h"} {
+		t.Run(flag, func(t *testing.T) {
+			home := testConfigHome(t)
+			out := captureStdout(t, func() { cmdSignup([]string{flag}) })
+			if !strings.Contains(out, "Usage:") {
+				t.Errorf("signup %s did not print usage:\n%s", flag, out)
+			}
+			entries, _ := os.ReadDir(home)
+			if len(entries) != 0 {
+				t.Errorf("signup %s wrote to TESSERA_HOME (%s): %v", flag, home, entries)
+			}
+		})
+	}
+}
+
 // TestPhrasePrintHelpers pins the extracted legacy banner text: the legacy
 // login flow and the headless registration share these helpers, so their bytes
 // must not drift.
