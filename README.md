@@ -346,7 +346,7 @@ Set `TESSERA_HOME` to use a different directory (useful for several accounts).
   "billing_session": "...",        // tessera_session cookie (human login) — local secret
   "billing_agent_key": "tsk_...",  // agent API key — local secret
   "app_id": "...",
-  "app_key": "...",
+  "app_key": "...",                // 128 hex chars: full 64-byte Ed25519 private key, NOT a 32-byte seed
   "phrase_encrypted": "...",       // optional — AES-GCM with Argon2id key
   "phrase_salt": "...",
   "version_retention": 0,          // 0 = keep 1 previous copy (default), negative = off
@@ -358,6 +358,28 @@ Set `TESSERA_HOME` to use a different directory (useful for several accounts).
 `billing_session` and `billing_agent_key` are local secrets: the file is written
 `0600`, the values are never logged or echoed by any command (except the
 one-time `signup` print), and the file must never be committed or shared.
+
+### Injecting a pre-issued credential
+
+If you already have a credential (e.g. a storage-only app key handed to you by
+an operator, or minted through a headless redemption flow) you do not need to
+run `tessera login` at all — write `~/.tessera/config.json` directly:
+
+```json
+{
+  "indexer_url": "https://index.tessera.storage",
+  "app_id": "<64-hex-char app ID>",
+  "app_key": "<128-hex-char full private key>"
+}
+```
+
+`app_key` must be the **full 64-byte Ed25519 private key as 128 hex
+characters** (`seed(32) || public_key(32)`) — exactly what the SDK's
+`appKey().export()` produces. A bare 32-byte seed (64 hex characters) is not
+enough: it decodes as valid hex and will be accepted by nothing that checks
+hex-validity alone, but fails ed25519 signing. The CLI now rejects a
+wrong-length key immediately with a clear error instead of failing deep
+inside a transfer.
 
 ```bash
 tessera config --version-retention 5   # keep 5 previous versions per file

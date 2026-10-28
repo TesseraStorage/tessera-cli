@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -25,11 +26,10 @@ import (
 
 // connectSDK builds an SDK instance from the saved config.
 func connectSDK(ctx context.Context, cfg *Config) (*siastorage.SDK, func(), error) {
-	appKeyBytes, err := hex.DecodeString(cfg.AppKey)
-	if err != nil || len(appKeyBytes) < 32 {
-		return nil, nil, fmt.Errorf("invalid app key (%d bytes) — run 'tessera login'", len(appKeyBytes))
+	appKey, err := parseAppKey(cfg.AppKey)
+	if err != nil {
+		return nil, nil, err
 	}
-	appKey := types.PrivateKey(appKeyBytes)
 
 	var appID types.Hash256
 	if err := appID.UnmarshalText([]byte(cfg.AppID)); err != nil {
@@ -60,13 +60,28 @@ func connectSDK(ctx context.Context, cfg *Config) (*siastorage.SDK, func(), erro
 // whoami). Commands that need host connectivity (upload, download, fetch)
 // must still use connectSDK.
 func connectAPI(cfg *Config) (*indexdapp.Client, types.PrivateKey, error) {
-	appKeyBytes, err := hex.DecodeString(cfg.AppKey)
-	if err != nil || len(appKeyBytes) < 32 {
-		return nil, nil, fmt.Errorf("invalid app key (%d bytes) — run 'tessera login'", len(appKeyBytes))
+	appKey, err := parseAppKey(cfg.AppKey)
+	if err != nil {
+		return nil, nil, err
 	}
-	appKey := types.PrivateKey(appKeyBytes)
 	client := indexdapp.NewClient(cfg.IndexerURL)
 	return client, appKey, nil
+}
+
+// parseAppKey decodes cfg.AppKey, which must be the full 64-byte Ed25519
+// private key as 128 hex characters (seed(32) || public_key(32)) -- the
+// same shape the SDK's appKey().export() produces. A shorter value (e.g. a
+// bare 32-byte seed) decodes fine as hex but fails ed25519 signing deep
+// inside the SDK with a much less clear error, so fail fast here instead.
+func parseAppKey(hexKey string) (types.PrivateKey, error) {
+	b, err := hex.DecodeString(hexKey)
+	if err != nil {
+		return nil, fmt.Errorf("invalid app key: not valid hex — run 'tessera login', or see README.md for the config.json shape for a pre-issued credential")
+	}
+	if len(b) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("invalid app key: got %d bytes, need the full %d-byte private key (%d hex characters) — run 'tessera login', or see README.md for the config.json shape for a pre-issued credential", len(b), ed25519.PrivateKeySize, ed25519.PrivateKeySize*2)
+	}
+	return types.PrivateKey(b), nil
 }
 
 // openBrowser tries to open url in the default browser. It is a package-level
@@ -964,7 +979,7 @@ func cmdWhoami() {
 	fmt.Printf("Indexer:  %s\n", cfg.IndexerURL)
 	fmt.Printf("App ID:   %s\n", cfg.AppID)
 	if len(cfg.AppKey) >= 16 {
-		fmt.Printf("App Key:  %s... (seed saved)\n", cfg.AppKey[:16])
+		fmt.Printf("App Key:  %s... (key saved)\n", cfg.AppKey[:16])
 	} else {
 		fmt.Println("App Key:  (missing)")
 	}
