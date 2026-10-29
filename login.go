@@ -963,8 +963,8 @@ func cmdWhoami() {
 	}
 	fmt.Printf("Indexer:  %s\n", cfg.IndexerURL)
 	fmt.Printf("App ID:   %s\n", cfg.AppID)
-	if len(cfg.AppKey) >= 16 {
-		fmt.Printf("App Key:  %s... (seed saved)\n", cfg.AppKey[:16])
+	if pub := appKeyPublicHex(cfg.AppKey); pub != "" {
+		fmt.Printf("App Key:  %s (public key; private key saved locally)\n", pub)
 	} else {
 		fmt.Println("App Key:  (missing)")
 	}
@@ -1051,20 +1051,20 @@ func sameCursor(a, b slabs.Cursor) bool {
 	return a.Key == b.Key && a.After.Equal(b.After)
 }
 
-// readyNote explains what the server's Ready flag actually gates: a
-// repair-redundancy host-funding threshold (indexd side, accounts/manager.go
-// ReadyHostThreshold), not "can this account store/retrieve at all." Basic
-// upload/download works against whatever hosts are already funded, below or
-// above that threshold -- Ready:false only means fewer hosts are funded than
-// the threshold wants for full repair headroom. The CLI cannot change or
-// re-derive the underlying flag (that's indexd, out of scope here); this
-// only makes the existing value intelligible instead of unexplained.
+// readyNote explains what the server's Ready flag means. indexd sets Ready once
+// the account's host funding passes its repair-redundancy threshold
+// (accounts/manager.go ReadyHostThreshold). A free agent account stays
+// Ready:false until its first paid top-up, even though Tessera funds enough
+// hosts for its free first upload. Whether a transfer can run right now is
+// decided by the CLI's own readiness check (readiness.go), which waits for
+// host funding to land and explains any blocker.
 func readyNote(ready bool) string {
 	if ready {
-		return "funded past the repair-redundancy threshold"
+		return "host funding is past the repair-redundancy threshold"
 	}
-	return "contracts not yet funded past the repair-redundancy threshold -- " +
-		"this does not block normal upload/download"
+	return "host funding is not yet past the repair-redundancy threshold " +
+		"(normal for a new or free account). Uploads and downloads check host " +
+		"funding first: they wait for it to land, or tell you exactly what is missing"
 }
 
 func readPassword(prompt string) string {
@@ -1079,6 +1079,7 @@ func readPassword(prompt string) string {
 
 func fatal(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
+	msg = explainFatalHostShortage(msg)
 	if !strings.HasSuffix(msg, "\n") {
 		msg += "\n"
 	}

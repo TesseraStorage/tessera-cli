@@ -124,6 +124,8 @@ func cmdUploadPath(src string, args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
 	defer cancel()
 
+	requireTransferReady(ctx, cfg, true)
+
 	rt, idx, cleanup, err := connectForWrite(ctx, cfg)
 	if err != nil {
 		fatal("%v", err)
@@ -132,7 +134,7 @@ func cmdUploadPath(src string, args []string) {
 
 	if fi.IsDir() {
 		if err := uploadDir(ctx, rt, idx, src, asFlag); err != nil {
-			fatal("%v", err)
+			fatal("%v", explainTransferError(cfg, err, true))
 		}
 		return
 	}
@@ -147,7 +149,7 @@ func cmdUploadPath(src string, args []string) {
 	}
 
 	if err := uploadOne(ctx, rt, idx, src, remotePath); err != nil {
-		fatal("%v", err)
+		fatal("%v", explainTransferError(cfg, err, true))
 	}
 }
 
@@ -304,6 +306,8 @@ func cmdDownload(args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
+	requireTransferReady(ctx, cfg, false)
+
 	rt, idx, cleanup, err := connectForWrite(ctx, cfg)
 	if err != nil {
 		fatal("%v", err)
@@ -325,7 +329,7 @@ func cmdDownload(args []string) {
 	start := time.Now()
 	n, err := rt.Download(ctx, pathInfoFromIndex(entry), dest, 0644)
 	if err != nil {
-		fatal("download: %v", err)
+		fatal("download: %v", explainTransferError(cfg, err, false))
 	}
 	elapsed := time.Since(start)
 
@@ -537,6 +541,8 @@ func cmdFetch(sharedURL, outName string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
+	requireTransferReady(ctx, cfg, false)
+
 	sdk, cleanup, err := connectSDK(ctx, cfg)
 	if err != nil {
 		fatal("%v", err)
@@ -548,7 +554,7 @@ func cmdFetch(sharedURL, outName string) {
 	start := time.Now()
 	rc, err := sdk.DownloadSharedObject(ctx, sharedURL)
 	if err != nil {
-		fatal("download: %v", err)
+		fatal("download: %v", explainTransferError(cfg, err, false))
 	}
 	defer rc.Close()
 
