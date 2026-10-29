@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // statusCommand is the `status` dispatch seam (precedent: serviceCommand):
@@ -67,6 +68,14 @@ func main() {
 	cmd := os.Args[1]
 	args := os.Args[2:]
 
+	// Daily update check, started in the background so it never delays the
+	// command; its result is printed (at most) once the command finishes.
+	notices := startBackgroundNotices(cmd, args)
+	switch cmd {
+	case "upload", "put", "download", "get", "fetch":
+		configureProgress(args)
+	}
+
 	switch cmd {
 	case "version", "--version":
 		cmdVersion()
@@ -77,8 +86,8 @@ func main() {
 	case "account":
 		cmdAccount(args)
 	case "topup":
-		if !hasFlag(args, "--coins") && len(positional(args)) < 1 {
-			usageError("topup <amount> [--coin <code>] [--invoice] [--wallet] [--json] [--wait|--no-wait]")
+		if !hasFlag(args, "--coins") && !hasFlag(args, "--minimums") && !hasFlag(args, "--help") && !hasFlag(args, "-h") && len(positional(args)) < 1 {
+			usageError("topup <amount> [--asset <code>] [--invoice] [--wallet] [--json] [--wait|--no-wait]  (tessera topup --help)")
 		}
 		cmdTopup(args)
 	case "wallet":
@@ -91,7 +100,9 @@ func main() {
 		}
 		cmdPromo(args)
 	case "logout":
-		cmdLogout()
+		cmdLogout(args...)
+	case "update", "upgrade":
+		cmdUpdate(args)
 	case "whoami":
 		cmdWhoami()
 	case "status":
@@ -160,16 +171,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Quiet, throttled "newer version" notice (Packet 4). Best-effort: any
-	// failure is silent, it is opt-out via 'tessera config --update-check off',
-	// and it never installs anything. cmdVersion prints it itself.
-	if cmd != "version" && cmd != "--version" {
-		if cfg, err := loadConfig(); err == nil {
-			if msg := updateNotice(cfg); msg != "" {
-				fmt.Fprintln(os.Stderr, msg)
-			}
-		}
-	}
+	notices.print()
 }
 
 // usageError prints a one-line usage hint and exits.
@@ -180,70 +182,91 @@ func usageError(usage string) {
 
 func printUsage() {
 	exe := filepath.Base(os.Args[0])
-	fmt.Printf(`Tessera CLI — decentralized storage on Sia.
+	fmt.Print(strings.ReplaceAll(usageText, "{exe}", exe))
+}
 
-Usage:
-  %s login                   Connect this machine to Tessera
-  %s logout                  Remove local credentials
-  %s whoami                  Show current account identity
-  %s status                  Account info + total storage used
-  %s list [prefix]           List files (path, size, date)
-  %s upload <path>           Upload a file or folder
-  %s download <path>         Download a file
-  %s delete <path>           Delete a file (see also: trash)
-  %s share <path>            Create a share link for a file
-  %s fetch <url> [name]      Download a shared file
+const usageText = `Tessera CLI — decentralized storage on Sia.
+
+Get started:
+  {exe} signup                  Create an account AND log this machine in
+                             (prints your recovery phrase + API key once: keep both)
+  {exe} login "<12 words>"      Restore your account on any machine (same account + App ID)
+  {exe} login --api-key <key> ["<12 words>"]
+                             Log in with your API key
+  {exe} login --email <email> [--token <token>]
+                             Sign in by email (magic link)
+  {exe} logout [--yes]          Remove local credentials (account and files stay)
+
+Files:
+  {exe} whoami                  Show current account identity
+  {exe} status                  Account readiness + total storage used
+  {exe} list [prefix]           List files (path, size, date)
+  {exe} upload <path> [--quiet] Upload a file or folder
+  {exe} download <path> [--quiet]
+                             Download a file
+                             (live progress on stderr: phase, bytes, %, speed, ETA;
+                             plain lines every 10s when stderr is not a terminal;
+                             --quiet / TESSERA_QUIET=1 hides it)
+  {exe} delete <path>           Delete a file (see also: trash)
+  {exe} share <path>            Create a share link for a file
+  {exe} fetch <url> [name]      Download a shared file
 
 Folders & sync:
-  %s sync add <folder> --as <remote-prefix>
+  {exe} sync add <folder> --as <remote-prefix>
                              Start syncing a folder (see 'sync add -h')
-  %s sync [--dry-run]        Sync registered folders once
-  %s sync watch              Keep folders in sync continuously
-  %s sync status|list|remove|conflicts
-  %s folder add <path>       Create a drop-in folder and start syncing
-  %s folder open|status      Open it in your file manager
+  {exe} sync [--dry-run]        Sync registered folders once
+  {exe} sync watch              Keep folders in sync continuously
+  {exe} sync status|list|remove|conflicts
+  {exe} folder add <path>       Create a drop-in folder and start syncing
+  {exe} folder open|status      Open it in your file manager
 
 More:
-  %s find <pattern>          Search your files (--content for text search)
-  %s versions <path>         List retained versions
-  %s trash list|restore|empty|rm <path>
-  %s audit [path]            Verify durability of stored data
-  %s usage [--by-folder] [--cost] [--json]
+  {exe} find <pattern>          Search your files (--content for text search)
+  {exe} versions <path>         List retained versions
+  {exe} trash list|restore|empty|rm <path>
+  {exe} audit [path]            Verify durability of stored data
+  {exe} usage [--by-folder] [--cost] [--json]
                              Storage usage; --cost adds the netted egress estimate
-  %s index --rebuild         Rebuild the local metadata index
-  %s config [--json]         Show or change settings
-  %s version                 Print this build's version (from the release tag)
-  %s service install|start|stop|status
+  {exe} index --rebuild         Rebuild the local metadata index
+  {exe} config [--json]         Show or change settings
+  {exe} version                 Print this build's version
+  {exe} update [--check]        Install the latest release (SHA256SUMS-verified)
+  {exe} service install|start|stop|status
                              Run the watcher as a background service
-  %s uninstall               Remove the watcher, this binary, and (optionally) local state
-  %s phrase show             Reveal the locally-saved recovery phrase (master password)
+  {exe} uninstall               Remove the watcher, this binary, and (optionally) local state
+  {exe} phrase show             Reveal the locally-saved recovery phrase (master password)
 
-Billing:
-  %s account [--json]        Show billing account, balance, and usage
-  %s topup <amount> [--coin <code>] [--invoice] [--wallet]
-                             Add funds by address (default), invoice, or x402 wallet
-  %s topup <amount> [--json] [--wait|--no-wait]
+Billing & account:
+  {exe} account [--json]        Show account, balance, readiness and usage
+  {exe} account delete [--yes]  Permanently delete your account and all files
+                             (remaining balance is forfeited, no refunds)
+  {exe} topup <amount> [--asset <code>] [--invoice] [--wallet]
+                             Add funds: x402 wallet (any amount from $0.01),
+                             deposit address in a chosen coin (USDC on Base by
+                             default; XMR, BTC, ETH, USDT...), or browser invoice.
+                             See 'tessera topup --help'.
+  {exe} topup <amount> [--json] [--wait|--no-wait]
                              Machine-readable output; poll until a terminal state
-  %s topup <amount> --payment <base64 X-PAYMENT>
+  {exe} topup <amount> --payment <base64 X-PAYMENT>
                              Submit a signed x402 authorization to settle
-  %s topup --coins           List coins accepted for top-ups
-  %s wallet init|show|fund   Local x402 wallet (opt-in)
-  %s signup [--name <name>] [--contact-email <email>] [--force] [--json]
-                             Create an agent account; the API key is shown once
-  %s login --email <email> [--token <token>]
-                             Sign in with a magic link (billing session)
-  %s login --billing-logout  End the billing session (agent key untouched)
-  %s promo <code>            Redeem a promo code
+  {exe} topup --coins           List coins accepted for top-ups
+  {exe} topup --minimums [--asset <code>]
+                             Live minimums: crypto via NOWPayments has a per-coin
+                             processor minimum (~$0.38 USDC on Base, more for
+                             other coins); x402 (--wallet) from the $0.01 floor
+  {exe} wallet init|show|fund   Local x402 wallet (opt-in)
+  {exe} login --billing-logout  End the email session (API key untouched)
+  {exe} promo <code>            Redeem a promo code
 
-New accounts get a free first upload; the minimum top-up is $0.01.
-Uploads and downloads first check that enough storage hosts are funded and
-reachable (TCP, usually port 9988), wait while funding lands, and say what is
-missing if they cannot run. TESSERA_SKIP_PREFLIGHT=1 skips that check.
+Account readiness (shown by signup, login, status and account):
+  free trial         new accounts: the first upload is prepaid by Tessera
+  top up to continue the trial is used or the balance is $0: tessera topup 5
+  ready              funded; uploads and downloads run normally
+The low-level "host funding ready" flag from the indexer stays false for a
+free-trial account until its first top-up; that is expected, not an error.
+Uploads and downloads check host funding first, wait while it lands, and say
+what is missing if they cannot run. TESSERA_SKIP_PREFLIGHT=1 skips that check.
 
 Indexer: https://index.tessera.storage
 Docs:    https://tessera.storage
-`, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe,
-		exe, exe, exe, exe, exe, exe,
-		exe, exe, exe, exe, exe, exe,
-		exe, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe)
-}
+`

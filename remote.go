@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"go.sia.tech/core/types"
@@ -45,6 +46,9 @@ func (p PathInfo) sameContent(o PathInfo) bool {
 // path-aware upload/download helpers.
 type Remote struct {
 	sdk *siastorage.SDK
+	// inBatch suppresses the per-file progress bar while UploadBatch (which
+	// owns a batch-level bar) falls back to single-file uploads.
+	inBatch bool
 }
 
 // NewRemote wraps an SDK.
@@ -251,12 +255,38 @@ func (r *Remote) Upload(ctx context.Context, req uploadRequest, onProgress func(
 	obj := siastorage.NewEmptyObject()
 	obj.UpdateMetadata(meta)
 
-	err = r.sdk.Upload(ctx, &obj, f,
-		siastorage.WithRedundancy(dataShards, parityShards),
-	)
+	// Live progress (stderr): encoding -> uploading shards X/N -> pinning.
+	// A batch caller owns the bar (bar == nil here) and counts whole files.
+	bar := transferProgress
+	if r.inBatch {
+		bar = nil
+	}
+	shardsTotal := uploadShardTotal(req.Size)
+	var shardMu sync.Mutex
+	shardsDone := 0
+	bar.Start("↑ "+req.Name, req.Size, "encoding")
+	defer bar.Finish()
+	opts := []siastorage.UploadOption{siastorage.WithRedundancy(dataShards, parityShards)}
+	if bar != nil {
+		opts = append(opts, siastorage.WithUploadProgress(func(siastorage.ShardProgress) {
+			shardMu.Lock()
+			shardsDone++
+			n := shardsDone
+			shardMu.Unlock()
+			if n > shardsTotal {
+				n = shardsTotal
+			}
+			bar.Shards(n, shardsTotal)
+			bar.SetDone(req.Size * int64(n) / int64(shardsTotal))
+		}))
+	}
+
+	err = r.sdk.Upload(ctx, &obj, f, opts...)
 	if err != nil {
 		return PathInfo{}, fmt.Errorf("upload %s: %w", req.RelPath, err)
 	}
+	bar.SetDone(req.Size)
+	bar.SetPhase("pinning")
 	if err := r.sdk.PinObject(ctx, obj); err != nil {
 		return PathInfo{}, fmt.Errorf("pin %s: %w", req.RelPath, err)
 	}
@@ -338,7 +368,21 @@ func uploadMany(ctx context.Context, rt *Remote, idx *Index, candidates []upload
 	}
 
 	start := time.Now()
-	outcomes := rt.UploadBatch(ctx, pending, nil)
+	var batchBytes int64
+	for _, req := range pending {
+		batchBytes += req.Size
+	}
+	bar := transferProgress
+	filesDone := 0
+	bar.Start(fmt.Sprintf("↑ %d files", len(pending)), batchBytes, fmt.Sprintf("uploading files 0/%d (packed)", len(pending)))
+	rt.inBatch = true
+	outcomes := rt.UploadBatch(ctx, pending, func(n int64) {
+		filesDone++
+		bar.Add(n)
+		bar.SetPhase(fmt.Sprintf("uploading files %d/%d (packed)", filesDone, len(pending)))
+	})
+	rt.inBatch = false
+	bar.Finish()
 	for i, outcome := range outcomes {
 		req := pending[i]
 		if outcome.Err != nil {
@@ -597,7 +641,10 @@ func (r *Remote) Download(ctx context.Context, info PathInfo, dest string, mode 
 	}
 	defer rc.Close()
 
-	n, err := copyFileAtomic(dest, rc, mode)
+	bar := transferProgress
+	bar.Start("↓ "+path.Base(info.Path), info.Size, "downloading")
+	defer bar.Finish()
+	n, err := copyFileAtomic(dest, &countingReader{r: rc, fn: bar.Add}, mode)
 	if err != nil {
 		return n, err
 	}

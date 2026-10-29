@@ -109,7 +109,14 @@ var newReadinessDeps = func(cfg *Config) (readinessDeps, error) {
 		sleep:        time.Sleep,
 		now:          time.Now,
 		progress: func(funded, needed int) {
-			fmt.Fprintf(os.Stderr, "Waiting for your account to be ready: %d/%d hosts funded...\n", funded, needed)
+			if quietMode {
+				return
+			}
+			if transferProgress != nil {
+				transferProgress.Phase(fmt.Sprintf("waiting for host funding: %d/%d hosts funded", funded, needed))
+				return
+			}
+			fmt.Fprintf(os.Stderr, "Waiting for host funding: %d/%d hosts funded...\n", funded, needed)
 		},
 	}, nil
 }
@@ -245,7 +252,7 @@ func checkReadiness(ctx context.Context, d readinessDeps, needed int, upload boo
 				e := base
 				e.Code = readinessCodeBalance
 				e.Message = fmt.Sprintf("insufficient balance: your account balance is $0.00 and only %d of the %d hosts needed are funded. "+
-					"Add funds with 'tessera topup <amount>' (minimum $0.01), then retry.", funded, needed)
+					"Add funds with 'tessera topup 5' (crypto minimum ~$0.38 in USDC on Base; live list: 'tessera topup --minimums'), then retry.", funded, needed)
 				return &e
 			}
 		}
@@ -299,7 +306,10 @@ func requireTransferReady(ctx context.Context, cfg *Config, upload bool) {
 	if err != nil {
 		fatal("%v", err)
 	}
-	if err := checkReadiness(ctx, d, needed, upload); err != nil {
+	transferProgress.Phase("checking host funding")
+	err = checkReadiness(ctx, d, needed, upload)
+	transferProgress.Finish()
+	if err != nil {
 		fatal("%v", err)
 	}
 }

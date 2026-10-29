@@ -1,11 +1,15 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -20,8 +24,8 @@ const (
 	updateHTTPLimit = 2 * time.Second
 )
 
-// updateHint points at the one-command installer; the CLI never installs.
-const updateHint = "Update with: curl -fsSL https://tessera.storage/install.sh | sh"
+// updateHint points at 'tessera update' (verified, in-place upgrade).
+const updateHint = "Run 'tessera update' to install it."
 
 // fetchLatestTag returns the newest release tag for a repo. It is a package
 // var so tests can substitute a stub and never touch the network.
@@ -149,5 +153,178 @@ func updateNotice(cfg *Config) string {
 	if latest == "" || compareVersions(latest, version) <= 0 {
 		return ""
 	}
-	return fmt.Sprintf("A newer tessera is available: %s (you have %s). %s", latest, version, updateHint)
+	return fmt.Sprintf("New version %s available (you have %s). %s", latest, version, updateHint)
 }
+
+// ---------------------------------------------------------------- tessera update
+
+// updateDownloadBase is where release assets live; TESSERA_UPDATE_BASE
+// overrides it for tests (".../<tag>/<asset>" layout).
+func updateDownloadBase() string {
+	if b := os.Getenv("TESSERA_UPDATE_BASE"); b != "" {
+		return strings.TrimRight(b, "/")
+	}
+	return "https://github.com/" + updateRepo + "/releases/download"
+}
+
+// releaseAssetName is the binary name the release workflow publishes.
+func releaseAssetName(goos, goarch string) string {
+	name := "tessera-" + goos + "-" + goarch
+	if goos == "windows" {
+		name += ".exe"
+	}
+	return name
+}
+
+func httpGetAll(url string, limit int64) ([]byte, error) {
+	client := &http.Client{Timeout: 5 * time.Minute}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "tessera-cli/"+version)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET %s: HTTP %d", url, resp.StatusCode)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, limit))
+}
+
+// expectedSHA256 finds asset's hash in a SHA256SUMS file.
+func expectedSHA256(sums []byte, asset string) (string, error) {
+	for _, line := range strings.Split(string(sums), "\n") {
+		f := strings.Fields(line)
+		if len(f) == 2 && strings.TrimPrefix(f[1], "*") == asset {
+			return strings.ToLower(f[0]), nil
+		}
+	}
+	return "", fmt.Errorf("SHA256SUMS has no entry for %s", asset)
+}
+
+// cmdUpdate downloads the latest (or --version) release for this platform,
+// verifies it against the release's SHA256SUMS and atomically replaces the
+// running binary.
+//
+//	tessera update [--check] [--version vX.Y.Z] [--force]
+func cmdUpdate(args []string) {
+	if hasFlag(args, "--help") || hasFlag(args, "-h") {
+		fmt.Println(`Usage: tessera update [--check] [--version vX.Y.Z] [--force]
+
+Downloads the newest tessera release for this computer, verifies it against
+the release's SHA256SUMS, and replaces this binary in place.
+  --check     only report whether an update is available
+  --version   install a specific release tag
+  --force     reinstall even when already up to date`)
+		return
+	}
+	if err := runUpdate(args); err != nil {
+		fatal("update: %v", err)
+	}
+}
+
+func runUpdate(args []string) error {
+	target, _ := flagValue(args, "--version")
+	if target == "" {
+		latest, err := fetchLatestTag(updateRepo)
+		if err != nil {
+			return fmt.Errorf("could not check for the latest release: %w", err)
+		}
+		target = latest
+		saveUpdateCache(updateCache{CheckedAt: time.Now(), Latest: latest})
+	}
+	if !strings.HasPrefix(target, "v") {
+		target = "v" + target
+	}
+	newer := version == "dev" || compareVersions(target, version) > 0
+	if hasFlag(args, "--check") {
+		if newer {
+			fmt.Printf("Update available: %s (you have %s). Run 'tessera update'.\n", target, version)
+		} else {
+			fmt.Printf("tessera %s is up to date.\n", version)
+		}
+		return nil
+	}
+	if !newer && !hasFlag(args, "--force") && !flagPresent(args, "--version") {
+		fmt.Printf("tessera %s is up to date.\n", version)
+		return nil
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	asset := releaseAssetName(runtime.GOOS, runtime.GOARCH)
+	base := updateDownloadBase() + "/" + target
+	fmt.Printf("Downloading tessera %s (%s)...\n", target, asset)
+	sums, err := httpGetAll(base+"/SHA256SUMS", 1<<20)
+	if err != nil {
+		return err
+	}
+	want, err := expectedSHA256(sums, asset)
+	if err != nil {
+		return err
+	}
+	bin, err := httpGetAll(base+"/"+asset, 512<<20)
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(bin)
+	if got := hex.EncodeToString(sum[:]); got != want {
+		return fmt.Errorf("checksum mismatch for %s (got %s, want %s); nothing was changed", asset, got, want)
+	}
+	fmt.Println("Checksum verified (SHA256SUMS).")
+
+	dir := filepath.Dir(exe)
+	tmp, err := os.CreateTemp(dir, ".tessera-update-*")
+	if err != nil {
+		return fmt.Errorf("cannot write next to %s (%w); re-run with permission to replace it", exe, err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(bin); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o755); err != nil {
+		return err
+	}
+	if runtime.GOOS == "windows" {
+		// A running .exe cannot be overwritten, but it can be renamed.
+		old := exe + ".old"
+		_ = os.Remove(old)
+		if err := os.Rename(exe, old); err != nil {
+			return err
+		}
+		if err := os.Rename(tmpName, exe); err != nil {
+			_ = os.Rename(old, exe)
+			return err
+		}
+	} else if err := os.Rename(tmpName, exe); err != nil {
+		return err
+	}
+	fmt.Printf("Updated %s: %s -> %s\n", exe, version, target)
+	return nil
+}
+
+// flagPresent reports whether name appears at all (with or without a value).
+func flagPresent(args []string, name string) bool {
+	for _, a := range args {
+		if a == name || strings.HasPrefix(a, name+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeGOOS() string   { return runtime.GOOS }
+func runtimeGOARCH() string { return runtime.GOARCH }
