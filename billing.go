@@ -520,6 +520,23 @@ func (b *httpBilling) Currencies() ([]map[string]any, error) {
 	return out, nil
 }
 
+// TopupMinimums reads the public per-rail top-up minimums.
+func (b *httpBilling) TopupMinimums(payCurrency string) (map[string]any, error) {
+	path := "/billing/topup/minimums"
+	if payCurrency != "" {
+		path += "?pay_currency=" + url.QueryEscape(payCurrency)
+	}
+	req, err := b.request(http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	_, data, err := b.do(req, authNone, "")
+	if err != nil {
+		return nil, err
+	}
+	return decodeBillingObject(data)
+}
+
 // X402Challenge requests an x402 PaymentRequired document without a payment
 // signature. The API answers 402; the document is preserved in billingError.Extra.
 func (b *httpBilling) X402Challenge(amount string) (map[string]any, error) {

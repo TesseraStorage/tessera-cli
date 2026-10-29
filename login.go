@@ -484,15 +484,15 @@ func registerStorageIdentity(cfg *Config, phraseArg, billingID string) error {
 		bc.BillingAgentKey = ""
 	}
 
-	// RECOVERY FIRST, for a signed-in human: the server's recovery endpoint is
-	// session-only (it hands out the raw connect key, so a magic-link session
-	// is the ownership proof). With only a machine/bearer agent key there is
-	// nothing to self-recover, so that path keeps minting exactly as before.
-	// A 404 from recovery means no identity exists yet -- also mint.
+	// RECOVERY FIRST: ask the server whether this account already has a
+	// storage identity. Since v1.11.0 this works with a session OR the
+	// account's API key, so a headless machine restores the ORIGINAL App ID
+	// instead of minting a second identity. A 404 means no identity exists
+	// yet -- mint one.
 	appID := siastorage.GenerateAppID()
 	var connectKey, expectedPublicKey string
 	linked := false
-	if bc.BillingSession != "" {
+	{
 		recAppID, recPublicKey, recConnectKey, recErr := newBillingClient(&bc).RecoveryCredential()
 		switch {
 		case recErr == nil:
@@ -507,6 +507,10 @@ func registerStorageIdentity(cfg *Config, phraseArg, billingID string) error {
 		case isIdentityNotFound(recErr):
 			// no identity yet -- fall through to mint
 		default:
+			var be *billingError
+			if errors.As(recErr, &be) && be.Code == "account_closed" {
+				return errAccountClosed
+			}
 			return recErr
 		}
 	}
@@ -516,6 +520,9 @@ func registerStorageIdentity(cfg *Config, phraseArg, billingID string) error {
 			var be *billingError
 			if errors.As(err, &be) && be.Code == "identity_exists" {
 				return errIdentityExists
+			}
+			if errors.As(err, &be) && be.Code == "account_closed" {
+				return errAccountClosed
 			}
 			return err
 		}
@@ -647,9 +654,24 @@ func registerStorageIdentity(cfg *Config, phraseArg, billingID string) error {
 	fmt.Println()
 	fmt.Printf("App ID:   %s\n", cfg.AppID)
 	fmt.Printf("Indexer:  %s\n", cfg.IndexerURL)
-	fmt.Println("Storage identity linked — the account is ready to use.")
+	fmt.Println("Logged in — storage identity linked.")
+	clearReadinessCache()
+	acct, acctErr := newBillingClient(&bc).Account()
+	if billingID == "" && acctErr == nil {
+		billingID = accountString(acct, "billing_id")
+	}
+	if billingID != "" {
+		fmt.Printf("Account:  %s\n", billingID)
+	}
+	enableSeedLogin(&bc, phrase, billingID)
+	if acctErr == nil {
+		printReadiness(acct)
+	}
 	return nil
 }
+
+// errAccountClosed: the account was deleted or terminated; no credentials.
+var errAccountClosed = errors.New("this account has been deleted or closed; create a new one with 'tessera signup'")
 
 // printRecoveryPhrase prints the one-time banner for a freshly generated
 // recovery phrase, shared by the legacy and headless registration flows.
@@ -664,9 +686,15 @@ func printRecoveryPhrase(phrase string) {
 	fmt.Println()
 }
 
+// suppressPhraseNote is set by signup, which prints the phrase itself.
+var suppressPhraseNote bool
+
 // printSuppliedPhraseNote explains that a caller-supplied phrase was used
 // instead of a freshly generated one.
 func printSuppliedPhraseNote() {
+	if suppressPhraseNote {
+		return
+	}
 	fmt.Println("Using the recovery phrase you supplied — the app key is derived")
 	fmt.Println("from it, so this account is reproducible on any machine.")
 	fmt.Println()
@@ -696,107 +724,144 @@ func promptProtectPhrase(cfg *Config, phrase string) {
 	}
 }
 
-// cmdLogin connects this machine to Tessera.
-//
-//	tessera login                          legacy connect-key + browser flow
-//	tessera login <phrase>                 legacy flow with a supplied phrase
-//	tessera login --email <e>              request a magic-link sign-in link
-//	tessera login --email <e> --token <t> [phrase]  exchange the link and register headlessly
-//	tessera login --billing-logout         revoke and clear the billing session
-//
-// The billing paths use moneyd's /api/v1/auth endpoints. Production fronts
-// them with Cloudflare (spec §6.1/§10) and the CLI cannot solve a Cloudflare
-// challenge: before the first production login the operator must confirm
-// /api/v1/auth/* is reachable by a plain HTTP client (e.g.
-// `curl -i -X POST https://tessera.storage/api/v1/auth/magic-link
-// -H 'content-type: application/json' -d '{"email":"user@example.com"}'`
-// should answer 202) and, if it is not, add an access rule for it. That is an
-// operational precondition, not something this command can work around.
-func cmdLogin(args []string) {
-	// Side-effect free out: every other cmd* in this CLI checks --help/-h
-	// before doing anything (config_cmd.go, sync_cmd.go, folder.go,
-	// uninstall.go, cmdPhrase). cmdLogin never did, so `tessera login --help`
-	// fell through to the real dispatch below and could mint/link a storage
-	// identity, write secrets to config, and print a fresh recovery phrase --
-	// a destructive side effect from what looks like a pure help invocation.
-	// This must be the first thing checked, before any flag/credential
-	// inspection below.
-	if hasFlag(args, "--help") || hasFlag(args, "-h") {
-		fmt.Println(`Usage:
-  tessera login                                   legacy connect-key + browser flow
-  tessera login <phrase>                          legacy flow with a supplied phrase
-  tessera login --email <e>                       request a magic-link sign-in link
-  tessera login --email <e> --token <t> [phrase]  exchange the link and register headlessly
-  tessera login --billing-logout                  revoke and clear the billing session
+// loginUsage is the one place the login forms are documented.
+const loginUsage = `Usage:
+  tessera login "<12-word recovery phrase>"       restore your account on this machine
+  tessera login --api-key <tsk_...> ["<phrase>"]  log in with your API key (+ phrase)
+  tessera login --email <e>                       request a magic-link sign-in email
+  tessera login --email <e> --token <t> ["<phrase>"]
+                                                  finish the magic-link sign-in
+  tessera login --billing-logout                  end the email session
+  tessera login --force ...                       replace an existing login on this machine
+
+Your recovery phrase alone is enough: it finds your account and restores the
+SAME account id and App ID, with no browser and no password. Quote the 12 words.
+
+New here? Run 'tessera signup' — it creates the account and logs you in.
 
 Env:
-  TESSERA_PHRASE    recovery phrase, used like a positional phrase argument
+  TESSERA_PHRASE    recovery phrase, used like the positional phrase argument
 
 This command does not run, link an identity, or print a recovery phrase
-when only --help/-h is given.`)
+when only --help/-h is given.`
+
+// cmdLogin connects this machine to Tessera. Every form is headless; the old
+// browser connect-key ("app password") flow was removed in v1.11.0 because it
+// silently created a NEW, empty storage identity (random App ID) for people
+// trying to restore an existing account.
+//
+// The billing paths use moneyd's /api/v1/auth endpoints. Production fronts
+// them with Cloudflare (spec §6.1/§10); /api/v1/auth/* must stay reachable by
+// a plain HTTP client.
+func cmdLogin(args []string) {
+	// Side-effect free out: must be checked before anything else, so
+	// `tessera login --help` can never mint an identity or print a phrase.
+	if hasFlag(args, "--help") || hasFlag(args, "-h") {
+		fmt.Println(loginUsage)
 		return
 	}
-
-	// A seed phrase supplied up front makes the resulting app key
-	// deterministic, which is what the test key documented in TESTING.md
-	// relies on. It is also useful for restoring an existing account. It is
-	// resolved before the billing dispatch so `login --email <e> --token <t>
-	// "<words>"` uses the supplied phrase for the headless storage
-	// registration exactly like the agent path and TESSERA_PHRASE.
-	phraseArg := ""
-	if pos := positional(args); len(pos) > 0 {
-		phraseArg = pos[0]
-	}
-
-	// Billing flags dispatch before the legacy flow below. That ordering is
-	// required: the already-logged-in prompt there is an unguarded
-	// fmt.Scanln, so a scripted `login --email ...` or `login
-	// --billing-logout` must never reach it.
-	email, token, logout, billing, err := billingLoginFlags(args)
-	if err != nil {
+	if err := runLogin(args); err != nil {
 		fatal("%v", err)
 	}
+}
+
+// errAlreadyLoggedIn protects an existing login from being replaced silently.
+var errAlreadyLoggedIn = errors.New("this machine is already logged in (see 'tessera whoami'); run 'tessera logout' first, or pass --force")
+
+// runLogin is cmdLogin without os.Exit, so tests can drive every path.
+func runLogin(args []string) error {
+	phraseArg := ""
+	if pos := positional(args); len(pos) > 0 {
+		phraseArg = strings.Join(pos, " ")
+	}
+	if phraseArg == "" {
+		phraseArg = os.Getenv("TESSERA_PHRASE")
+	}
+	force := hasFlag(args, "--force")
+
+	email, token, logout, billing, err := billingLoginFlags(args)
+	if err != nil {
+		return err
+	}
 	if logout {
-		if err := billingLogout(); err != nil {
-			fatal("%v", err)
-		}
-		return
+		return billingLogout()
 	}
 	if billing {
-		if err := billingLogin(email, token, phraseArg); err != nil {
-			fatal("%v", err)
+		return billingLogin(email, token, phraseArg)
+	}
+
+	prev, err := loadOrInitConfig()
+	if err != nil {
+		return err
+	}
+	loggedIn := prev.AppID != "" && prev.AppKey != ""
+
+	if apiKey, ok := flagValue(args, "--api-key"); ok {
+		if apiKey == "" || !strings.HasPrefix(apiKey, "tsk_") {
+			return errors.New("--api-key needs your tsk_... API key")
 		}
+		if loggedIn && !force {
+			return errAlreadyLoggedIn
+		}
+		cfg := freshConfig(prev)
+		cfg.BillingAgentKey = apiKey
+		acct, err := newBillingClient(cfg).Account()
+		if err != nil {
+			return fmt.Errorf("API key rejected: %s", describeBillingError(err))
+		}
+		if err := saveConfig(cfg); err != nil {
+			return fmt.Errorf("save config: %w", err)
+		}
+		return registerStorageIdentity(cfg, phraseArg, accountString(acct, "billing_id"))
+	}
+
+	// A billing credential with no storage identity yet (signup interrupted,
+	// or an email login): finish the headless registration/recovery.
+	if storageRegistration(prev) {
+		return storageRegister(prev, phraseArg)
+	}
+
+	if phraseArg != "" {
+		if loggedIn && !force {
+			return errAlreadyLoggedIn
+		}
+		return seedLogin(freshConfig(prev), phraseArg)
+	}
+
+	if loggedIn {
+		fmt.Println("Already logged in.")
+		fmt.Printf("App ID:   %s\n", prev.AppID)
+		if acct, err := newBillingClient(prev).Account(); err == nil {
+			if id := accountString(acct, "billing_id"); id != "" {
+				fmt.Printf("Account:  %s\n", id)
+			}
+			printReadiness(acct)
+		}
+		return nil
+	}
+	return errors.New("nothing to log in with.\n\n" + loginUsage)
+}
+
+// cmdLogout removes this machine's local credentials. The account and its
+// files are untouched; log back in with your recovery phrase.
+//
+//	tessera logout [--yes]
+func cmdLogout(args ...string) {
+	if hasFlag(args, "--help") || hasFlag(args, "-h") {
+		fmt.Println("Usage: tessera logout [--yes]\n\nRemoves local credentials (~/.tessera/config.json). Your account and files stay;\nlog back in any time with: tessera login \"<12-word recovery phrase>\"")
 		return
 	}
-
-	// The headless agent path resolves TESSERA_PHRASE itself (like the legacy
-	// flow below), so it receives only an explicitly supplied phrase.
-	argPhrase := phraseArg
-	if env := os.Getenv("TESSERA_PHRASE"); phraseArg == "" && env != "" {
-		phraseArg = env
-	}
-
-	// A stored billing credential (agent key, or a magic-link session) with
-	// no storage identity yet: plain `login [<phrase>]` registers headlessly,
-	// without a browser, and recovers the account when one already exists
-	// (spec §6.3.4). A config without billing credentials keeps the legacy
-	// flow below unchanged.
-	if cfg, err := loadConfig(); err == nil && storageRegistration(cfg) {
-		if err := storageRegister(cfg, argPhrase); err != nil {
-			fatal("%v", err)
-		}
+	cfg, err := loadConfig()
+	if err != nil {
+		fmt.Println("Not logged in.")
 		return
 	}
-
-	fmt.Println("Tessera CLI — Login")
-	fmt.Println()
-
-	prev, err := loadConfig()
-	if err == nil && prev.AppKey != "" {
-		if prev.BillingSession != "" || prev.BillingAgentKey != "" {
-			fmt.Println("Note: this re-login keeps your billing credentials and billing API URL.")
+	fmt.Printf("App ID: %s\n", cfg.AppID)
+	if !hasFlag(args, "--yes") {
+		if !stdinIsTerminal() {
+			fatal("refusing to remove credentials without confirmation; pass --yes")
 		}
-		fmt.Print("Already logged in. Log out first? [y/N] ")
+		fmt.Print("Remove local credentials? [y/N] ")
 		var a string
 		fmt.Scanln(&a)
 		if strings.ToLower(a) != "y" {
@@ -804,112 +869,14 @@ when only --help/-h is given.`)
 			return
 		}
 	}
-
-	appID := siastorage.GenerateAppID()
-	indexer := defaultIndexer
-
-	// The reset replaces the storage identity only. The billing fields are not
-	// part of the legacy connect flow, so dropping them here would silently
-	// sign the user out of billing (and lose a custom billing_api_url).
-	cfg := &Config{
-		IndexerURL: indexer,
-		AppID:      appID.String(),
-	}
-	if err == nil {
-		cfg.BillingAPIURL = prev.BillingAPIURL
-		cfg.BillingSession = prev.BillingSession
-		cfg.BillingAgentKey = prev.BillingAgentKey
-	}
-
-	fmt.Printf("Indexer:  %s\n", indexer)
-	fmt.Printf("App ID:   %s\n", appID.String())
-	fmt.Println()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	// Step 1 — request connection
-	fmt.Print("Starting connection... ")
-	builder := newSDKBuilder(indexer, appID)
-
-	respURL, err := builder.RequestConnection(ctx)
-	if err != nil {
-		fatal("connection request failed: %v", err)
-	}
-	fmt.Println("done")
-
-	// Step 2 — open browser for the user to approve
-	fmt.Println()
-	fmt.Println("A browser tab will open. Enter your connect key to approve.")
-	fmt.Println()
-	fmt.Printf("  %s\n", respURL)
-	fmt.Println()
-
-	if err := openBrowser(respURL); err != nil {
-		fmt.Println("Could not open browser automatically.")
-		fmt.Printf("Please open this URL manually:\n  %s\n\n", respURL)
-	}
-
-	// Step 3 — wait for the user to approve in the browser
-	fmt.Print("Waiting for your approval... ")
-	if err := builder.WaitForApproval(ctx); err != nil {
-		fatal("wait failed: %v\n  (did you approve in the browser?)", err)
-	}
-
-	// Step 4 — generate or reuse the recovery phrase and register
-	phrase := phraseArg
-	if phrase == "" {
-		phrase = siastorage.NewSeedPhrase()
-		fmt.Println("approved!")
-		fmt.Println()
-		printRecoveryPhrase(phrase)
-	} else {
-		fmt.Println("approved!")
-		fmt.Println()
-		printSuppliedPhraseNote()
-	}
-
-	sdk, err := builder.Register(ctx, phrase)
-	if err != nil {
-		fatal("registration failed: %v", err)
-	}
-
-	appKey := sdk.AppKey()
-	cfg.AppKey = hex.EncodeToString([]byte(appKey))
-	sdk.Close()
-
-	// Optional: encrypt phrase locally. Skipped when the phrase was supplied
-	// on the command line, since the caller already has it.
-	if phraseArg == "" {
-		promptProtectPhrase(cfg, phrase)
-	}
-
-	if err := saveConfig(cfg); err != nil {
-		fatal("save config: %v", err)
-	}
-
-	fmt.Println()
-	fmt.Println("Logged in. Use 'tessera list' to see your files.")
-}
-
-func cmdLogout() {
-	cfg, err := loadConfig()
-	if err != nil {
-		fmt.Println("Not logged in.")
-		return
-	}
-	fmt.Printf("App ID: %s\n", cfg.AppID)
-	fmt.Print("Remove local credentials? [y/N] ")
-	var a string
-	fmt.Scanln(&a)
-	if strings.ToLower(a) != "y" {
-		fmt.Println("Aborted.")
-		return
+	if cfg.BillingSession != "" {
+		_ = newBillingClient(cfg).Logout(cfg.BillingSession)
 	}
 	if err := deleteConfigFiles(); err != nil {
 		fatal("logout: %v", err)
 	}
 	fmt.Println("Logged out. Local credentials removed.")
+	fmt.Println("Log back in with: tessera login \"<12-word recovery phrase>\"")
 }
 
 // cmdPhrase reveals the locally-saved recovery phrase, decrypted with the
@@ -1018,8 +985,12 @@ func cmdStatus(args ...string) {
 		}
 	}
 
+	var billingAcct map[string]any
+	if credentialLabel(cfg) != "" {
+		billingAcct, _ = newBillingClient(cfg).Account()
+	}
 	if hasFlag(args, "--json") {
-		emitJSON(map[string]interface{}{
+		out := map[string]interface{}{
 			"ready":        acct.Ready,
 			"ready_note":   readyNote(acct.Ready),
 			"indexer":      cfg.IndexerURL,
@@ -1028,11 +999,28 @@ func cmdStatus(args ...string) {
 			"bytes":        idx.TotalSize(),
 			"sync_folders": len(roots),
 			"pending_sync": pending,
-		})
+		}
+		if r, ok := billingAcct["readiness"]; ok {
+			out["readiness"] = r
+		}
+		if id := accountString(billingAcct, "billing_id"); id != "" {
+			out["account_id"] = id
+		}
+		emitJSON(out)
 		return
 	}
 
-	fmt.Printf("Ready:     %v\n", acct.Ready)
+	if id := accountString(billingAcct, "billing_id"); id != "" {
+		fmt.Printf("Account:   %s\n", id)
+	}
+	fmt.Printf("App ID:    %s\n", cfg.AppID)
+	if state, msg := accountReadiness(billingAcct); state != "" {
+		fmt.Printf("Status:    %s\n", readinessLabel(state))
+		if msg != "" {
+			fmt.Printf("           %s\n", msg)
+		}
+	}
+	fmt.Printf("Host funding ready: %v\n", acct.Ready)
 	if !acct.Ready {
 		fmt.Printf("           (%s)\n", readyNote(acct.Ready))
 	}
@@ -1062,9 +1050,9 @@ func readyNote(ready bool) string {
 	if ready {
 		return "host funding is past the repair-redundancy threshold"
 	}
-	return "host funding is not yet past the repair-redundancy threshold " +
-		"(normal for a new or free account). Uploads and downloads check host " +
-		"funding first: they wait for it to land, or tell you exactly what is missing"
+	return "expected for a free-trial or unfunded account: indexd only funds " +
+		"hosts itself after the first top-up. It is not an error — see Status " +
+		"above for what this account can do now"
 }
 
 func readPassword(prompt string) string {
@@ -1078,6 +1066,7 @@ func readPassword(prompt string) string {
 }
 
 func fatal(format string, args ...interface{}) {
+	transferProgress.Finish() // clear a live progress line first
 	msg := fmt.Sprintf(format, args...)
 	msg = explainFatalHostShortage(msg)
 	if !strings.HasSuffix(msg, "\n") {
