@@ -130,7 +130,7 @@ func parseTopupArgs(args []string) (topupRequest, error) {
 	}
 	pos := positional(args)
 	if len(pos) != 1 {
-		return topupRequest{}, errors.New("usage: tessera topup <amount> [--coin <code>] [--invoice] [--wallet] [--json] [--wait|--no-wait]")
+		return topupRequest{}, errors.New("usage: tessera topup <amount> [--asset <code>] [--invoice] [--wallet] [--json] [--wait|--no-wait]")
 	}
 	req := topupRequest{amount: pos[0]}
 	if err := validateTopupAmount(req.amount); err != nil {
@@ -196,7 +196,7 @@ func topupValueFlag(args []string, name string) (string, error) {
 	}
 	v, ok := flagValue(args, name)
 	if !ok || v == "" {
-		return "", fmt.Errorf("%s requires a value — usage: tessera topup <amount> [--coin <code>] [--invoice] [--wallet] [--json] [--wait|--no-wait]", name)
+		return "", fmt.Errorf("%s requires a value — usage: tessera topup <amount> [--asset <code>] [--invoice] [--wallet] [--json] [--wait|--no-wait]", name)
 	}
 	return v, nil
 }
@@ -800,7 +800,11 @@ func runTopupMinimums(req topupRequest) error {
 		npMin = "$" + npMin
 	}
 	fmt.Printf("  1. x402 wallet, USDC on Base (--wallet, --x402, --payment): $%s — any amount from the floor\n", fmt.Sprint(x["minimum_usd"]))
-	fmt.Printf("  2. Deposit address in %s (default, or --asset <code>): %s\n", assetLabel(fmt.Sprint(np["pay_currency"]), ""), npMin)
+	hint := "(default; other coins: --asset <code>)"
+	if req.payCurrency != "" {
+		hint = "(--asset " + req.payCurrency + ")"
+	}
+	fmt.Printf("  2. Deposit address in %s %s: %s\n", assetLabel(fmt.Sprint(np["pay_currency"]), ""), hint, npMin)
 	invMin := "the cheapest coin's minimum"
 	if req.payCurrency == "" {
 		invMin = npMin
