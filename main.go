@@ -235,6 +235,11 @@ Billing:
   %s login --billing-logout  End the billing session (agent key untouched)
   %s promo <code>            Redeem a promo code
 
+New accounts get a free first upload; the minimum top-up is $0.01.
+Uploads and downloads first check that enough storage hosts are funded and
+reachable (TCP, usually port 9988), wait while funding lands, and say what is
+missing if they cannot run. TESSERA_SKIP_PREFLIGHT=1 skips that check.
+
 Indexer: https://index.tessera.storage
 Docs:    https://tessera.storage
 `, exe, exe, exe, exe, exe, exe, exe, exe, exe, exe,

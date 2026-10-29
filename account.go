@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // cmdAccount shows the billing account dashboard.
@@ -105,6 +106,11 @@ func accountBalanceUSD(acct map[string]any, key string) string {
 	case int64:
 		return strconv.FormatFloat(float64(n), 'f', 2, 64)
 	case string:
+		// moneyd serialises Decimal balances as strings ("0", "0.05"). Render
+		// them exactly like numbers so the table and --json agree.
+		if f, err := strconv.ParseFloat(n, 64); err == nil && (!strings.Contains(n, ".") || len(n)-strings.Index(n, ".")-1 <= 2) {
+			return strconv.FormatFloat(f, 'f', 2, 64)
+		}
 		return n
 	default:
 		return fmt.Sprintf("%v", v)
