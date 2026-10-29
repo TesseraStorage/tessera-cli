@@ -1057,7 +1057,7 @@ func readinessState(billingAcct map[string]any) string {
 // account is only waiting for indexd to fund hosts, an unfunded one stays
 // born-paused until its first top-up.
 func readyNoteFor(ready bool, state string) string {
-	if !ready && state == "ready" {
+	if !ready && state == "funded" {
 		return "funded: indexd is funding hosts for this account, which usually " +
 			"takes a few minutes after a top-up. Uploads wait for it automatically"
 	}

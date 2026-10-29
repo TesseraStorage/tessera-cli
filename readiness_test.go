@@ -173,7 +173,7 @@ func TestReadyNoteWording(t *testing.T) {
 }
 
 func TestReadyNoteForFundedAccount(t *testing.T) {
-	n := readyNoteFor(false, "ready")
+	n := readyNoteFor(false, "funded")
 	if !strings.Contains(n, "funded") || strings.Contains(n, "unfunded") {
 		t.Fatalf("funded note wrong: %q", n)
 	}
