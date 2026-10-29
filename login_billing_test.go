@@ -723,6 +723,9 @@ func TestBillingLoginRegistersHeadless(t *testing.T) {
 				activateSawSaved = true
 			}
 			fmt.Fprint(w, `{"linked":true}`)
+		case "/credentials/recovery-key":
+			// v1.11.0: seed-login key registered after a successful login.
+			fmt.Fprint(w, `{"registered":true,"changed":true}`)
 		default:
 			t.Errorf("unexpected request path %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -754,7 +757,7 @@ func TestBillingLoginRegistersHeadless(t *testing.T) {
 		t.Fatalf("billingLogin: %v", loginErr)
 	}
 
-	wantPaths := []string{"/auth/verify", "/account", "/credentials/recovery", "/credentials", "/credentials/activate"}
+	wantPaths := []string{"/auth/verify", "/account", "/credentials/recovery", "/credentials", "/credentials/activate", "/account", "/credentials/recovery-key"}
 	if strings.Join(paths, ",") != strings.Join(wantPaths, ",") {
 		t.Fatalf("paths = %v, want %v", paths, wantPaths)
 	}
@@ -796,7 +799,7 @@ func TestBillingLoginRegistersHeadless(t *testing.T) {
 			t.Errorf("output leaked %q:\n%s", secret, out)
 		}
 	}
-	if !strings.Contains(out, "Storage identity linked") {
+	if !strings.Contains(out, "storage identity linked") {
 		t.Errorf("final activation state missing from output:\n%s", out)
 	}
 
@@ -981,7 +984,7 @@ func TestBillingLoginActivateAlreadyLinkedSucceeds(t *testing.T) {
 	if saved.AppKey == "" {
 		t.Error("app key was not persisted before the benign activate 409")
 	}
-	if !strings.Contains(out, "Storage identity linked") {
+	if !strings.Contains(out, "storage identity linked") {
 		t.Errorf("success state missing from output:\n%s", out)
 	}
 }
@@ -1382,7 +1385,7 @@ func TestBillingLoginRetriesRegisterTransiently(t *testing.T) {
 	if fake.credentialsCalls != 1 {
 		t.Fatalf("Credentials calls = %d, want exactly 1", fake.credentialsCalls)
 	}
-	if !strings.Contains(out, "Storage identity linked") {
+	if !strings.Contains(out, "storage identity linked") {
 		t.Errorf("success state missing from output:\n%s", out)
 	}
 	saved, err := loadConfig()
@@ -1697,9 +1700,10 @@ func TestCmdLoginAgentKeyRegistersHeadless(t *testing.T) {
 	if fake.credentialsCalls != 1 || fake.activateCalls != 1 {
 		t.Fatalf("credentials %d, activate %d; want 1/1", fake.credentialsCalls, fake.activateCalls)
 	}
-	// Recovery is session-only; an agent key must not attempt it.
-	if fake.recoveryCalls != 0 {
-		t.Fatalf("RecoveryCredential calls = %d, want 0 for an agent-key login", fake.recoveryCalls)
+	// v1.11.0: an agent key also asks for recovery first (404 -> mint), so a
+	// headless machine restores the original App ID instead of minting.
+	if fake.recoveryCalls != 1 {
+		t.Fatalf("RecoveryCredential calls = %d, want 1 for an agent-key login", fake.recoveryCalls)
 	}
 	if builder.requestCalls != 1 || builder.registerCalls != 1 {
 		t.Fatalf("builder request %d, register %d; want 1/1", builder.requestCalls, builder.registerCalls)
@@ -1787,90 +1791,6 @@ func TestCmdLoginSessionRecoversHeadless(t *testing.T) {
 	if saved.BillingSession != "sess-live" {
 		t.Fatalf("session = %q, want it untouched", saved.BillingSession)
 	}
-}
-
-// TestLegacyLoginPreservesBillingFields: the legacy completion path rebuilds
-// the config around a new storage identity; the stored billing fields — a
-// custom billing_api_url included — must survive, both on a first login and on
-// a re-login past the already-logged-in guard prompt, which must say so.
-func TestLegacyLoginPreservesBillingFields(t *testing.T) {
-	const phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
-
-	run := func(t *testing.T, existingAppKey bool) string {
-		t.Helper()
-		testConfigHome(t)
-		t.Setenv("TESSERA_PHRASE", "")
-		// A stored session with NO app credentials now takes the headless
-		// registration/recovery path (see storageRegistration), so the legacy
-		// flow is only reachable without billing credentials or with complete
-		// app credentials (the re-login case below).
-		cfg := &Config{
-			IndexerURL:    defaultIndexer,
-			BillingAPIURL: "https://billing.example.com/api/v1",
-			AppID:         "app-old",
-		}
-		if existingAppKey {
-			cfg.AppKey = strings.Repeat("cd", 32)
-			cfg.BillingSession = "sess-live"
-			cfg.BillingAgentKey = "tsk_keep"
-		}
-		if err := saveConfig(cfg); err != nil {
-			t.Fatal(err)
-		}
-
-		builder := &fakeRegistrationBuilder{
-			respURL: "https://index.example/auth/connect/req-1",
-			app:     &fakeRegisteredSDK{key: types.GeneratePrivateKey()},
-		}
-		stubSDKBuilder(t, builder)
-		origBrowser := openBrowser
-		openBrowser = func(string) error { return nil }
-		t.Cleanup(func() { openBrowser = origBrowser })
-		if existingAppKey {
-			stubStdin(t, "y\n")
-		}
-
-		out := captureStdout(t, func() { cmdLogin([]string{phrase}) })
-
-		if builder.requestCalls != 1 || builder.waitCalls != 1 || builder.registerCalls != 1 {
-			t.Fatalf("legacy builder calls = request %d, wait %d, register %d; want 1/1/1",
-				builder.requestCalls, builder.waitCalls, builder.registerCalls)
-		}
-		if builder.phrase != phrase {
-			t.Fatalf("register phrase = %q, want the positional phrase", builder.phrase)
-		}
-		saved, err := loadConfig()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if saved.BillingAPIURL != "https://billing.example.com/api/v1" {
-			t.Fatalf("billing_api_url lost across the legacy login reset: %+v", saved)
-		}
-		if existingAppKey && (saved.BillingSession != "sess-live" || saved.BillingAgentKey != "tsk_keep") {
-			t.Fatalf("billing credentials lost across the legacy re-login reset: %+v", saved)
-		}
-		if saved.AppID == "" || saved.AppKey == "" {
-			t.Fatalf("storage identity not persisted: app_id %q app_key %q", saved.AppID, saved.AppKey)
-		}
-		return out
-	}
-
-	t.Run("first login", func(t *testing.T) {
-		out := run(t, false)
-		if !strings.Contains(out, "Logged in.") {
-			t.Errorf("completion notice missing:\n%s", out)
-		}
-	})
-
-	t.Run("re-login keeps billing and says so", func(t *testing.T) {
-		out := run(t, true)
-		if !strings.Contains(out, "Already logged in") {
-			t.Errorf("already-logged-in guard prompt missing:\n%s", out)
-		}
-		if !strings.Contains(out, "keeps your billing credentials") {
-			t.Errorf("guard prompt does not note the preserved billing fields:\n%s", out)
-		}
-	})
 }
 
 // TestCmdLoginHelpIsSideEffectFree is the regression test for the packet

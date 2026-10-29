@@ -157,17 +157,17 @@ func TestIsHostShortageError(t *testing.T) {
 	}
 }
 
-func TestSignupHintHasNoFixedAmount(t *testing.T) {
+func TestSignupHintStatesRealMinimums(t *testing.T) {
 	// guard for the old 'tessera topup 10' hint
 	out := captureStdout(t, func() { printSignupResult(signupResult{AccountID: "AGNT-test", APIKey: "test-key"}, false) })
-	if strings.Contains(out, "topup 10") || !strings.Contains(out, "minimum $0.01") {
+	if strings.Contains(out, "topup 10") || strings.Contains(out, "minimum $0.01") || !strings.Contains(out, "$0.38") || !strings.Contains(out, "topup --minimums") {
 		t.Fatalf("signup hint: %q", out)
 	}
 }
 
 func TestReadyNoteWording(t *testing.T) {
 	n := readyNote(false)
-	if strings.Contains(n, "does not block") || !strings.Contains(n, "repair-redundancy") {
+	if strings.Contains(n, "does not block") || !strings.Contains(n, "first top-up") {
 		t.Fatalf("ready note: %q", n)
 	}
 }

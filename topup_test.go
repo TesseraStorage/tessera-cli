@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeTopupAPI implements billingAPI with only Topup wired. The embedded nil
@@ -193,7 +194,7 @@ func TestCmdTopupInvoice(t *testing.T) {
 		t.Fatalf("Topup(%q, %q, %q, %q), want (12.50, nowpayments, btc, \"\")",
 			fake.amount, fake.rail, fake.payCurrency, fake.payment)
 	}
-	for _, want := range []string{"12", "https://pay.example/i/abc", "2026-10-08T13:00:00Z"} {
+	for _, want := range []string{"12", "https://pay.example/i/abc", time.Date(2026, 10, 8, 13, 0, 0, 0, time.UTC).In(time.Local).Format("2006-01-02 15:04"), "UTC", "any accepted coin"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("invoice output missing %q:\n%s", want, out)
 		}
@@ -211,6 +212,15 @@ func TestTopupInvoiceHTTPRequestShape(t *testing.T) {
 	var bodies []map[string]any
 	var xpayments []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/billing/currencies" {
+			fmt.Fprint(w, `[]`)
+			return
+		}
+		if r.URL.Path == "/billing/topup/minimums" {
+			// The public minimum pre-check (GET) is not part of the shape.
+			fmt.Fprint(w, `{"rails":{"nowpayments":{"minimum_usd":"0.38","pay_currency":"usdcbase"}}}`)
+			return
+		}
 		paths = append(paths, r.URL.Path)
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -366,9 +376,9 @@ func TestRunTopupErrorOutcomes(t *testing.T) {
 		want []string
 	}{
 		{
-			name: "409 below_asset_minimum keeps the minimum and points at --invoice",
+			name: "409 below_asset_minimum keeps the minimum and points at the x402 floor",
 			err:  parseBillingError(http.StatusConflict, []byte(`{"error":"below_asset_minimum","minimum_usd":"10.00"}`)),
-			want: []string{"below_asset_minimum", "$10.00", "--invoice"},
+			want: []string{"below_asset_minimum", "$10.00", "--wallet", "$0.01"},
 		},
 		{
 			name: "422 amount_out_of_range does not invent a range",

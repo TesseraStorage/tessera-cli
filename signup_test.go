@@ -25,6 +25,11 @@ type fakeSignupAPI struct {
 	calls        int
 }
 
+// Account is read after the automatic login for the readiness line.
+func (f *fakeSignupAPI) Account() (map[string]any, error) {
+	return nil, errors.New("not available in fake")
+}
+
 func (f *fakeSignupAPI) CreateAgent(name, contactEmail string) (string, string, error) {
 	f.name, f.contactEmail = name, contactEmail
 	f.calls++
@@ -39,7 +44,13 @@ func stubBillingClient(t *testing.T, fake billingAPI) {
 	t.Helper()
 	orig := newBillingClient
 	newBillingClient = func(*Config) billingAPI { return fake }
-	t.Cleanup(func() { newBillingClient = orig })
+	origReg := signupRegister
+	signupRegister = func(cfg *Config, phrase, accountID string) error {
+		cfg.AppID = "app-" + accountID
+		cfg.AppKey = strings.Repeat("ab", 32)
+		return saveConfig(cfg)
+	}
+	t.Cleanup(func() { newBillingClient = orig; signupRegister = origReg })
 }
 
 // TestSignupValueFlagsRegistered guards the positional() trap the plan calls
@@ -220,12 +231,17 @@ func TestCmdSignupJSON(t *testing.T) {
 	stubBillingClient(t, fake)
 
 	out := captureStdout(t, func() { cmdSignup([]string{"--json"}) })
-	var m map[string]string
+	var m map[string]any
 	if err := json.Unmarshal([]byte(out), &m); err != nil {
 		t.Fatalf("--json output is not JSON: %v\n%s", err, out)
 	}
-	if len(m) != 2 || m["account_id"] != "AGNT-9" || m["api_key"] != "tsk_json_secret" {
-		t.Fatalf("--json = %#v, want exactly {account_id, api_key}", m)
+	// v1.11.0: signup also logs in, so the one-time JSON carries the phrase
+	// and the new App ID alongside the account id and key.
+	if m["account_id"] != "AGNT-9" || m["api_key"] != "tsk_json_secret" || m["app_id"] != "app-AGNT-9" || m["logged_in"] != true {
+		t.Fatalf("--json = %#v", m)
+	}
+	if p, _ := m["recovery_phrase"].(string); len(strings.Fields(p)) != 12 {
+		t.Fatalf("recovery_phrase missing or not 12 words: %#v", m["recovery_phrase"])
 	}
 }
 
@@ -252,7 +268,7 @@ func TestSignupErrorMapping(t *testing.T) {
 			defer srv.Close()
 			t.Setenv("TESSERA_BILLING_URL", srv.URL)
 
-			result, err := signup([]string{"--name", "x"})
+			result, err := signup([]string{"--name", "x"}, false)
 			var be *billingError
 			if !errors.As(err, &be) {
 				t.Fatalf("signup error = %v (%T), want *billingError", err, err)
@@ -278,7 +294,7 @@ func TestSignupSurfacesBillingError(t *testing.T) {
 	fake := &fakeSignupAPI{err: want}
 	stubBillingClient(t, fake)
 
-	result, err := signup(nil)
+	result, err := signup(nil, false)
 	if !errors.Is(err, want) {
 		t.Fatalf("signup error = %v, want the client's billingError", err)
 	}
@@ -322,7 +338,7 @@ func TestSignupCorruptConfigIsNotClobbered(t *testing.T) {
 	fake := &fakeSignupAPI{accountID: "A", apiKey: "tsk_k"}
 	stubBillingClient(t, fake)
 
-	result, err := signup(nil)
+	result, err := signup(nil, false)
 	if err == nil || !strings.Contains(err.Error(), "config") {
 		t.Fatalf("signup error = %v, want a config read error", err)
 	}
@@ -339,7 +355,8 @@ func TestSignupCorruptConfigIsNotClobbered(t *testing.T) {
 }
 
 // TestCmdSignupPreservesExistingConfig: signing up from a legacy config keeps
-// its settings and only adds the billing fields.
+// its non-credential settings; the stale storage identity is replaced by the
+// new account's own (v1.11.0 auto-login), never carried over.
 func TestCmdSignupPreservesExistingConfig(t *testing.T) {
 	home := testConfigHome(t)
 	cp := filepath.Join(home, configFileName)
@@ -356,7 +373,7 @@ func TestCmdSignupPreservesExistingConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	if cfg.AppID != "app-123" || cfg.DefaultJobs != 4 {
+	if cfg.AppID != "app-AGNT-4" || cfg.DefaultJobs != 4 {
 		t.Errorf("existing settings were lost: AppID=%q DefaultJobs=%d", cfg.AppID, cfg.DefaultJobs)
 	}
 	if cfg.BillingAPIURL != defaultBillingURL {
@@ -371,7 +388,7 @@ func TestCmdSignupPreservesExistingConfig(t *testing.T) {
 // create another account or touch the stored key; --force overwrites it and
 // prints the new key once.
 func TestSignupGuardAgainstOverwrite(t *testing.T) {
-	const overwriteMsg = "already signed up on this machine; pass --force to create a new agent account"
+	const overwriteMsg = "this machine is already logged in to a Tessera account; pass --force to create a new account (the old one stays, log back in with its recovery phrase)"
 	testConfigHome(t)
 	if err := saveConfig(&Config{IndexerURL: defaultIndexer, AppID: "app-1", BillingAgentKey: "tsk_old_key"}); err != nil {
 		t.Fatal(err)
@@ -381,7 +398,7 @@ func TestSignupGuardAgainstOverwrite(t *testing.T) {
 		fake := &fakeSignupAPI{accountID: "AGNT-NEW", apiKey: "tsk_new_key"}
 		stubBillingClient(t, fake)
 
-		result, err := signup(nil)
+		result, err := signup(nil, false)
 		if !errors.Is(err, errSignupKeyExists) {
 			t.Fatalf("signup error = %v (%T), want errSignupKeyExists", err, err)
 		}

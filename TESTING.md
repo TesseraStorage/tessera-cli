@@ -136,23 +136,21 @@ now).
 
 ## 3. Test account
 
-Tests that touch the network need an account. A dedicated test key is provided:
-
-```
-tesseraclitest
-```
-
-Use it at login:
+Tests that touch the network need their own account. Create one headlessly and
+keep the phrase it prints (never commit it):
 
 ```bash
-tessera login tesseraclitest
+export TESSERA_HOME=/tmp/tessera-test
+tessera signup --name cli-test        # account + storage identity in one step
 ```
 
-Because the app key is derived from `(phrase, app id, shared secret)`, this key
-produces the same account on every machine — which is exactly what makes the
-two-machine sync test meaningful. The first login still requires approving the
-connection request in a browser, because approval is what establishes the shared
-secret; it cannot be bypassed by design.
+To prove recovery, upload a file, then `tessera logout --yes`,
+`rm -rf "$TESSERA_HOME"` and `tessera login "<the 12 words>"`: `tessera status`
+must show the same account ID and App ID, `tessera list` the file, and a
+download must be byte-identical. No browser is involved. A fresh account has a
+$0 balance and a prepaid first upload; for more, an operator credits test funds
+through the admin credit path. Delete the account afterwards with
+`tessera account delete --yes`.
 
 For an isolated sandbox, point `TESSERA_HOME` at a scratch directory:
 

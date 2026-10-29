@@ -4,6 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
+
+	siastorage "go.sia.tech/siastorage"
 )
 
 // newBillingClient builds the moneyd client a command talks to. It is a
@@ -13,75 +16,104 @@ var newBillingClient = func(cfg *Config) billingAPI {
 	return newBillingAPI(cfg)
 }
 
-// signupResult is the server's one-time response to an agent signup.
+// signupResult is the server's one-time response to an agent signup plus
+// what the automatic login produced.
 type signupResult struct {
 	AccountID string
 	APIKey    string
+	Phrase    string
+	AppID     string
+	Readiness map[string]any
 }
 
-// errSignupKeyExists stops a second signup from silently replacing the only
-// locally stored agent key; --force opts in to a new account.
-var errSignupKeyExists = errors.New("already signed up on this machine; pass --force to create a new agent account")
+// errSignupKeyExists stops a second signup from silently replacing the
+// credentials stored on this machine; --force opts in to a new account.
+var errSignupKeyExists = errors.New("this machine is already logged in to a Tessera account; pass --force to create a new account (the old one stays, log back in with its recovery phrase)")
 
-// cmdSignup creates a new agent account and stores its one-time API key.
+// signupRegister is the automatic login after signup (a seam for tests).
+var signupRegister = registerStorageIdentity
+
+// cmdSignup creates a new agent account AND logs this machine in.
 //
 //	tessera signup [--name <name>] [--contact-email <email>] [--force] [--json]
 //
-// The API key is the account's only credential and moneyd hands it out once,
-// so this is the one command that deliberately prints a secret: exactly once,
-// with a store-it warning. Every later command keeps it inside the 0600
-// config. Signup is unauthenticated and needs no config file, so it is also
-// the cold-start path; no storage credentials are minted here (registration
-// happens after login).
+// v1.11.0: signup used to stop after creating the billing account, so users
+// had to run 'tessera login' next. Worse, a stale email session left in the
+// config won over the new API key, so the follow-up login could bind the new
+// App ID to a different (old) account. Signup now always starts from a clean
+// config, creates the storage identity in the same step and registers the
+// seed-login key, then prints the two things to keep: the recovery phrase
+// and the API key. This is the one command that deliberately prints secrets,
+// exactly once.
 func cmdSignup(args []string) {
-	// Side-effect free out: cmdSignup never checked --help/-h, so
-	// `tessera signup --help` created a real agent account and printed a
-	// real one-time API key. Fixed per the same login.go --help bug.
 	if hasFlag(args, "--help") || hasFlag(args, "-h") {
 		fmt.Println("Usage: tessera signup [--name <name>] [--contact-email <email>] [--force] [--json]")
 		fmt.Println()
-		fmt.Println("Creates a new agent account and stores its one-time API key.")
+		fmt.Println("Creates a new account and logs this machine in (no separate 'tessera login').")
+		fmt.Println("Prints your 12-word recovery phrase and API key ONCE — keep both safe.")
+		fmt.Println("The phrase alone restores the account later: tessera login \"<12 words>\"")
 		fmt.Println("This command does not run when only --help/-h is given.")
 		return
 	}
-	result, err := signup(args)
+	asJSON := hasFlag(args, "--json")
+	result, err := signup(args, asJSON)
 	if err != nil && result.APIKey == "" {
 		fatal("%v", err)
 	}
-	// Print exactly once: on success, and also when the account was created
-	// but the local save failed — the server will never show the key again,
-	// so losing it to a disk error would strand the account.
-	printSignupResult(result, hasFlag(args, "--json"))
+	// Print on success, and also when the account was created but a later
+	// step failed: the server will never show the key again.
+	printSignupResult(result, asJSON)
 	if err != nil {
 		fatal("%v", err)
 	}
 }
 
-// signup does the command's real work without printing or exiting: resolve the
-// flags, cold-start the config when none exists, create the agent, persist the
-// key. Split out so tests can exercise the failure paths without os.Exit.
-func signup(args []string) (signupResult, error) {
+// signup does the command's real work without exiting. Registration output is
+// sent to stderr in --json mode so stdout stays one JSON object.
+func signup(args []string, asJSON bool) (signupResult, error) {
 	name, _ := flagValue(args, "--name")
 	contactEmail, _ := flagValue(args, "--contact-email")
 
-	cfg, err := loadConfig()
+	prev, err := loadConfig()
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			// A config that exists but cannot be read (corrupt, unsupported
 			// indexer) must not be silently replaced by a fresh one.
 			return signupResult{}, fmt.Errorf("read config: %w", err)
 		}
-		// Cold start: the first thing a new user runs must not require a
-		// config file. saveConfig fills in the URLs too, but setting them
-		// here keeps the in-memory copy the client sees consistent.
-		cfg = &Config{IndexerURL: defaultIndexer, BillingAPIURL: defaultBillingURL}
+		prev = nil
 	}
-	if cfg.BillingAgentKey != "" && !hasFlag(args, "--force") {
-		// Overwriting the stored key would strand the account it belongs to:
-		// moneyd shows the key once, so a fresh signup loses the old one.
+	if prev != nil && (prev.BillingAgentKey != "" || prev.BillingSession != "" || prev.AppKey != "") && !hasFlag(args, "--force") {
 		return signupResult{}, errSignupKeyExists
 	}
-	return createAgentAccount(newBillingClient(cfg), cfg, name, contactEmail)
+	// Always a clean config: never carry an old session/key/App ID over.
+	cfg := freshConfig(prev)
+	result, err := createAgentAccount(newBillingClient(cfg), cfg, name, contactEmail)
+	if err != nil {
+		return result, err
+	}
+	result.Phrase = os.Getenv("TESSERA_PHRASE")
+	if result.Phrase == "" {
+		result.Phrase = siastorage.NewSeedPhrase()
+	}
+	restore := func() {}
+	if asJSON {
+		orig := os.Stdout
+		os.Stdout = os.Stderr
+		restore = func() { os.Stdout = orig }
+	}
+	suppressPhraseNote = true
+	err = signupRegister(cfg, result.Phrase, result.AccountID)
+	suppressPhraseNote = false
+	restore()
+	result.AppID = cfg.AppID
+	if acct, aerr := newBillingClient(cfg).Account(); aerr == nil {
+		result.Readiness, _ = acct["readiness"].(map[string]any)
+	}
+	if err != nil {
+		return result, fmt.Errorf("account %s was created but this machine could not finish logging in: %w\n  Retry with: tessera login --api-key <API key> \"<recovery phrase>\"", result.AccountID, err)
+	}
+	return result, nil
 }
 
 // createAgentAccount calls POST /agents and, on success, stores the one-time
@@ -100,25 +132,51 @@ func createAgentAccount(api billingAPI, cfg *Config, name, contactEmail string) 
 	return result, nil
 }
 
-// printSignupResult prints the account id and the one-time key. This is the
-// documented exception to the never-print-secrets rule; the key appears
-// exactly once per signup and no other command ever echoes it.
+// printSignupResult prints the account id, App ID and the two secrets to keep.
+// This is the documented exception to the never-print-secrets rule.
 func printSignupResult(result signupResult, asJSON bool) {
 	if asJSON {
-		emitJSON(map[string]string{
-			"account_id": result.AccountID,
-			"api_key":    result.APIKey,
-		})
+		out := map[string]any{
+			"account_id":      result.AccountID,
+			"api_key":         result.APIKey,
+			"recovery_phrase": result.Phrase,
+			"app_id":          result.AppID,
+			"logged_in":       result.AppID != "",
+		}
+		if result.Readiness != nil {
+			out["readiness"] = result.Readiness
+		}
+		emitJSON(out)
 		return
 	}
-	fmt.Println("Agent account created.")
+	bar := strings.Repeat("═", 64)
 	fmt.Println()
-	fmt.Printf("  account id:  %s\n", result.AccountID)
-	fmt.Printf("  API key:     %s\n", result.APIKey)
+	fmt.Println(bar)
+	fmt.Println("  ACCOUNT CREATED — KEEP THESE TWO THINGS SAFE")
+	fmt.Println("  They will not be shown again. Tessera does not store your phrase.")
+	fmt.Println(bar)
+	if result.Phrase != "" {
+		fmt.Println("  1. Recovery phrase (12 words) — restores your account and files:")
+		fmt.Printf("       %s\n", result.Phrase)
+	}
+	fmt.Println("  2. API key — your account password for scripts and support:")
+	fmt.Printf("       %s\n", result.APIKey)
+	fmt.Println(bar)
+	fmt.Printf("  Account ID: %s\n", result.AccountID)
+	if result.AppID != "" {
+		fmt.Printf("  App ID:     %s\n", result.AppID)
+		fmt.Println("  This machine is logged in — no 'tessera login' needed.")
+	}
+	fmt.Println(bar)
 	fmt.Println()
-	fmt.Println("IMPORTANT: store this API key now. It will not be shown again;")
-	fmt.Println("it is saved in your local config file (keep that file private).")
+	fmt.Println("Lost this machine? Log back in anywhere with:")
+	fmt.Println("  tessera login \"<your 12-word recovery phrase>\"")
+	if result.Readiness != nil {
+		state, _ := result.Readiness["state"].(string)
+		msg, _ := result.Readiness["message"].(string)
+		fmt.Println()
+		fmt.Printf("Status: %s\n  %s\n", readinessLabel(state), msg)
+	}
 	fmt.Println()
-	fmt.Println("Next: upload a file with 'tessera upload <file>'. Your first upload is free.")
-	fmt.Println("Add funds any time with 'tessera topup <amount>' (minimum $0.01).")
+	fmt.Println("Next: tessera upload <file>. Add funds any time: tessera topup 5 (crypto minimum ~$0.38 in USDC on Base, more for other coins; live list: tessera topup --minimums).")
 }

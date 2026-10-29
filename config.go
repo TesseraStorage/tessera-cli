@@ -211,6 +211,7 @@ func deleteConfigFiles() error {
 		return err
 	}
 	os.Remove(cp)
+	clearReadinessCache()
 	dir, _ := configDir()
 	os.Remove(dir) // only removes if empty
 	return nil

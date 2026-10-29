@@ -158,7 +158,7 @@ func TestRunTopupAddressDirect(t *testing.T) {
 	if fake.statusCalls != 0 {
 		t.Fatalf("non-interactive default path polled %d times, want 0", fake.statusCalls)
 	}
-	for _, want := range []string{"Top-up address created", "10.199555", "usdcbase", "base", "0x52908400098527886E0F7030069857D2E4169EE7", "https://pay.example/i/direct"} {
+	for _, want := range []string{"Top-up address created", "10.199555", "USDC on Base", "Send before:", "UTC", "0x52908400098527886E0F7030069857D2E4169EE7", "https://pay.example/i/direct"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("direct output missing %q:\n%s", want, out)
 		}
@@ -691,14 +691,14 @@ var (
 	_ x402ChallengeAPI = (*fakeDirectAPI)(nil)
 )
 
-func TestBelowMinimumGuidanceMentionsAmountAndInvoice(t *testing.T) {
+func TestBelowMinimumGuidanceMentionsAmountAndX402(t *testing.T) {
 	err := &billingError{
 		Status: http.StatusConflict,
 		Code:   "below_asset_minimum",
 		Extra:  map[string]any{"minimum_usd": "8.64"},
 	}
 	msg := describeTopupError(err)
-	for _, want := range []string{"below_asset_minimum", "$8.64", "--invoice"} {
+	for _, want := range []string{"below_asset_minimum", "$8.64", "nothing was created", "tessera wallet init", "--wallet", "--payment <base64 X-PAYMENT>", "$0.01"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("describeTopupError = %q, missing %q", msg, want)
 		}
