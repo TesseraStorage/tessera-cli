@@ -181,9 +181,9 @@ failure that erodes trust in a storage tool.
 
 ## 9. The billing client
 
-Billing commands share one small HTTP client (`billing.go`) speaking moneyd's
-public `/api/v1` surface. It is deliberately separate from the storage SDK: the
-two use different credentials and different failure modes.
+Billing commands share one small HTTP client (`billing.go`) speaking the
+billing API's public `/api/v1` surface. It is deliberately separate from the
+storage SDK: the two use different credentials and different failure modes.
 
 **Auth selection.** Both credentials live in the 0600 `~/.tessera/config.json`:
 
@@ -199,7 +199,7 @@ endpoints (`/auth/magic-link`, `/auth/verify`, `/agents`) carry no credential.
 `TESSERA_BILLING_URL` environment variable overrides the configured base for
 development; the default is `https://tessera.storage/api/v1`.
 
-**Error shape.** moneyd serializes most failures as
+**Error shape.** The billing API serializes most failures as
 `{"detail":{"error":"code", …}}`, but two paths are flat: `/auth/verify`'s 401
 `{"error":"invalid_token"}` and the x402 `502 {"error":"settlement_pending", …}`.
 The client parses the code from either shape into a typed
@@ -214,9 +214,39 @@ also stored, the next call transparently falls back to it. Agent-key 401s are
 plain errors — there is nothing to clear. Credentials are never logged; `signup`
 is the single, documented exception that prints the one-time key.
 
-**Payments.** `topup` opens a NOWPayments invoice or, with `--x402`, fetches the
-payment challenge and submits a base64 `X-PAYMENT` the user signed with external
-wallet tooling. The CLI never holds a wallet or signing key.
+**Payments.** `topup <amount>` has four paths:
+
+- **Direct address (default).** Creates a payment intent and prints the intent
+  id, amount, exact amount/asset/network to send, payment address, address
+  expiry and invoice URL. An interactive terminal polls the intent until it is
+  completed, expired or failed: 2 seconds initial interval, backing off to 30
+  seconds, with a 20-minute cap. `--wait` and `--no-wait` override the default.
+  A server that only returns an invoice URL falls back to the previous invoice
+  output.
+- **Hosted invoice (`--invoice`).** Requests the invoice link explicitly; this
+  preserves the older invoice-only flow.
+- **External x402 (`--x402` or `--payment`).** Fetches the payment challenge and
+  submits a base64 `X-PAYMENT` the user signed with external wallet tooling. The
+  CLI holds no key on this path.
+- **Local wallet (`--wallet`).** Signs the EIP-3009 authorization on the machine
+  and submits only the signature. It requires the x402 rail to be open for the
+  account and cannot be combined with `--invoice`, `--x402` or `--payment`.
+
+`--coin <code>` selects the asset on the default direct-address path;
+`topup --coins` lists accepted coins without needing an amount. `--json` emits
+one document on the default, coin-list and wallet paths; the legacy x402
+challenge output remains text. If an amount is below the asset's direct
+minimum, the error includes `minimum_usd` and suggests `--invoice`.
+
+**Optional local wallet.** The CLI can hold a wallet key, but only as an
+explicit opt-in. `wallet init` generates a secp256k1 key and writes
+`~/.tessera/wallet.json` with `0600` permissions in the `0700` config directory;
+it never prints the key. `wallet show` reads the address and on-chain USDC
+balance; `wallet fund` prints funding guidance. The key is used for payment
+signing only when `topup --wallet` is requested. No other `topup` path reads or
+writes the file. The key never leaves the machine; only the EIP-3009 signature
+is sent. `wallet init` refuses to overwrite an existing wallet because replacing
+the key can strand funds.
 
 ## 10. The background watcher
 
