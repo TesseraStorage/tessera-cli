@@ -35,12 +35,22 @@ var (
 // submit an externally signed authorization. --wallet signs locally with the
 // opt-in wallet key; the key never leaves the machine.
 func cmdTopup(args []string) {
+	if hasFlag(args, "--help") || hasFlag(args, "-h") {
+		fmt.Print(topupHelp)
+		return
+	}
 	req, err := parseTopupArgs(args)
 	if err != nil {
 		fatal("%v", err)
 	}
 	if req.coins {
 		if err := runTopupCoins(req); err != nil {
+			fatal("%s", describeTopupError(err))
+		}
+		return
+	}
+	if req.minimums {
+		if err := runTopupMinimums(req); err != nil {
 			fatal("%s", describeTopupError(err))
 		}
 		return
@@ -98,6 +108,7 @@ type topupRequest struct {
 	wait        bool
 	noWait      bool
 	coins       bool
+	minimums    bool
 }
 
 // parseTopupArgs resolves the positional amount and the value flags. The
@@ -108,6 +119,14 @@ type topupRequest struct {
 func parseTopupArgs(args []string) (topupRequest, error) {
 	if hasFlag(args, "--coins") {
 		return topupRequest{coins: true, json: hasFlag(args, "--json")}, nil
+	}
+	if hasFlag(args, "--minimums") {
+		coin, _ := flagValue(args, "--coin")
+		if a, ok := flagValue(args, "--asset"); ok && a != "" {
+			coin = a
+		}
+		coin = strings.ToLower(strings.TrimSpace(coin))
+		return topupRequest{minimums: true, payCurrency: coin, json: hasFlag(args, "--json")}, nil
 	}
 	pos := positional(args)
 	if len(pos) != 1 {
@@ -125,6 +144,17 @@ func parseTopupArgs(args []string) (topupRequest, error) {
 	if err != nil {
 		return topupRequest{}, err
 	}
+	asset, err := topupValueFlag(args, "--asset")
+	if err != nil {
+		return topupRequest{}, err
+	}
+	if asset != "" {
+		if coin != "" && !strings.EqualFold(coin, asset) {
+			return topupRequest{}, errors.New("--asset and --coin name different assets; use one")
+		}
+		coin = asset
+	}
+	coin = strings.ToLower(strings.TrimSpace(coin))
 	if coin != "" {
 		if payCurrency != "" && payCurrency != coin {
 			return topupRequest{}, errors.New("--coin and --pay-currency name different assets; use one")
@@ -247,6 +277,16 @@ func runTopupAddress(api billingAPI, req topupRequest) error {
 	mode := ""
 	if req.invoice {
 		mode = "invoice"
+	}
+	if !req.invoice && req.payCurrency != "" {
+		code, err := resolveAssetCode(api, req.payCurrency)
+		if err != nil {
+			return err
+		}
+		req.payCurrency = code
+	}
+	if err := checkTopupMinimum(api, req); err != nil {
+		return err
 	}
 	var resp map[string]any
 	var err error
@@ -376,10 +416,12 @@ func runTopupCoins(req topupRequest) error {
 		if isDefault, _ := coin["default"].(bool); isDefault {
 			marker = "*"
 		}
-		fmt.Printf("  %s %-10s %s\n", marker, topupField(coin, "code"), topupField(coin, "name"))
+		fmt.Printf("  %s %-12s %s\n", marker, topupField(coin, "code"), topupField(coin, "name"))
 	}
 	fmt.Println()
-	fmt.Println("Use --coin <code> to pay in a coin other than the default.")
+	fmt.Println("* = default (USDC on Base, the lowest minimum).")
+	fmt.Println("Get a deposit address in another coin: tessera topup <usd> --asset <code>")
+	fmt.Println("Live minimum for a coin:              tessera topup --minimums --asset <code>")
 	return nil
 }
 
@@ -522,13 +564,17 @@ func printTopupDirect(resp map[string]any) {
 	fmt.Println()
 	fmt.Printf("  Payment intent:  %s\n", topupField(resp, "payment_intent_id"))
 	fmt.Printf("  Amount:          $%s\n", topupField(resp, "amount_usd"))
-	fmt.Printf("  Send:            %s %s on %s\n", topupField(resp, "pay_amount"), topupField(resp, "pay_currency"), topupField(resp, "network"))
+	fmt.Printf("  Send:            %s %s\n", topupField(resp, "pay_amount"), assetLabel(topupField(resp, "pay_currency"), topupField(resp, "network")))
 	fmt.Printf("  Address:         %s\n", topupField(resp, "pay_address"))
-	fmt.Printf("  Address expires: %s\n", topupField(resp, "address_expires_at"))
+	fmt.Printf("  Send before:     %s\n", localTimeLabel(topupField(resp, "address_expires_at"), time.Now()))
 	fmt.Printf("  Invoice URL:     %s\n", topupField(resp, "invoice_url"))
+	fmt.Printf("  Invoice open until: %s\n", localTimeLabel(topupField(resp, "expires_at"), time.Now()))
 	fmt.Println()
-	fmt.Println("Send exactly the 'Send' amount to the address. Or open the invoice URL")
-	fmt.Println("to pay in a browser. The balance is credited after the payment confirms.")
+	fmt.Println("Send exactly the 'Send' amount to the address before the 'Send before' time")
+	fmt.Println("(the processor's rate quote for this address, usually ~20 minutes). After")
+	fmt.Println("that, run the command again for a fresh quote, or open the invoice URL,")
+	fmt.Println("which stays open longer and lets you pick any accepted coin in a browser.")
+	fmt.Println("The balance is credited after the payment confirms.")
 }
 
 // printTopupInvoice renders the 201 NOWPayments invoice fields.
@@ -537,10 +583,11 @@ func printTopupInvoice(resp map[string]any) {
 	fmt.Println()
 	fmt.Printf("  Payment intent: %s\n", topupField(resp, "payment_intent_id"))
 	fmt.Printf("  Invoice URL:    %s\n", topupField(resp, "invoice_url"))
-	fmt.Printf("  Expires:        %s\n", topupField(resp, "expires_at"))
+	fmt.Printf("  Open until:     %s\n", localTimeLabel(topupField(resp, "expires_at"), time.Now()))
 	fmt.Println()
-	fmt.Println("Open the invoice URL to pay with crypto; the balance is credited after")
-	fmt.Println("the processor confirms the payment.")
+	fmt.Println("Open the invoice URL in a browser and pick any accepted coin (USDC, USDT,")
+	fmt.Println("BTC, ETH, XMR, SOL, LTC and hundreds more; each coin shows its own minimum).")
+	fmt.Println("The balance is credited after the processor confirms the payment.")
 }
 
 // printX402Challenge renders moneyd's PaymentRequired document. Only the
@@ -640,13 +687,21 @@ func describeTopupError(err error) string {
 	}
 	switch {
 	case be.Status == http.StatusConflict && be.Code == "below_asset_minimum":
-		if minimum := topupField(be.Extra, "minimum_usd"); minimum != "—" {
-			return fmt.Sprintf(
-				"below_asset_minimum — the minimum for a direct top-up in this asset is $%s; retry with at least $%s, or pass --invoice to pay a smaller amount in a browser",
-				minimum, minimum,
-			)
+		asset := "this coin"
+		if coin := topupField(be.Extra, "pay_currency"); coin != "—" {
+			asset = assetLabel(coin, "")
 		}
-		return "below_asset_minimum — retry with a larger amount, or pass --invoice"
+		how := "a deposit address"
+		if topupField(be.Extra, "mode") == "invoice" {
+			how = "a browser invoice"
+		}
+		head := "below_asset_minimum — this amount is below the payment processor's minimum, so nothing was created."
+		if minimum := topupField(be.Extra, "minimum_usd"); minimum != "—" {
+			head = fmt.Sprintf("below_asset_minimum — the minimum for %s in %s is $%s (set by the payment processor), so nothing was created.", how, asset, minimum)
+		}
+		return head + "\n" + smallTopupGuidance
+	case be.Status == http.StatusUnprocessableEntity && be.Code == "unknown_currency":
+		return "unknown_currency — that coin is not accepted; list coins with 'tessera topup --coins'"
 	case be.Status == http.StatusUnprocessableEntity && be.Code == "amount_out_of_range":
 		return "amount_out_of_range — the server rejected this amount as outside its accepted range"
 	case be.Status == http.StatusUnprocessableEntity && be.Code == "unknown_rail":
@@ -664,3 +719,261 @@ func describeTopupError(err error) string {
 	}
 	return err.Error()
 }
+
+// topupMinimumsAPI reads GET /billing/topup/minimums (public). Optional so a
+// test fake without it simply skips the pre-check; the server validates too.
+type topupMinimumsAPI interface {
+	TopupMinimums(payCurrency string) (map[string]any, error)
+}
+
+// checkTopupMinimum warns and refuses BEFORE an invoice or address is
+// created when the amount is below the processor's live minimum for the coin
+// (an invoice is checked against the default, cheapest coin). Any failure to
+// read the minimum is ignored: the server enforces the same rule.
+func checkTopupMinimum(api billingAPI, req topupRequest) error {
+	m, ok := api.(topupMinimumsAPI)
+	if !ok {
+		return nil
+	}
+	coin := req.payCurrency
+	if req.invoice {
+		coin = ""
+	}
+	doc, err := m.TopupMinimums(coin)
+	if err != nil {
+		return nil
+	}
+	rails, _ := doc["rails"].(map[string]any)
+	np, _ := rails["nowpayments"].(map[string]any)
+	minStr, _ := np["minimum_usd"].(string)
+	if minStr == "" {
+		return nil
+	}
+	minimum, err1 := strconv.ParseFloat(minStr, 64)
+	amount, err2 := strconv.ParseFloat(req.amount, 64)
+	if err1 != nil || err2 != nil || amount >= minimum-1e-9 {
+		return nil
+	}
+	extra := map[string]any{"error": "below_asset_minimum", "minimum_usd": minStr}
+	if c, _ := np["pay_currency"].(string); c != "" {
+		extra["pay_currency"] = c
+	}
+	if req.invoice {
+		extra["mode"] = "invoice"
+	}
+	return &billingError{Status: http.StatusConflict, Code: "below_asset_minimum", Extra: extra}
+}
+
+// runTopupMinimums prints the live per-rail minimums (public endpoint, no
+// login needed).
+func runTopupMinimums(req topupRequest) error {
+	cfg, err := loadConfig()
+	if err != nil || cfg == nil {
+		cfg = &Config{}
+	}
+	if cfg.IndexerURL == "" {
+		cfg.IndexerURL = defaultIndexer
+	}
+	if cfg.BillingAPIURL == "" {
+		cfg.BillingAPIURL = defaultBillingURL
+	}
+	m, ok := newBillingClient(cfg).(topupMinimumsAPI)
+	if !ok {
+		return errors.New("this build cannot read top-up minimums")
+	}
+	doc, err := m.TopupMinimums(req.payCurrency)
+	if err != nil {
+		return err
+	}
+	if req.json {
+		emitJSON(doc)
+		return nil
+	}
+	rails, _ := doc["rails"].(map[string]any)
+	np, _ := rails["nowpayments"].(map[string]any)
+	x, _ := rails["x402"].(map[string]any)
+	fmt.Printf("Top-up minimums (live):\n")
+	npMin := fmt.Sprint(np["minimum_usd"])
+	if np["minimum_usd"] == nil {
+		npMin = "unavailable right now"
+	} else {
+		npMin = "$" + npMin
+	}
+	fmt.Printf("  1. x402 wallet, USDC on Base (--wallet, --x402, --payment): $%s — any amount from the floor\n", fmt.Sprint(x["minimum_usd"]))
+	fmt.Printf("  2. Deposit address in %s (default, or --asset <code>): %s\n", assetLabel(fmt.Sprint(np["pay_currency"]), ""), npMin)
+	invMin := "the cheapest coin's minimum"
+	if req.payCurrency == "" {
+		invMin = npMin
+	}
+	fmt.Printf("  3. Browser invoice (--invoice, pay in any accepted coin): from %s; each coin shows its own minimum\n", invMin)
+	fmt.Printf("Tessera floor (all rails): $%s. Crypto minimums are set by the payment processor (NOWPayments) and move with fees.\n", fmt.Sprint(doc["floor_usd"]))
+	fmt.Printf("Other coins: tessera topup --minimums --asset <code>  (list coins: tessera topup --coins)\n")
+	return nil
+}
+
+// smallTopupGuidance is the one accurate answer to "how do I pay less than
+// the processor minimum": only x402 has no processor minimum.
+const smallTopupGuidance = `Amounts under the processor minimum (down to $0.01) work only with x402 (USDC on Base):
+  - built-in wallet:  tessera wallet init   (fund it with USDC on Base)
+                      tessera topup <usd> --wallet
+  - your own signer:  tessera topup <usd> --x402    (prints what to sign)
+                      tessera topup <usd> --payment <base64 X-PAYMENT>
+Live minimums per coin: tessera topup --minimums [--asset <code>]`
+
+// assetLabels names common coins in plain words. Unknown codes fall back to
+// the ticker plus network.
+var assetLabels = map[string]string{
+	"usdcbase": "USDC on Base", "usdc": "USDC on Ethereum", "usdcmatic": "USDC on Polygon",
+	"usdcsol": "USDC on Solana", "usdcbsc": "USDC on BNB Chain", "usdcarb": "USDC on Arbitrum",
+	"usdcop": "USDC on Optimism", "usdcalgo": "USDC on Algorand",
+	"usdterc20": "USDT on Ethereum", "usdttrc20": "USDT on Tron", "usdtbsc": "USDT on BNB Chain",
+	"usdtmatic": "USDT on Polygon", "usdtsol": "USDT on Solana", "usdtarb": "USDT on Arbitrum",
+	"usdtop": "USDT on Optimism", "usdtton": "USDT on TON",
+	"btc": "Bitcoin (BTC)", "btclightning": "Bitcoin Lightning", "eth": "Ether (ETH) on Ethereum",
+	"ethbase": "Ether (ETH) on Base", "etharb": "Ether (ETH) on Arbitrum", "xmr": "Monero (XMR)",
+	"sol": "Solana (SOL)", "ltc": "Litecoin (LTC)", "trx": "TRON (TRX)", "doge": "Dogecoin (DOGE)",
+	"bnbbsc": "BNB on BNB Chain", "ton": "Toncoin (TON)", "xrp": "XRP", "ada": "Cardano (ADA)",
+}
+
+var networkLabels = map[string]string{
+	"base": "Base", "eth": "Ethereum", "bsc": "BNB Chain", "matic": "Polygon", "sol": "Solana",
+	"trx": "Tron", "arbitrum": "Arbitrum", "op": "Optimism", "ton": "TON",
+}
+
+func assetLabel(code, network string) string {
+	c := strings.ToLower(strings.TrimSpace(code))
+	if c == "" || c == "—" {
+		return "—"
+	}
+	if l, ok := assetLabels[c]; ok {
+		return l
+	}
+	n := strings.ToLower(strings.TrimSpace(network))
+	if n == "" || n == "—" || n == c {
+		return strings.ToUpper(c)
+	}
+	if l, ok := networkLabels[n]; ok {
+		n = l
+	}
+	return strings.ToUpper(c) + " on " + n
+}
+
+// localTimeLabel renders an RFC 3339 server time in the user's local zone
+// with the zone named and a relative hint, so an expiry is never misread as
+// already past because it was printed in UTC.
+func localTimeLabel(raw string, now time.Time) string {
+	if raw == "" || raw == "—" {
+		return "—"
+	}
+	t, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return raw
+	}
+	lt := t.In(time.Local)
+	_, off := lt.Zone()
+	zone := fmt.Sprintf("UTC%+03d:%02d", off/3600, abs(off%3600)/60)
+	rel := ""
+	d := t.Sub(now).Round(time.Minute)
+	switch {
+	case d > 0:
+		rel = "in " + humanDuration(d)
+	case d < 0:
+		rel = "expired " + humanDuration(-d) + " ago"
+	default:
+		rel = "now"
+	}
+	return fmt.Sprintf("%s %s (%s)", lt.Format("2006-01-02 15:04"), zone, rel)
+}
+
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+func humanDuration(d time.Duration) string {
+	if d < time.Hour {
+		return fmt.Sprintf("%d min", int(d.Minutes()))
+	}
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	if m == 0 {
+		return fmt.Sprintf("%dh", h)
+	}
+	return fmt.Sprintf("%dh %dmin", h, m)
+}
+
+// resolveAssetCode turns a ticker such as "usdt" into a catalogue code, or
+// explains the choices when a ticker exists on several networks. Exact codes
+// pass through; an unreadable catalogue defers to the server.
+func resolveAssetCode(api billingAPI, code string) (string, error) {
+	if code == "" {
+		return "", nil
+	}
+	lister, ok := api.(currencyAPI)
+	if !ok {
+		return code, nil
+	}
+	coins, err := lister.Currencies()
+	if err != nil || len(coins) == 0 {
+		return code, nil
+	}
+	var matches []string
+	for _, c := range coins {
+		cc := strings.ToLower(topupField(c, "code"))
+		if cc == code {
+			return code, nil
+		}
+		if strings.HasPrefix(cc, code) {
+			matches = append(matches, fmt.Sprintf("%s (%s)", cc, topupField(c, "name")))
+		}
+	}
+	if len(matches) == 0 {
+		return "", fmt.Errorf("%q is not an accepted coin; list coins with 'tessera topup --coins'", code)
+	}
+	if len(matches) > 12 {
+		matches = append(matches[:12], "…")
+	}
+	return "", fmt.Errorf("%s is available on several networks; pick one with --asset <code>:\n  %s", strings.ToUpper(code), strings.Join(matches, "\n  "))
+}
+
+const topupHelp = `Usage: tessera topup <usd> [options]
+
+Three ways to pay:
+
+  1. Built-in x402 wallet: USDC on Base. Best for agents; any amount from $0.01.
+       tessera wallet init                 # creates a local key (~/.tessera/wallet.json)
+       tessera wallet fund                 # how to send USDC on Base to it
+       tessera topup 0.50 --wallet
+     Own signer instead: tessera topup <usd> --x402 (prints what to sign), then
+       tessera topup <usd> --payment <base64 X-PAYMENT>
+
+  2. Deposit address in a coin you choose (default: USDC on Base).
+       tessera topup 5                     # USDC on Base
+       tessera topup 5 --asset xmr         # Monero; also btc, eth, sol, ltc,
+       tessera topup 5 --asset usdttrc20   # usdtbsc, usdcsol, ... (358 coins)
+     Each coin has a minimum set by the payment processor (NOWPayments),
+     fetched live: about $0.38 for USDC on Base, more for most other coins.
+
+  3. Browser invoice: open a link and pay in any accepted coin
+     (USDC, USDT, BTC, ETH, XMR, SOL, LTC and hundreds more).
+       tessera topup 5 --invoice
+
+Options:
+  --asset <code>   coin for a deposit address (alias: --coin, --pay-currency);
+                   a bare ticker like 'usdt' lists its networks
+  --invoice        hosted browser invoice instead of an address
+  --wallet         pay from the built-in x402 wallet
+  --x402 / --payment <b64>   external x402 signer
+  --json           one machine-readable JSON document
+  --wait|--no-wait poll until paid (default on an interactive terminal)
+
+Discover:
+  tessera topup --coins                   # every accepted coin
+  tessera topup --minimums [--asset <c>]  # live minimum per method / coin
+
+Amounts below a coin's processor minimum are refused before anything is
+created; under that minimum (down to $0.01) only x402 (method 1) works.
+Times are shown in your local time zone.
+`

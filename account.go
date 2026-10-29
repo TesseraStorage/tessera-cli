@@ -19,6 +19,10 @@ import (
 // render as an em dash. --json emits the server object unchanged plus a
 // non-secret credential tag, so scripts can tell which identity answered.
 func cmdAccount(args []string) {
+	if pos := positional(args); len(pos) > 0 && pos[0] == "delete" {
+		cmdAccountDelete(args[1:])
+		return
+	}
 	acct, credential, err := fetchAccountSummary()
 	if err != nil {
 		fatal("%s", describeBillingError(err))
@@ -138,6 +142,12 @@ func printAccountTable(acct map[string]any, credential string) {
 	field("Days left", accountDaysLeft(acct))
 	field("Credential", credentialText(credential))
 	field("Top-up", accountString(acct, "topup_url"))
+	if state, msg := accountReadiness(acct); state != "" {
+		field("Readiness", readinessLabel(state))
+		if msg != "" {
+			fmt.Printf("  %-14s %s\n", "", msg)
+		}
+	}
 }
 
 // dashIfEmpty renders missing/null fields as an em dash.

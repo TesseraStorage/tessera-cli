@@ -33,7 +33,7 @@ powershell -c "irm https://raw.githubusercontent.com/TesseraStorage/tessera-cli/
 ### Next steps
 
 ```bash
-tessera login                    # Browser opens — enter your connect key, approve, save 12 words
+tessera signup                   # Creates your account AND logs you in — save the 12 words + API key
 tessera upload photo.png         # Erasure-coded across 30 Sia hosts
 tessera list                     # See all your files, with real names and paths
 tessera download photo.png       # Get it back, SHA-256 verified
@@ -156,17 +156,16 @@ This is the part that trips people up, so here it is end to end.
 actually matters:
 
 ```bash
-# On the Mac: log in and SAVE THE 12 WORDS
-tessera login
+# On the Mac: create the account and SAVE THE 12 WORDS (and the API key)
+tessera signup
 
-# On Windows: log in with that SAME recovery phrase
+# On Windows: log in with that SAME recovery phrase — no browser, no password
 tessera login "word1 word2 ... word12"
 ```
 
-The app key is derived from the phrase, so the same phrase means the same
-account. A plain `tessera login` on the second machine generates a *new* phrase
-and a *separate account* — the two machines would never see each other's files,
-no matter how the folders are configured. (You can also set `TESSERA_PHRASE`.)
+The phrase restores the same account and the same App ID, so both machines see
+the same files. Running `signup` on the second machine would create a *separate
+account* instead. (You can also set `TESSERA_PHRASE`.)
 
 **Then pair the folders using the same remote prefix:**
 
@@ -204,14 +203,18 @@ the Mac, add a second pair with a different prefix (for example
 
 | Command | Description |
 |---|---|
-| `login [phrase]` | Connect this machine (browser approval). An optional recovery phrase makes the account reproducible. |
+| `login "<12 words>"` | Restore your account on this machine from the recovery phrase: same account ID and App ID, no browser |
+| `login --api-key <tsk_…> ["<12 words>"]` | Log in with your API key (adding the phrase restores the storage identity too) |
 | `login --email <e> [--token <t>]` | Billing sign-in with a magic link: request it, then complete with the emailed token |
 | `login --billing-logout` | End the billing session (an agent key, if any, is untouched) |
-| `signup [--name <n>] [--contact-email <e>] [--json] [--force]` | Create an agent billing account; the API key is shown once |
-| `logout` | Remove local credentials from `~/.tessera/` |
+| `signup [--name <n>] [--contact-email <e>] [--json] [--force]` | Create an account and log this machine in; the recovery phrase and API key are shown once — keep both |
+| `logout [--yes]` | Remove local credentials from `~/.tessera/` (account and files stay) |
+| `account delete [--yes]` | Permanently delete the account: keys revoked, files deleted, billing stopped. **No refund** of any balance. Type the account ID to confirm; `--yes` for scripts |
+| `update [--check] [--version vX.Y.Z]` | Install the latest release after verifying it against `SHA256SUMS` |
 | `whoami` | Show current account identity |
 | `account [--json]` | Billing account dashboard (status, balance, allowance, active credential) |
-| `topup <amount> [--coin <code>] [--invoice] [--wallet] [--json] [--wait\|--no-wait]` | Add funds: direct payment address by default (USDC on Base unless `--coin` says otherwise); `--invoice` for a hosted invoice link |
+| `topup <amount> [--asset <code>] [--invoice] [--wallet] [--json] [--wait\|--no-wait]` | Add funds: x402 wallet (`--wallet`, any amount from $0.01), deposit address in a chosen coin (USDC on Base by default; `--asset xmr`, `btc`, `eth`, `usdttrc20`…), or browser invoice in any accepted coin (`--invoice`). `tessera topup --help` explains all three |
+| `topup --minimums [--asset <code>] [--json]` | Show the live per-rail minimums |
 | `topup <amount> [--x402] [--pay-currency <asset>] [--payment <b64>]` | Advanced x402: print the challenge to sign externally, or submit a signed authorization |
 | `topup --coins [--json]` | List the coins accepted for top-ups |
 | `wallet init\|show\|fund` | Optional local x402 wallet: create a key, show its address and balance, or print funding guidance |
@@ -245,9 +248,10 @@ key.
 
 ## Billing and agent accounts
 
-The CLI can create and manage a billing account on its own. `signup` opens an
-agent account without a browser; `login --email` signs a human in with a magic
-link. Both credentials are stored locally and never printed again.
+The CLI can create and manage an account on its own. `signup` opens an account
+and logs this machine in in one step, without a browser; `login --email` signs a
+human in with a magic link. Credentials are stored locally and never printed
+again.
 
 ```bash
 # Create an agent account. The tsk_… API key is printed exactly once.
@@ -264,8 +268,8 @@ tessera login --billing-logout      # ends the session; an agent key is untouche
 tessera account                     # billing id, status, balance, allowance, credential
 tessera account --json
 tessera topup 25                    # direct payment address (USDC on Base by default)
-tessera topup 25 --coin btc         # choose another accepted coin
-tessera topup 25 --invoice          # hosted invoice link only
+tessera topup 25 --asset xmr        # deposit address in another coin (Monero, BTC, ETH, USDT…)
+tessera topup 25 --invoice          # browser invoice: pick any accepted coin on the page
 tessera topup 25 --wallet           # sign x402 locally (after wallet init)
 tessera topup 25 --json             # machine-readable create result
 tessera topup 25 --wait             # poll until completed, expired or failed
@@ -282,6 +286,27 @@ tessera wallet show                 # address and USDC balance on Base
 tessera wallet fund                 # how to fund it
 ```
 
+**Three ways to pay.**
+
+1. **Built-in x402 wallet** (USDC on Base) — best for agents, any amount from
+   $0.01: `tessera wallet init`, fund it (`tessera wallet fund`), then
+   `tessera topup <usd> --wallet`. With your own signer: `topup <usd> --x402`
+   prints the challenge, `topup <usd> --payment <base64 X-PAYMENT>` submits it.
+2. **Deposit address in a coin you choose** — `tessera topup <usd>` (USDC on
+   Base) or `--asset <code>` (`xmr`, `btc`, `eth`, `sol`, `ltc`, `usdttrc20`,
+   `usdtbsc`, … — 300+ coins; a bare ticker such as `usdt` lists its networks).
+   The coin's minimum is fetched live before anything is created.
+3. **Browser invoice** — `tessera topup <usd> --invoice` opens a NOWPayments
+   page where you pick any accepted coin (USDC, USDT, BTC, ETH, XMR, SOL, LTC
+   and hundreds more); each coin shows its own minimum there.
+
+Assets are shown in plain words ("USDC on Base", "Monero (XMR)"), and every
+time is printed in your local time zone with the offset named, e.g.
+`2026-10-31 02:13 UTC+07:00 (in 20 min)`. *Send before* is the deposit
+address's rate quote (about 20 minutes, set by NOWPayments); *Invoice open
+until* is the invoice link (24 hours). After the address window, run the
+command again or use the invoice link.
+
 **Top-ups default to a direct address.** A bare `topup <amount>` creates a
 payment intent and prints the payment intent id, amount, exact amount/asset/
 network to send, payment address, address expiry and invoice URL. In an
@@ -289,12 +314,27 @@ interactive terminal it polls until the intent is completed, expired or failed;
 `--wait` and `--no-wait` override that. `--json` emits one document and does not
 wait unless `--wait` is also given. A server that only returns an invoice URL
 falls back to the previous invoice output, and `--invoice` asks for that path
-explicitly. If an amount is below the asset's direct minimum, the error includes
-the minimum and suggests `--invoice`.
+explicitly. Before creating anything the CLI reads the live minimum and, if the
+amount is below it, refuses with the real number and creates no invoice.
 
-**Coins.** `topup --coins` lists the accepted coins; `--coin <code>` selects one
-for the default address path. `--coin` and `--pay-currency` are aliases, but do
-not name different assets in one command.
+**Top-up minimums.** Tessera's own floor is $0.01 on every rail, but crypto
+payments through NOWPayments also have a per-coin minimum set by the processor:
+
+| Rail | Minimum (2026-10-30, live values: `tessera topup --minimums`) |
+|---|---|
+| NOWPayments, USDC on Base (default coin, address or `--invoice`) | about $0.38 |
+| NOWPayments, other coins (`--asset`) | varies: about $0.40–$1.60 for most (LTC, TRX, SOL, ETH, BTC, USDC-ERC20), up to about $12 for USDT-TRC20 |
+| x402 USDC on Base (`--wallet`, `--x402`) | $0.01 (Tessera floor; no processor minimum) |
+
+The server enforces the same minimums (`409 below_asset_minimum` with
+`minimum_usd`), so a hosted invoice below the minimum is never created. Clients
+pre-fill $5. Below a coin's minimum the error gives that minimum and points to
+x402 (`tessera wallet init`, then `topup <usd> --wallet`, or `--payment`), the
+only way to pay less, down to $0.01.
+
+**Coins.** `topup --coins` lists the accepted coins; `--asset <code>` selects one
+for the default address path. `--asset`, `--coin` and `--pay-currency` are
+aliases, but do not name different assets in one command.
 
 **One account, two credentials.** A stored `billing_session` (a human login)
 wins over a `billing_agent_key`; `tessera account` prints which credential is
@@ -302,15 +342,16 @@ active. If the server rejects the session with a 401, the CLI clears it locally
 and says *session expired — run `tessera login --email …`*; the next command
 falls back to the stored agent key, if there is one.
 
-**Login finishes setup.** A completed magic-link login (or a plain
-`tessera login` when only an agent key is stored) registers this machine's
-storage identity headlessly when the account does not have one yet: the CLI
-mints a one-time connect key, approves the connection itself, derives the app
-key from a recovery phrase (generated and printed once unless `TESSERA_PHRASE`
-or a phrase argument supplies one), and activates the link. If the account
-already has an identity, it says so and points at reusing
-`~/.tessera/config.json` from the machine that registered it (or contacting
-support). `signup` alone does not mint storage credentials.
+**Signup logs you in.** `signup` creates the billing account and this
+machine's storage identity in the same step: it generates a recovery phrase,
+derives the app key from it, registers a recovery key with Tessera and prints
+the phrase and the API key once. Keep both; Tessera does not store the phrase.
+
+**Seed login restores the same account.** On a new machine (or after
+`rm -rf ~/.tessera`), `tessera login "<12 words>"` proves the phrase to Tessera,
+gets back the same account ID and a fresh API key, and derives the same App ID —
+headless, no browser, no password. A completed magic-link login with no storage
+identity yet finishes the same registration.
 
 **New accounts: free first upload, then a readiness check.** A new agent
 account starts at a $0 balance. On its first host-list fetch Tessera posts a
@@ -318,8 +359,8 @@ $0.05 first-upload credit and funds enough storage hosts for that upload, which
 usually lands within a few seconds to a minute. `tessera account` can show
 `Ready: false` during this time, and a free account keeps showing it until its
 first paid top-up. That flag tracks long-term repair redundancy, not whether a
-transfer can run. Top-ups are open on both rails (`--invoice` via NOWPayments,
-and x402), minimum $0.01.
+transfer can run. Top-ups are open on both rails (NOWPayments and x402); see
+*Top-up minimums* above for each rail's minimum.
 
 Before every `upload`, `download`, `fetch` and sync transfer the CLI checks
 whether it can run. It dials each storage host over TCP (siamux, usually port
@@ -331,12 +372,34 @@ funded...` (up to 2 minutes). If it cannot go ahead, it names the cause:
 - *only X of the 30 needed hosts are reachable from your network*: a firewall,
   VPN, proxy or sandbox is blocking outbound TCP to the hosts. Try another
   network.
-- *insufficient balance*: run `tessera topup <amount>` (minimum $0.01).
+- *insufficient balance*: run `tessera topup 5` (see *Top-up minimums*).
 - *account not ready yet*: funding has not landed after the wait. Retry in a
   minute.
 
 Set `TESSERA_SKIP_PREFLIGHT=1` to skip the check. Even then, a host-shortage
 error from the SDK is mapped to one of these messages.
+
+**Readiness.** `signup`, `login`, `status`, `account` and each transfer print
+one readiness line: *free trial* (your first upload is prepaid), *top up to
+continue* (trial used or $0 balance), or *ready*. The indexer's "host funding
+ready" flag is false for a free-trial account until its first top-up — that is
+expected, not an error.
+
+**Progress.** `upload` and `download` draw a live progress bar on stderr
+(phase — waiting for host funding, encoding, uploading shards X/30, pinning,
+downloading — bytes done/total, percent, speed and ETA). When stderr is not a
+terminal it prints a plain line every 10 s; `--json` and `--quiet` (or
+`TESSERA_QUIET=1`) turn it off. stdout stays clean for scripts.
+
+**Updates.** The CLI checks for a new release at most once a day in the
+background and prints a one-line notice on stderr; `tessera update` downloads
+the release asset, verifies it against `SHA256SUMS` and replaces the binary.
+
+**Deleting your account.** `tessera account delete` revokes every key,
+deletes all stored objects, stops billing and marks the account deleted. Any
+remaining balance is forfeited — there are no refunds. You must type the
+account ID to confirm (`--yes` skips that for scripts). The website's Account
+page has the same option.
 
 **The signup key is shown once.** `signup` deliberately prints the new API key
 one time, with a store-it warning, because the server never shows it again. No

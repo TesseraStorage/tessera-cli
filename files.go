@@ -566,7 +566,9 @@ func cmdFetch(sharedURL, outName string) {
 
 	hasher := sha256.New()
 	tee := io.TeeReader(rc, hasher)
-	n, err := io.Copy(out, tee)
+	transferProgress.Start("↓ "+filepath.Base(outName), 0, "downloading")
+	n, err := io.Copy(out, &countingReader{r: tee, fn: transferProgress.Add})
+	transferProgress.Finish()
 	if err != nil {
 		fatal("read: %v", err)
 	}
