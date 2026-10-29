@@ -171,3 +171,13 @@ func TestReadyNoteWording(t *testing.T) {
 		t.Fatalf("ready note: %q", n)
 	}
 }
+
+func TestReadyNoteForFundedAccount(t *testing.T) {
+	n := readyNoteFor(false, "ready")
+	if !strings.Contains(n, "funded") || strings.Contains(n, "unfunded") {
+		t.Fatalf("funded note wrong: %q", n)
+	}
+	if readyNoteFor(false, "free_trial") != readyNote(false) {
+		t.Fatal("unfunded note must stay the born-paused explanation")
+	}
+}
