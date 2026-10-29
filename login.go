@@ -992,7 +992,7 @@ func cmdStatus(args ...string) {
 	if hasFlag(args, "--json") {
 		out := map[string]interface{}{
 			"ready":        acct.Ready,
-			"ready_note":   readyNote(acct.Ready),
+			"ready_note":   readyNoteFor(acct.Ready, readinessState(billingAcct)),
 			"indexer":      cfg.IndexerURL,
 			"app_id":       cfg.AppID,
 			"files":        len(idx.Paths),
@@ -1022,7 +1022,7 @@ func cmdStatus(args ...string) {
 	}
 	fmt.Printf("Host funding ready: %v\n", acct.Ready)
 	if !acct.Ready {
-		fmt.Printf("           (%s)\n", readyNote(acct.Ready))
+		fmt.Printf("           (%s)\n", readyNoteFor(acct.Ready, readinessState(billingAcct)))
 	}
 	fmt.Printf("Files:     %d\n", len(idx.Paths))
 	fmt.Printf("Total:     %s\n", formatBytes(idx.TotalSize()))
@@ -1046,6 +1046,24 @@ func sameCursor(a, b slabs.Cursor) bool {
 // hosts for its free first upload. Whether a transfer can run right now is
 // decided by the CLI's own readiness check (readiness.go), which waits for
 // host funding to land and explains any blocker.
+// readinessState is the billing readiness state ("ready", "free_trial", ...)
+// or "" when the account endpoint did not report one.
+func readinessState(billingAcct map[string]any) string {
+	state, _ := accountReadiness(billingAcct)
+	return state
+}
+
+// readyNoteFor explains Ready:false in terms of the billing state: a funded
+// account is only waiting for indexd to fund hosts, an unfunded one stays
+// born-paused until its first top-up.
+func readyNoteFor(ready bool, state string) string {
+	if !ready && state == "funded" {
+		return "funded: indexd is funding hosts for this account, which usually " +
+			"takes a few minutes after a top-up. Uploads wait for it automatically"
+	}
+	return readyNote(ready)
+}
+
 func readyNote(ready bool) string {
 	if ready {
 		return "host funding is past the repair-redundancy threshold"
