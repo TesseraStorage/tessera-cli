@@ -211,7 +211,10 @@ the Mac, add a second pair with a different prefix (for example
 | `logout` | Remove local credentials from `~/.tessera/` |
 | `whoami` | Show current account identity |
 | `account [--json]` | Billing account dashboard (status, balance, allowance, active credential) |
-| `topup <amount> [--pay-currency <asset>] [--x402 [--payment <b64>]]` | Add funds: a NOWPayments invoice, or an externally signed x402 USDC payment |
+| `topup <amount> [--coin <code>] [--invoice] [--wallet] [--json] [--wait\|--no-wait]` | Add funds: direct payment address by default (USDC on Base unless `--coin` says otherwise); `--invoice` for a hosted invoice link |
+| `topup <amount> [--x402] [--pay-currency <asset>] [--payment <b64>]` | Advanced x402: print the challenge to sign externally, or submit a signed authorization |
+| `topup --coins [--json]` | List the coins accepted for top-ups |
+| `wallet init\|show\|fund` | Optional local x402 wallet: create a key, show its address and balance, or print funding guidance |
 | `promo <code>` | Redeem a promo code on the billing account |
 | `status` | Account ready state + file count + total storage |
 | `list [prefix]` | Files with real paths, sizes and dates |
@@ -235,8 +238,10 @@ the Mac, add a second pair with a different prefix (for example
 | `help` | Show help |
 
 Add `--json` to `list`, `status`, `find`, `sync`, `usage`, `config`, `index`,
-`audit`, and `account` for scripting. `signup --json` prints the account id and
-its one-time API key.
+`audit`, `topup`, and `account` for scripting. `topup --json` works on the
+default address, `--coins`, and `--wallet` paths; the legacy `--x402` challenge
+output remains text. `signup --json` prints the account id and its one-time API
+key.
 
 ## Billing and agent accounts
 
@@ -258,13 +263,38 @@ tessera login --billing-logout      # ends the session; an agent key is untouche
 # Dashboard, top-ups and promos
 tessera account                     # billing id, status, balance, allowance, credential
 tessera account --json
-tessera topup 25                    # NOWPayments hosted invoice
-tessera topup 25 --pay-currency btc
+tessera topup 25                    # direct payment address (USDC on Base by default)
+tessera topup 25 --coin btc         # choose another accepted coin
+tessera topup 25 --invoice          # hosted invoice link only
+tessera topup 25 --wallet           # sign x402 locally (after wallet init)
+tessera topup 25 --json             # machine-readable create result
+tessera topup 25 --wait             # poll until completed, expired or failed
+tessera topup 25 --no-wait          # create and return immediately
+tessera topup --coins               # list accepted coins
 tessera topup 25 --x402             # print the challenge to sign externally
 tessera topup 25 --payment <base64 X-PAYMENT>   # submit the signed authorization
 tessera promo WELCOME10
 tessera usage --cost                # billing section + netted egress estimate
+
+# Optional local wallet for --wallet top-ups
+tessera wallet init                 # create a key in ~/.tessera/wallet.json (0600)
+tessera wallet show                 # address and USDC balance on Base
+tessera wallet fund                 # how to fund it
 ```
+
+**Top-ups default to a direct address.** A bare `topup <amount>` creates a
+payment intent and prints the payment intent id, amount, exact amount/asset/
+network to send, payment address, address expiry and invoice URL. In an
+interactive terminal it polls until the intent is completed, expired or failed;
+`--wait` and `--no-wait` override that. `--json` emits one document and does not
+wait unless `--wait` is also given. A server that only returns an invoice URL
+falls back to the previous invoice output, and `--invoice` asks for that path
+explicitly. If an amount is below the asset's direct minimum, the error includes
+the minimum and suggests `--invoice`.
+
+**Coins.** `topup --coins` lists the accepted coins; `--coin <code>` selects one
+for the default address path. `--coin` and `--pay-currency` are aliases, but do
+not name different assets in one command.
 
 **One account, two credentials.** A stored `billing_session` (a human login)
 wins over a `billing_agent_key`; `tessera account` prints which credential is
@@ -283,15 +313,24 @@ already has an identity, it says so and points at reusing
 support). `signup` alone does not mint storage credentials.
 
 **The signup key is shown once.** `signup` deliberately prints the new API key
-one time, with a store-it warning, because moneyd never shows it again. No other
-command echoes it. A second `signup` refuses to overwrite the stored key unless
-you pass `--force`.
+one time, with a store-it warning, because the server never shows it again. No
+other command echoes it. A second `signup` refuses to overwrite the stored key
+unless you pass `--force`.
 
-**Signing stays external.** `topup --x402` prints the payment challenge
+**Signing is external by default.** `topup --x402` prints the payment challenge
 (network, asset, pay-to address, atomic amount, challenge nonce and timeout)
 and stops. You sign the EIP-3009 authorization with your own wallet tooling and
-hand the base64 payload back through `--payment`; the CLI never holds a wallet
-or signing key. `topup` has no `--json` yet — its output is human-readable.
+hand the base64 payload back through `--payment`; on this path the CLI never
+holds a wallet or signing key.
+
+**The local wallet is opt-in.** `tessera wallet init` creates a secp256k1 key
+in `~/.tessera/wallet.json` with `0600` permissions. `wallet show` prints the
+address and its USDC balance on Base; `wallet fund` explains how to fund it.
+The key is used for payment signing only when `topup --wallet` is passed; no
+other `topup` path reads or writes the wallet file. The key never leaves the
+machine — only the EIP-3009 signature is sent. `--wallet` requires the x402 rail
+to be open for the account and cannot be combined with `--invoice`, `--x402` or
+`--payment`.
 
 **`usage` gained a billing section.** Without billing credentials the storage
 output is exactly what it always was. With a credential, `usage` appends a
@@ -311,6 +350,9 @@ billing config exists; the old keys are unchanged.
   SHA-256 before it replaces an existing file.
 - **Conflicts never lose data** under `keep-both`; under the default `newest`
   policy the losing copy is discarded, so choose `keep-both` if that matters.
+- **The local wallet is opt-in.** `tessera wallet init` writes a key to
+  `~/.tessera/wallet.json` (`0600`). Nothing creates a wallet implicitly, and
+  `topup` without `--wallet` never reads or writes that file.
 
 ## What happens under the hood
 
@@ -327,11 +369,13 @@ billing config exists; the old keys are unchanged.
 
 ## Config
 
-Credentials and per-folder sync state live in `~/.tessera/`:
+Credentials, the optional wallet and per-folder sync state live in
+`~/.tessera/`:
 
 ```
 ~/.tessera/
   config.json        credentials and preferences
+  wallet.json        optional local x402 wallet key (0600)
   index.json         local cache of stored objects
   trash.json         soft-deleted items
   sync/<root-id>/    per-folder state, cursor and lock
@@ -342,7 +386,7 @@ Set `TESSERA_HOME` to use a different directory (useful for several accounts).
 ```json
 {
   "indexer_url": "https://index.tessera.storage",
-  "billing_api_url": "https://tessera.storage/api/v1",  // moneyd API base
+  "billing_api_url": "https://tessera.storage/api/v1",  // billing API base
   "billing_session": "...",        // tessera_session cookie (human login) — local secret
   "billing_agent_key": "tsk_...",  // agent API key — local secret
   "app_id": "...",
@@ -358,6 +402,10 @@ Set `TESSERA_HOME` to use a different directory (useful for several accounts).
 `billing_session` and `billing_agent_key` are local secrets: the file is written
 `0600`, the values are never logged or echoed by any command (except the
 one-time `signup` print), and the file must never be committed or shared.
+
+`wallet.json` is separate from `config.json`: it holds the optional local x402
+wallet key and is written `0600`. `wallet init` creates it; `wallet show`,
+`wallet fund` and `topup --wallet` read it. No other `topup` path touches it.
 
 ```bash
 tessera config --version-retention 5   # keep 5 previous versions per file
