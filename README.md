@@ -216,7 +216,7 @@ the Mac, add a second pair with a different prefix (for example
 | `topup --coins [--json]` | List the coins accepted for top-ups |
 | `wallet init\|show\|fund` | Optional local x402 wallet: create a key, show its address and balance, or print funding guidance |
 | `promo <code>` | Redeem a promo code on the billing account |
-| `status` | Account ready state + file count + total storage |
+| `status` | Account ready state + file count + total storage (Ready tracks repair redundancy; transfers run their own readiness check) |
 | `list [prefix]` | Files with real paths, sizes and dates |
 | `upload <path> [--as <remote>]` | Upload a file **or a whole folder** |
 | `download <path> [--out <file>]` | Download + SHA-256 verification |
@@ -311,6 +311,32 @@ or a phrase argument supplies one), and activates the link. If the account
 already has an identity, it says so and points at reusing
 `~/.tessera/config.json` from the machine that registered it (or contacting
 support). `signup` alone does not mint storage credentials.
+
+**New accounts: free first upload, then a readiness check.** A new agent
+account starts at a $0 balance. On its first host-list fetch Tessera posts a
+$0.05 first-upload credit and funds enough storage hosts for that upload, which
+usually lands within a few seconds to a minute. `tessera account` can show
+`Ready: false` during this time, and a free account keeps showing it until its
+first paid top-up. That flag tracks long-term repair redundancy, not whether a
+transfer can run. Top-ups are open on both rails (`--invoice` via NOWPayments,
+and x402), minimum $0.01.
+
+Before every `upload`, `download`, `fetch` and sync transfer the CLI checks
+whether it can run. It dials each storage host over TCP (siamux, usually port
+9988) and asks for this app key's balance there. An upload needs 30 funded,
+reachable hosts and a download needs 10. While funding is still landing, the
+CLI waits and prints `Waiting for your account to be ready: N/30 hosts
+funded...` (up to 2 minutes). If it cannot go ahead, it names the cause:
+
+- *only X of the 30 needed hosts are reachable from your network*: a firewall,
+  VPN, proxy or sandbox is blocking outbound TCP to the hosts. Try another
+  network.
+- *insufficient balance*: run `tessera topup <amount>` (minimum $0.01).
+- *account not ready yet*: funding has not landed after the wait. Retry in a
+  minute.
+
+Set `TESSERA_SKIP_PREFLIGHT=1` to skip the check. Even then, a host-shortage
+error from the SDK is mapped to one of these messages.
 
 **The signup key is shown once.** `signup` deliberately prints the new API key
 one time, with a store-it warning, because the server never shows it again. No
