@@ -768,7 +768,7 @@ func (e *SyncEngine) Apply(ctx context.Context, ops []Op) (*Result, error) {
 			}
 		}
 		if err := e.applyOp(ctx, op, res); err != nil {
-			msg := fmt.Sprintf("%s: %v", op.Path, err)
+			msg := fmt.Sprintf("%s: %v", op.Path, explainSyncTransferError(err, op.Kind == OpUpload))
 			res.Errors = append(res.Errors, msg)
 			e.log("  error: %s", msg)
 		}
@@ -899,7 +899,7 @@ func (e *SyncEngine) applyUploadBatch(ctx context.Context, ops []Op, res *Result
 	for i, outcome := range outcomes {
 		p := paths[i]
 		if outcome.Err != nil {
-			msg := fmt.Sprintf("%s: %v", p, outcome.Err)
+			msg := fmt.Sprintf("%s: %v", p, explainSyncTransferError(outcome.Err, true))
 			res.Errors = append(res.Errors, msg)
 			e.log("  error: %s", msg)
 			continue
