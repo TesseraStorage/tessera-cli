@@ -306,18 +306,20 @@ func cmdDownload(args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
-	requireTransferReady(ctx, cfg, false)
-
 	rt, idx, cleanup, err := connectForWrite(ctx, cfg)
 	if err != nil {
 		fatal("%v", err)
 	}
 	defer cleanup()
 
+	// Look the file up first: a missing name must fail at once with "not
+	// found", not after the host-funding wait.
 	entry, err := idx.lookup(name)
 	if err != nil {
 		fatal("%v", err)
 	}
+
+	requireTransferReadyFor(ctx, cfg, false, entry.ObjectID)
 
 	dest := outName
 	if dest == "" {

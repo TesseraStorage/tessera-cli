@@ -221,7 +221,7 @@ the Mac, add a second pair with a different prefix (for example
 | `promo <code>` | Redeem a promo code on the billing account |
 | `status` | Account ready state + file count + total storage (Ready tracks repair redundancy; transfers run their own readiness check) |
 | `list [prefix]` | Files with real paths, sizes and dates |
-| `upload <path> [--as <remote>]` | Upload a file **or a whole folder** |
+| `upload <path> [--as <remote>] [--quiet]` | Upload a file **or a whole folder** |
 | `download <path> [--out <file>]` | Download + SHA-256 verification |
 | `delete <path> [--purge]` | Move to trash (or purge permanently) |
 | `share <path>` | Create a 30-day share link |
@@ -345,7 +345,14 @@ falls back to the stored agent key, if there is one.
 **Signup logs you in.** `signup` creates the billing account and this
 machine's storage identity in the same step: it generates a recovery phrase,
 derives the app key from it, registers a recovery key with Tessera and prints
-the phrase and the API key once. Keep both; Tessera does not store the phrase.
+the phrase and the API key once. Keep both: Tessera's servers never see the
+phrase, and signup does not save it on this machine either (only the derived
+app key and the API key are in `~/.tessera/config.json`). `tessera phrase show`
+works only if you saved the phrase with a master password at `tessera login`.
+When signup's output goes to a log or pipe instead of a terminal, it adds a
+stderr note to keep that output private. Signup also fetches the host list
+once, so the free-trial credit and host funding start right away and the
+balance `signup` and `tessera account` show is already the real one.
 
 **Seed login restores the same account.** On a new machine (or after
 `rm -rf ~/.tessera`), `tessera login "<12 words>"` proves the phrase to Tessera,
@@ -363,15 +370,19 @@ transfer can run. Top-ups are open on both rails (NOWPayments and x402); see
 *Top-up minimums* above for each rail's minimum.
 
 Before every `upload`, `download`, `fetch` and sync transfer the CLI checks
-whether it can run. It dials each storage host over TCP (siamux, usually port
-9988) and asks for this app key's balance there. An upload needs 30 funded,
-reachable hosts and a download needs 10. While funding is still landing, the
-CLI waits and prints `Waiting for your account to be ready: N/30 hosts
-funded...` (up to 2 minutes). If it cannot go ahead, it names the cause:
+whether it can run. It dials each storage host over direct TCP (siamux, on the
+port the host announces, usually 9984; IP addresses first) and asks for this app
+key's balance there. An upload needs 30 funded, reachable hosts; a download
+needs 10 of the hosts that hold the file. The file name is checked first, so a
+missing file fails at once with *not found*. While funding is still landing,
+the CLI waits and prints `Waiting for host funding: N/30 hosts funded...` (up to
+2 minutes, or 45 seconds without progress). If it cannot go ahead, it names the
+cause:
 
 - *only X of the 30 needed hosts are reachable from your network*: a firewall,
-  VPN, proxy or sandbox is blocking outbound TCP to the hosts. Try another
-  network.
+  VPN, proxy or sandbox is blocking direct outbound TCP to the hosts. The
+  indexer lists every host by IP as well as by name, so DNS-only sandboxes
+  (fake-IP DNS) work; a network that allows only HTTP(S) does not.
 - *insufficient balance*: run `tessera topup 5` (see *Top-up minimums*).
 - *account not ready yet*: funding has not landed after the wait. Retry in a
   minute.
@@ -379,9 +390,11 @@ funded...` (up to 2 minutes). If it cannot go ahead, it names the cause:
 Set `TESSERA_SKIP_PREFLIGHT=1` to skip the check. Even then, a host-shortage
 error from the SDK is mapped to one of these messages.
 
-**Readiness.** `signup`, `login`, `status`, `account` and each transfer print
-one readiness line: *free trial* (your first upload is prepaid), *top up to
-continue* (trial used or $0 balance), or *ready*. The indexer's "host funding
+**Readiness.** `signup`, `login`, `status` and `account` print one readiness
+line: *free trial* (your first upload is prepaid), *top up to continue* (trial
+used or $0 balance), or *ready*. Other commands print it on stderr only when the
+state changes, and repeat an unchanged line at most every 6 hours
+(`TESSERA_NO_READINESS_NOTICE=1` turns it off). The indexer's "host funding
 ready" flag is false for a free-trial account until its first top-up — that is
 expected, not an error.
 
@@ -390,6 +403,16 @@ expected, not an error.
 downloading — bytes done/total, percent, speed and ETA). When stderr is not a
 terminal it prints a plain line every 10 s; `--json` and `--quiet` (or
 `TESSERA_QUIET=1`) turn it off. stdout stays clean for scripts.
+
+**Network hiccups and errors.** Read-only requests (GET/HEAD) retry up to 3
+times on a dropped connection (a bare `EOF`, a reset, a TLS handshake timeout)
+before failing, so a flaky sandbox link does not break `status`, `account` or
+`usage`. A connection failure suggests `tessera login` only when the server
+rejected the credentials; otherwise it says to check the network and retry.
+Error messages never print URL query strings (indexer URLs carry request
+signatures): they show `?<redacted>`. `tessera <command> --help` (upload,
+download, delete, share, fetch, and the rest) prints that command's flags and
+exits 0.
 
 **Updates.** The CLI checks for a new release at most once a day in the
 background and prints a one-line notice on stderr; `tessera update` downloads
