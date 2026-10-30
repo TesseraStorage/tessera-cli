@@ -1638,7 +1638,7 @@ func TestBillingLoginRegistrationPromptsOnTerminal(t *testing.T) {
 	if loginErr != nil {
 		t.Fatalf("billingLogin: %v", loginErr)
 	}
-	if !strings.Contains(out, "Protect recovery phrase with a master password? [Y/n]") {
+	if !strings.Contains(out, "Save an encrypted copy? [Y/n]") {
 		t.Errorf("interactive prompt missing from output:\n%s", out)
 	}
 	saved, err := loadConfig()

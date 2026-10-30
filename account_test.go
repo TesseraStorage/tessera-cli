@@ -126,11 +126,11 @@ func TestPrintAccountTableNulls(t *testing.T) {
 	if strings.Contains(out, "%!") || strings.Contains(out, "<nil>") || strings.Contains(out, "nil") {
 		t.Fatalf("null field rendered as a formatting artifact:\n%s", out)
 	}
-	if line := lineWithPrefix(out, "Period"); !strings.HasSuffix(strings.TrimSpace(line), "—") {
-		t.Errorf("period_end null rendered %q, want an em dash", line)
+	if line := lineWithPrefix(out, "Period"); !strings.HasSuffix(strings.TrimSpace(line), "—") && !strings.Contains(line, "pay as you go") {
+		t.Errorf("period_end null rendered %q, want an em dash or the pay-as-you-go note", line)
 	}
 	if line := lineWithPrefix(out, "Days left"); !strings.HasSuffix(strings.TrimSpace(line), "—") {
-		t.Errorf("days_left null rendered %q, want an em dash", line)
+		t.Errorf("days_left null rendered %q, want an em dash or the pay-as-you-go note", line)
 	}
 	for _, want := range []string{
 		"TESS-1",
@@ -138,7 +138,7 @@ func TestPrintAccountTableNulls(t *testing.T) {
 		"pending",
 		"$0",
 		"payg",
-		"0 B", // both byte counts are zero
+		"measured host spend", // retired egress byte counter is not shown as 0 B
 		"agent key",
 		"https://tessera.storage/account",
 	} {
@@ -216,8 +216,8 @@ func TestCmdAccountHumanTable(t *testing.T) {
 		"active",
 		"$7.50",
 		"payg",
-		"4.77 MB", // allowance_egress_bytes = 5,000,000
-		"1.19 MB", // egress_used_bytes = 1,250,000
+		"4.77 MiB",            // allowance_egress_bytes = 5,000,000
+		"measured host spend", // downloads row replaces the retired byte counter
 		"29",
 		"session", // the stored session wins over the agent key
 		"https://tessera.storage/account",
@@ -229,8 +229,8 @@ func TestCmdAccountHumanTable(t *testing.T) {
 	if line := lineWithPrefix(out, "Credential"); !strings.Contains(line, "session") {
 		t.Errorf("credential line = %q, want the session", line)
 	}
-	if line := lineWithPrefix(out, "Period"); !strings.HasSuffix(strings.TrimSpace(line), "—") {
-		t.Errorf("null period_end rendered %q, want an em dash", line)
+	if line := lineWithPrefix(out, "Period"); !strings.HasSuffix(strings.TrimSpace(line), "—") && !strings.Contains(line, "pay as you go") {
+		t.Errorf("null period_end rendered %q, want an em dash or the pay-as-you-go note", line)
 	}
 	for _, secret := range []string{"sess-live", "tsk_secret"} {
 		if strings.Contains(out, secret) {
@@ -286,10 +286,18 @@ func TestCmdAccountJSONVerbatim(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("--json output is not JSON: %v\n%s", err, out)
 	}
-	if len(got) != len(server)+1 {
-		t.Fatalf("--json has %d keys, want the %d server fields plus credential", len(got), len(server))
+	// credential + egress_note are the CLI's additions (no readiness block in
+	// this fixture, so no "trial" object).
+	if len(got) != len(server)+2 {
+		t.Fatalf("--json has %d keys, want the %d server fields plus credential and egress_note", len(got), len(server))
+	}
+	if got["egress_used_bytes"] != nil || got["egress_note"] == nil {
+		t.Errorf("retired egress counter must be null with a note: %v / %v", got["egress_used_bytes"], got["egress_note"])
 	}
 	for k, v := range server {
+		if k == "egress_used_bytes" {
+			continue
+		}
 		if !reflect.DeepEqual(got[k], v) {
 			t.Errorf("--json[%q] = %#v, want the server value %#v", k, got[k], v)
 		}

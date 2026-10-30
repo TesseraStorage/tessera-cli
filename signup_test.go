@@ -70,6 +70,7 @@ func TestSignupValueFlagsRegistered(t *testing.T) {
 // signup creates the agent, saves a 0600 config with the default URLs and the
 // returned key, and prints the key exactly once with the store-it warning.
 func TestCmdSignupColdStart(t *testing.T) {
+	pinStdoutTerminal(t, true)
 	home := testConfigHome(t)
 	cp := filepath.Join(home, configFileName)
 	if _, err := os.Stat(cp); !errors.Is(err, os.ErrNotExist) {
@@ -206,6 +207,7 @@ func TestSignupRequestBodyShape(t *testing.T) {
 // TestCmdSignupKeyPrintedOnceAndNeverLater: the key is shown at signup only;
 // later commands read the same config and must stay silent about it.
 func TestCmdSignupKeyPrintedOnceAndNeverLater(t *testing.T) {
+	pinStdoutTerminal(t, true)
 	const key = "tsk_once_shown_secret"
 	testConfigHome(t)
 	fake := &fakeSignupAPI{accountID: "AGNT-3", apiKey: key}
@@ -388,6 +390,7 @@ func TestCmdSignupPreservesExistingConfig(t *testing.T) {
 // create another account or touch the stored key; --force overwrites it and
 // prints the new key once.
 func TestSignupGuardAgainstOverwrite(t *testing.T) {
+	pinStdoutTerminal(t, true)
 	const overwriteMsg = "this machine is already logged in to a Tessera account; pass --force to create a new account (the old one stays, log back in with its recovery phrase)"
 	testConfigHome(t)
 	if err := saveConfig(&Config{IndexerURL: defaultIndexer, AppID: "app-1", BillingAgentKey: "tsk_old_key"}); err != nil {
@@ -439,4 +442,51 @@ func TestSignupGuardAgainstOverwrite(t *testing.T) {
 			t.Fatalf("stored key = %q, want the new key after --force", cfg.BillingAgentKey)
 		}
 	})
+}
+
+func pinStdoutTerminal(t *testing.T, tty bool) {
+	t.Helper()
+	old := stdoutIsTerminal
+	stdoutIsTerminal = func() bool { return tty }
+	t.Cleanup(func() { stdoutIsTerminal = old })
+}
+
+// TT retest 3 #8: piped signup output never contains the secrets; they land
+// in a 0600 file whose path is printed, so the phrase is not lost.
+func TestSignupNonTTYWritesSecretsFile(t *testing.T) {
+	home := testConfigHome(t)
+	pinStdoutTerminal(t, false)
+	res := signupResult{AccountID: "AGNT-x1", APIKey: "tsk_piped-Secret", Phrase: "alpha beta gamma", AppID: "app1"}
+	out := captureStdout(t, func() { printSignupResultTo(res, signupOutputMode(nil, false)) })
+	if strings.Contains(out, "tsk_piped-Secret") || strings.Contains(out, "alpha beta gamma") {
+		t.Fatalf("secrets printed to a non-terminal:\n%s", out)
+	}
+	p, _ := defaultSecretsPath("AGNT-x1")
+	if !strings.HasPrefix(p, home) || !strings.Contains(out, p) {
+		t.Fatalf("path %q not under %q or not printed:\n%s", p, home, out)
+	}
+	st, err := os.Stat(p)
+	if err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("secrets file mode: %v %v", st, err)
+	}
+	data, _ := os.ReadFile(p)
+	if !strings.Contains(string(data), "recovery_phrase=alpha beta gamma") || !strings.Contains(string(data), "api_key=tsk_piped-Secret") {
+		t.Fatalf("secrets file content incomplete")
+	}
+	// --show-secrets restores printing.
+	out = captureStdout(t, func() { printSignupResultTo(res, signupOutputMode([]string{"--show-secrets"}, false)) })
+	if strings.Count(out, "tsk_piped-Secret") != 1 {
+		t.Fatalf("--show-secrets did not print the key once")
+	}
+	// --json --secrets-file omits the secrets from JSON.
+	sf := filepath.Join(t.TempDir(), "s.txt")
+	out = captureStdout(t, func() { printSignupResultTo(res, signupOutputMode([]string{"--secrets-file", sf}, true)) })
+	if strings.Contains(out, "tsk_piped") || !strings.Contains(out, `"secrets_file"`) {
+		t.Fatalf("json with secrets file: %s", out)
+	}
+	// plain --json keeps the explicit fields.
+	out = captureStdout(t, func() { printSignupResultTo(res, signupOutputMode(nil, true)) })
+	if !strings.Contains(out, "tsk_piped-Secret") {
+		t.Fatalf("--json lost api_key")
+	}
 }

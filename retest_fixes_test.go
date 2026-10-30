@@ -144,8 +144,8 @@ func TestReadinessNoticeShownOncePerState(t *testing.T) {
 		t.Skip("no config dir")
 	}
 	_ = os.MkdirAll(filepath.Dir(p), 0o700)
-	c := readinessCache{CheckedAt: time.Now(), State: "free_trial", Message: "first upload is free"}
-	data := []byte(`{"checked_at":"` + c.CheckedAt.Format(time.RFC3339Nano) + `","state":"free_trial","message":"first upload is free"}`)
+	c := readinessCache{CheckedAt: time.Now(), State: "top_up_required", Message: "Uploads: blocked until you top up"}
+	data := []byte(`{"checked_at":"` + c.CheckedAt.Format(time.RFC3339Nano) + `","state":"top_up_required","message":"Uploads: blocked until you top up"}`)
 	if err := os.WriteFile(p, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
