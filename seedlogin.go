@@ -220,14 +220,7 @@ func accountReadiness(acct map[string]any) (state, message string) {
 }
 
 func printReadiness(acct map[string]any) {
-	state, msg := accountReadiness(acct)
-	if state == "" {
-		return
-	}
-	fmt.Printf("Status:   %s\n", readinessLabel(state))
-	if msg != "" {
-		fmt.Printf("          %s\n", msg)
-	}
+	printTrialBlock(buildTrialView(acct), "", 9)
 }
 
 func readinessLabel(state string) string {
@@ -235,7 +228,7 @@ func readinessLabel(state string) string {
 	case "funded":
 		return "ready"
 	case "free_trial":
-		return "free trial — first upload is prepaid"
+		return "free trial"
 	case "free_trial_active":
 		return "free trial"
 	case "top_up_required":
@@ -277,8 +270,8 @@ func readinessCachePath() string {
 	return filepath.Join(dir, "readiness-cache.json")
 }
 
-// readinessNotice returns a one-line stderr notice when the account is not
-// fully ready ("" when it is, or when nothing is known). Cached for 5 min so
+// readinessNotice returns a one-line stderr notice when the account needs
+// action (top up, finish setup, paused) ("" when it is, or when nothing is known). Cached for 5 min so
 // it never adds a network call to every command.
 func readinessNotice(cfg *Config) string {
 	if cfg == nil || credentialLabel(cfg) == "" {
@@ -297,13 +290,18 @@ func readinessNotice(cfg *Config) string {
 			return ""
 		}
 		c.State, c.Message = accountReadiness(acct)
+		if v := buildTrialView(acct); v != nil {
+			c.Message = v.UploadsLine
+		}
 		c.CheckedAt = time.Now()
 		if p != "" {
 			data, _ := json.Marshal(c)
 			_ = os.WriteFile(p, data, 0o600)
 		}
 	}
-	if c.State == "" || c.State == "funded" || c.State == "free_trial_active" {
+	// Only states that need action get the line; a working free trial is
+	// explained by signup/status/account/usage and never repeated (TT retest 3).
+	if !readinessNeedsAction(c.State) {
 		return ""
 	}
 	if c.ShownState == c.State && time.Since(c.ShownAt) < readinessNoticeRepeat {
@@ -315,6 +313,15 @@ func readinessNotice(cfg *Config) string {
 		_ = os.WriteFile(p, data, 0o600)
 	}
 	return "Account: " + readinessLabel(c.State) + ". " + c.Message
+}
+
+// readinessNeedsAction is true for states where an upload cannot run.
+func readinessNeedsAction(state string) bool {
+	switch state {
+	case "", "funded", "free_trial", "free_trial_active":
+		return false
+	}
+	return true
 }
 
 // clearReadinessCache forces the next notice to re-check (after topup/login).

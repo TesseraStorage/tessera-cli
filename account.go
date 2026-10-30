@@ -89,6 +89,10 @@ func accountWithCredential(acct map[string]any, credential string) map[string]an
 		out[k] = v
 	}
 	out["credential"] = credential
+	if v := buildTrialView(acct); v != nil {
+		out["trial"] = v
+	}
+	honestEgressJSON(out, acct)
 	return out
 }
 
@@ -136,17 +140,27 @@ func printAccountTable(acct map[string]any, credential string) {
 	field("Status", accountString(acct, "status"))
 	field("Balance", balance)
 	field("Plan", accountString(acct, "plan"))
-	field("Period ends", accountString(acct, "period_end"))
-	field("Allowance", accountBytes(acct, "allowance_egress_bytes"))
-	field("Egress used", accountBytes(acct, "egress_used_bytes"))
-	field("Days left", accountDaysLeft(acct))
+	field("Period ends", periodEndText(acct))
+	if _, ok := acct["allowance_egress_bytes"]; ok {
+		if n, _ := accountUint64(acct, "allowance_egress_bytes"); n > 0 {
+			field("Allowance", formatBytes(n)+" of downloads")
+		}
+	}
+	field("Downloads", egressDisplay(acct))
+	days := accountDaysLeft(acct)
+	if days != "" {
+		n, _ := accountUint64(acct, "days_left")
+		days = "about " + humanDays(n) + " (estimate at today's storage charge for what you store now)"
+	} else {
+		days = daysLeftEmptyText(acct)
+	}
+	field("Days left", days)
 	field("Credential", credentialText(credential))
 	field("Top-up", accountString(acct, "topup_url"))
-	if state, msg := accountReadiness(acct); state != "" {
-		field("Readiness", readinessLabel(state))
-		if msg != "" {
-			fmt.Printf("  %-14s %s\n", "", msg)
-		}
+	if v := buildTrialView(acct); v != nil {
+		field("Readiness", readinessLabel(v.State))
+		fmt.Printf("  %-14s %s\n", "", v.Summary)
+		fmt.Printf("  %-14s %s\n", "", v.UploadsLine)
 	}
 }
 

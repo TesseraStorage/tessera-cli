@@ -148,16 +148,16 @@ func trashList(args []string) {
 		return
 	}
 	retention := trashRetention()
-	fmt.Printf("%-44s  %10s  %-20s  %s\n", "ORIGINAL PATH", "SIZE", "DELETED", "EXPIRES")
+	fmt.Printf("%-44s  %10s  %-24s  %s\n", "ORIGINAL PATH", "SIZE", "DELETED", "EXPIRES")
 	fmt.Println(strings.Repeat("-", 90))
 	for _, e := range t.Entries {
 		expires := "never"
 		if retention > 0 {
 			expires = e.DeletedAt.Add(retention).Format("2006-01-02")
 		}
-		fmt.Printf("%-44s  %10s  %-20s  %s\n",
+		fmt.Printf("%-44s  %10s  %-24s  %s\n",
 			truncate(e.OriginalPath, 44), formatBytes(uint64(e.Size)),
-			e.DeletedAt.Format("2006-01-02 15:04:05"), expires)
+			localStamp(e.DeletedAt, true), expires)
 	}
 	fmt.Printf("\n%d item(s). Restore with: tessera trash restore <path>\n", len(t.Entries))
 }

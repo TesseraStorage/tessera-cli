@@ -230,8 +230,11 @@ Account readiness and total storage used.
 `,
 	"whoami": `Usage: {exe} whoami
 
-Show this machine's indexer, App ID, app public key and whether the recovery
-phrase is saved here (only if you chose a master password at 'tessera login').
+Show this machine's indexer, App ID, the public key of its app key (the
+private app key stays in ~/.tessera/config.json as "app_key" and is never
+printed), and whether an encrypted copy of the recovery phrase is saved here
+(only if you chose one, with a phrase password, at an interactive
+'tessera login'; see 'tessera phrase show').
 `,
 	"usage": `Usage: {exe} usage [--by-folder] [--cost] [--json]
 
@@ -290,7 +293,9 @@ const usageText = `Tessera CLI — decentralized storage on Sia.
 
 Get started:
   {exe} signup                  Create an account AND log this machine in
-                             (prints your recovery phrase + API key once: keep both)
+                             (shows your recovery phrase + API key once: keep both;
+                             when output is not a terminal they go to a private
+                             0600 file instead, see 'tessera signup --help')
   {exe} login "<12 words>"      Restore your account on any machine (same account + App ID)
   {exe} login --api-key <key> ["<12 words>"]
                              Log in with your API key
@@ -336,8 +341,9 @@ More:
   {exe} service install|start|stop|status
                              Run the watcher as a background service
   {exe} uninstall               Remove the watcher, this binary, and (optionally) local state
-  {exe} phrase show             Reveal the phrase if you saved it at login with a master
-                             password (signup never saves it locally)
+  {exe} phrase show             Reveal the phrase, if you saved an encrypted copy at an
+                             interactive 'tessera login' (locked with a local phrase
+                             password; signup never saves one)
 
 Billing & account:
   {exe} account [--json]        Show account, balance, readiness and usage
@@ -361,12 +367,15 @@ Billing & account:
   {exe} login --billing-logout  End the email session (API key untouched)
   {exe} promo <code>            Redeem a promo code
 
-Account readiness (shown by signup, login, status and account):
-  free trial         new accounts: the first upload is prepaid by Tessera
-  top up to continue the trial is used or the balance is $0: tessera topup 5
+Account readiness (shown by signup, login, status, account and usage):
+  free trial         new accounts get a one-time $0.05 credit (added within
+                     about a minute of signup) and Tessera pays the storage
+                     hosts; uploads are allowed while the credit lasts
+  top up to continue the trial credit is used or the balance is $0: tessera topup 5
   ready              funded; uploads and downloads run normally
-The low-level "host funding ready" flag from the indexer stays false for a
-free-trial account until its first top-up; that is expected, not an error.
+Other commands mention readiness only when an upload cannot run.
+The low-level "host funding ready" flag stays false until the first top-up,
+because during the trial Tessera pays the hosts per upload; that is expected.
 Uploads and downloads check host funding first, wait while it lands, and say
 what is missing if they cannot run. TESSERA_SKIP_PREFLIGHT=1 skips that check.
 
