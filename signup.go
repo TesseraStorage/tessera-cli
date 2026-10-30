@@ -1,13 +1,20 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"syscall"
+	"time"
 
 	siastorage "go.sia.tech/siastorage"
+	"golang.org/x/term"
 )
+
+// stdoutIsTerminal is a var so tests can pin it.
+var stdoutIsTerminal = func() bool { return term.IsTerminal(int(syscall.Stdout)) }
 
 // newBillingClient builds the moneyd client a command talks to. It is a
 // package-level var (precedent: serviceCommand) so command tests can inject an
@@ -107,6 +114,9 @@ func signup(args []string, asJSON bool) (signupResult, error) {
 	suppressPhraseNote = false
 	restore()
 	result.AppID = cfg.AppID
+	if err == nil {
+		signupWarmHosts(cfg)
+	}
 	if acct, aerr := newBillingClient(cfg).Account(); aerr == nil {
 		result.Readiness, _ = acct["readiness"].(map[string]any)
 	}
@@ -114,6 +124,23 @@ func signup(args []string, asJSON bool) (signupResult, error) {
 		return result, fmt.Errorf("account %s was created but this machine could not finish logging in: %w\n  Retry with: tessera login --api-key <API key> \"<recovery phrase>\"", result.AccountID, err)
 	}
 	return result, nil
+}
+
+// warmHostFunding fetches the host list once, best effort. The indexer
+// starts funding the new account's host accounts (and applies the free-trial
+// credit) on its first host-list request, so doing it here means the balance
+// shown by signup and 'tessera account' is already the real one and the
+// first upload does not wait for funding from zero.
+var signupWarmHosts = warmHostFunding
+
+func warmHostFunding(cfg *Config) {
+	client, appKey, err := connectAPI(cfg)
+	if err != nil || len(appKey) != 64 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_, _ = client.Hosts(ctx, appKey)
 }
 
 // createAgentAccount calls POST /agents and, on success, stores the one-time
@@ -153,7 +180,8 @@ func printSignupResult(result signupResult, asJSON bool) {
 	fmt.Println()
 	fmt.Println(bar)
 	fmt.Println("  ACCOUNT CREATED — KEEP THESE TWO THINGS SAFE")
-	fmt.Println("  They will not be shown again. Tessera does not store your phrase.")
+	fmt.Println("  They will not be shown again. Tessera's servers never see your phrase,")
+	fmt.Println("  and this machine does not save it: write it down now.")
 	fmt.Println(bar)
 	if result.Phrase != "" {
 		fmt.Println("  1. Recovery phrase (12 words) — restores your account and files:")
@@ -178,5 +206,12 @@ func printSignupResult(result signupResult, asJSON bool) {
 		fmt.Printf("Status: %s\n  %s\n", readinessLabel(state), msg)
 	}
 	fmt.Println()
-	fmt.Println("Next: tessera upload <file>. Add funds any time: tessera topup 5 (crypto minimum ~$0.38 in USDC on Base, more for other coins; live list: tessera topup --minimums).")
+	if !stdoutIsTerminal() {
+		fmt.Fprintln(os.Stderr, "Note: the recovery phrase and API key above were written to a non-terminal output (a log or pipe). Keep that output private, or delete it after saving both secrets.")
+	}
+	next := "Next: tessera upload <file>."
+	if st, _ := result.Readiness["state"].(string); st == "free_trial" {
+		next = "Next: tessera upload <file> (your first upload is free)."
+	}
+	fmt.Println(next + " Add funds any time: tessera topup 5 (crypto minimum ~$0.38 in USDC on Base, more for other coins; live list: tessera topup --minimums).")
 }

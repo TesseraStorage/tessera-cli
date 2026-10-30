@@ -76,6 +76,11 @@ func main() {
 		configureProgress(args)
 	}
 
+	// "account delete --help" has its own text; only bare "account --help" here.
+	if (hasFlag(args, "--help") || hasFlag(args, "-h")) && !(cmd == "account" && len(positional(args)) > 0) && printCommandHelp(cmd) {
+		return
+	}
+
 	switch cmd {
 	case "version", "--version":
 		cmdVersion()
@@ -121,7 +126,7 @@ func main() {
 		cmdDownload(args)
 	case "delete", "rm":
 		if len(positional(args)) < 1 {
-			usageError("delete <path> [--versions]")
+			usageError("delete <path> [--purge] [--yes]")
 		}
 		cmdDelete(args)
 	case "share":
@@ -174,6 +179,102 @@ func main() {
 	notices.print()
 }
 
+// commandHelp is the --help text for file commands that have no flag parser
+// of their own. Printed to stdout with exit status 0.
+var commandHelp = map[string]string{
+	"upload": `Usage: {exe} upload <path> [--as <remote-path>] [--quiet]
+
+Upload a file or a folder (folders are uploaded recursively).
+
+  --as <remote-path>  Store it under this remote name (folders: remote prefix;
+                      default for a folder: tessera/<name>)
+  --quiet             Hide live progress (or set TESSERA_QUIET=1)
+
+Env: TESSERA_SKIP_PREFLIGHT=1 skips the host readiness check.
+`,
+	"download": `Usage: {exe} download <path> [--out <file>] [--quiet]
+
+Download a stored file and verify its SHA-256.
+
+  --out <file>  Local file name (default: the remote file's base name)
+  --quiet       Hide live progress (or set TESSERA_QUIET=1)
+`,
+	"delete": `Usage: {exe} delete <path> [--purge] [--yes]
+
+Move a file to the trash (restore with 'tessera trash restore').
+
+  --purge     Delete permanently (with its retained versions) instead of trashing
+  --yes, -y   Do not ask for confirmation
+`,
+	"share": `Usage: {exe} share <path>
+
+Create a share link for a stored file. Anyone with the link can download it
+with 'tessera fetch <url>'.
+`,
+	"fetch": `Usage: {exe} fetch <share-url> [output-name] [--quiet]
+
+Download a file from a share link.
+`,
+	"account": `Usage: {exe} account [--json]
+       {exe} account delete [--yes] [--json]   (see 'account delete --help')
+
+Show the account ID, balance, readiness and usage.
+`,
+	"list": `Usage: {exe} list [prefix] [--json]
+
+List stored files (path, size, date), optionally under a remote prefix.
+`,
+	"status": `Usage: {exe} status [--json]
+
+Account readiness and total storage used.
+`,
+	"whoami": `Usage: {exe} whoami
+
+Show this machine's indexer, App ID, app public key and whether the recovery
+phrase is saved here (only if you chose a master password at 'tessera login').
+`,
+	"usage": `Usage: {exe} usage [--by-folder] [--cost] [--json]
+
+Storage used. --by-folder splits it per top-level folder; --cost adds the
+netted egress estimate.
+`,
+	"versions": `Usage: {exe} versions <path> [--restore <n>] [--json]
+
+List retained versions of a file, or restore one.
+`,
+	"audit": `Usage: {exe} audit [path] [--verify] [--limit <n>] [--json]
+
+Check stored objects for redundancy; --verify also downloads and checks them.
+`,
+	"find": `Usage: {exe} find <pattern> [--content] [--json]
+
+Search file names; --content searches inside text files.
+`,
+	"trash": `Usage: {exe} trash list|restore <path>|rm <path>|empty [--yes]
+
+Inspect, restore or permanently remove trashed files.
+`,
+}
+
+func init() {
+	commandHelp["put"] = commandHelp["upload"]
+	commandHelp["get"] = commandHelp["download"]
+	commandHelp["rm"] = commandHelp["delete"]
+	commandHelp["ls"] = commandHelp["list"]
+	commandHelp["du"] = commandHelp["usage"]
+	commandHelp["search"] = commandHelp["find"]
+}
+
+// printCommandHelp prints cmd's help when it has an entry in commandHelp.
+func printCommandHelp(cmd string) bool {
+	h, ok := commandHelp[cmd]
+	if !ok {
+		return false
+	}
+	fmt.Print(strings.ReplaceAll(h, "{exe}", filepath.Base(os.Args[0])))
+	return true
+}
+
 // usageError prints a one-line usage hint and exits.
 func usageError(usage string) {
 	fmt.Fprintf(os.Stderr, "Usage: %s %s\n", filepath.Base(os.Args[0]), usage)
@@ -201,9 +302,10 @@ Files:
   {exe} whoami                  Show current account identity
   {exe} status                  Account readiness + total storage used
   {exe} list [prefix]           List files (path, size, date)
-  {exe} upload <path> [--quiet] Upload a file or folder
-  {exe} download <path> [--quiet]
-                             Download a file
+  {exe} upload <path> [--as <remote-path>] [--quiet]
+                             Upload a file or folder (--as: name it remotely)
+  {exe} download <path> [--out <file>] [--quiet]
+                             Download a file (--out: local file name)
                              (live progress on stderr: phase, bytes, %, speed, ETA;
                              plain lines every 10s when stderr is not a terminal;
                              --quiet / TESSERA_QUIET=1 hides it)
@@ -234,7 +336,8 @@ More:
   {exe} service install|start|stop|status
                              Run the watcher as a background service
   {exe} uninstall               Remove the watcher, this binary, and (optionally) local state
-  {exe} phrase show             Reveal the locally-saved recovery phrase (master password)
+  {exe} phrase show             Reveal the phrase if you saved it at login with a master
+                             password (signup never saves it locally)
 
 Billing & account:
   {exe} account [--json]        Show account, balance, readiness and usage

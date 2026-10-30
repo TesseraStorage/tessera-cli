@@ -26,9 +26,9 @@ const (
 type Config struct {
 	IndexerURL      string `json:"indexer_url"`
 	AppID           string `json:"app_id"`
-	AppKey          string `json:"app_key"`          // hex-encoded 32-byte seed
-	PhraseEncrypted string `json:"phrase_encrypted"` // AES-GCM encrypted, hex-encoded
-	PhraseSalt      string `json:"phrase_salt"`      // argon2 salt, hex-encoded
+	AppKey          string `json:"app_key"`                    // hex-encoded 32-byte seed
+	PhraseEncrypted string `json:"phrase_encrypted,omitempty"` // AES-GCM encrypted, hex-encoded
+	PhraseSalt      string `json:"phrase_salt,omitempty"`      // argon2 salt, hex-encoded
 
 	// VersionRetention is how many previous copies of a file to keep. 0 means
 	// no versions are retained (the old object is deleted on replace).
