@@ -98,11 +98,11 @@ func trialLines(v *trialView, serverMsg string) (summary, uploads string) {
 		summary = "Free trial: new accounts get a one-time " + credit + " credit and Tessera pays the storage hosts for you. " +
 			"The credit is added automatically within about a minute of signup (at the latest with your first upload); until then the balance reads $0.00."
 	case v.FreeTrial && v.CanUpload:
-		summary = fmt.Sprintf("Free trial: $%s of your one-time %s credit left. Your uploads, stored files and downloads are charged against it; Tessera pays the storage hosts.", v.BalanceUSD, credit)
+		summary = fmt.Sprintf("Free trial: $%s of your one-time %s credit left. Your uploads, stored files and downloads are charged against it; Tessera pays the storage hosts.", displayUSD(v.BalanceUSD), credit)
 	case v.FreeTrial:
 		summary = "Free trial: your one-time " + credit + " credit is used up."
 	case v.State == "funded":
-		summary = "Funded: balance $" + v.BalanceUSD + "."
+		summary = "Funded: balance $" + displayUSD(v.BalanceUSD) + "."
 	default:
 		summary = serverMsg
 	}
@@ -173,7 +173,7 @@ func egressDisplay(acct map[string]any) string {
 		return accountBytes(acct, "egress_used_bytes")
 	}
 	if usd := accountBalanceUSD(acct, "egress_billed_usd"); usd != "" {
-		return "$" + usd + " this period — " + egressNote
+		return "$" + displayUSD(usd) + " this period — " + egressNote
 	}
 	return egressNote
 }
