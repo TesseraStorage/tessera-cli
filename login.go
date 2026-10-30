@@ -262,7 +262,7 @@ func printBillingAccountSummary(acct map[string]any) {
 	field("Account", id)
 	field("Status", accountString(acct, "status"))
 	if bal := accountBalanceUSD(acct, "balance_usd"); bal != "" {
-		field("Balance", "$"+bal)
+		field("Balance", "$"+displayUSD(bal))
 	}
 	field("Plan", accountString(acct, "plan"))
 	field("Days left", accountString(acct, "days_left"))
