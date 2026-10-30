@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -31,6 +32,7 @@ type signupResult struct {
 	Phrase    string
 	AppID     string
 	Readiness map[string]any
+	Account   map[string]any
 }
 
 // errSignupKeyExists stops a second signup from silently replacing the
@@ -54,11 +56,25 @@ var signupRegister = registerStorageIdentity
 // exactly once.
 func cmdSignup(args []string) {
 	if hasFlag(args, "--help") || hasFlag(args, "-h") {
-		fmt.Println("Usage: tessera signup [--name <name>] [--contact-email <email>] [--force] [--json]")
+		fmt.Println("Usage: tessera signup [--name <name>] [--contact-email <email>] [--force]")
+		fmt.Println("                      [--json] [--secrets-file <path>] [--show-secrets]")
 		fmt.Println()
 		fmt.Println("Creates a new account and logs this machine in (no separate 'tessera login').")
-		fmt.Println("Prints your 12-word recovery phrase and API key ONCE — keep both safe.")
+		fmt.Println("Gives you your 12-word recovery phrase and API key ONCE — keep both safe.")
 		fmt.Println("The phrase alone restores the account later: tessera login \"<12 words>\"")
+		fmt.Println()
+		fmt.Println("Where the two secrets go:")
+		fmt.Println("  terminal            printed on screen")
+		fmt.Println("  not a terminal      (a pipe, log or agent) written to a private 0600 file,")
+		fmt.Println("                      ~/.tessera/signup-secrets-<account>.txt, and only its")
+		fmt.Println("                      path is printed. Copy both into your password manager,")
+		fmt.Println("                      then delete the file.")
+		fmt.Println("  --secrets-file <p>  always write them to <p> (0600) instead of printing")
+		fmt.Println("  --show-secrets      print them even when output is not a terminal")
+		fmt.Println("  --json              api_key and recovery_phrase are JSON fields; with")
+		fmt.Println("                      --secrets-file they are left out and secrets_file is set")
+		fmt.Println("The API key is also saved in ~/.tessera/config.json for this machine; the")
+		fmt.Println("phrase is not (only the secrets file holds it, until you delete it).")
 		fmt.Println("This command does not run when only --help/-h is given.")
 		return
 	}
@@ -69,7 +85,7 @@ func cmdSignup(args []string) {
 	}
 	// Print on success, and also when the account was created but a later
 	// step failed: the server will never show the key again.
-	printSignupResult(result, asJSON)
+	printSignupResultTo(result, signupOutputMode(args, asJSON))
 	if err != nil {
 		fatal("%v", err)
 	}
@@ -119,6 +135,7 @@ func signup(args []string, asJSON bool) (signupResult, error) {
 	}
 	if acct, aerr := newBillingClient(cfg).Account(); aerr == nil {
 		result.Readiness, _ = acct["readiness"].(map[string]any)
+		result.Account = acct
 	}
 	if err != nil {
 		return result, fmt.Errorf("account %s was created but this machine could not finish logging in: %w\n  Retry with: tessera login --api-key <API key> \"<recovery phrase>\"", result.AccountID, err)
@@ -159,19 +176,117 @@ func createAgentAccount(api billingAPI, cfg *Config, name, contactEmail string) 
 	return result, nil
 }
 
-// printSignupResult prints the account id, App ID and the two secrets to keep.
-// This is the documented exception to the never-print-secrets rule.
+// signupOutput says where the one-time secrets go (TT retest 3 #8).
+type signupOutput struct {
+	JSON        bool
+	SecretsFile string // "" = print them
+	Explicit    bool   // --secrets-file given
+}
+
+// signupOutputMode: a terminal prints the secrets; anything else (pipe, log,
+// agent transcript) gets a private 0600 file unless --show-secrets; an explicit
+// --secrets-file always wins. --json keeps the secrets as fields unless
+// --secrets-file is given.
+func signupOutputMode(args []string, asJSON bool) signupOutput {
+	if p, ok := flagValue(args, "--secrets-file"); ok && p != "" {
+		return signupOutput{JSON: asJSON, SecretsFile: p, Explicit: true}
+	}
+	if asJSON || hasFlag(args, "--show-secrets") || stdoutIsTerminal() {
+		return signupOutput{JSON: asJSON}
+	}
+	return signupOutput{SecretsFile: "auto"}
+}
+
+// defaultSecretsPath is ~/.tessera/signup-secrets-<account>.txt.
+func defaultSecretsPath(accountID string) (string, error) {
+	dir, err := configDir()
+	if err != nil {
+		return "", err
+	}
+	name := "signup-secrets.txt"
+	if accountID != "" {
+		name = "signup-secrets-" + accountID + ".txt"
+	}
+	return filepath.Join(dir, name), nil
+}
+
+// writeSecretsFile writes the two secrets to path with 0600 permissions (the
+// directory is created 0700). An existing file is replaced.
+func writeSecretsFile(path string, result signupResult) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	var b strings.Builder
+	b.WriteString("# Tessera account secrets, written once by 'tessera signup'.\n")
+	b.WriteString("# Copy both into a password manager, then delete this file.\n")
+	b.WriteString("# Tessera cannot show them again or recover the phrase.\n")
+	fmt.Fprintf(&b, "account_id=%s\n", result.AccountID)
+	if result.AppID != "" {
+		fmt.Fprintf(&b, "app_id=%s\n", result.AppID)
+	}
+	if result.Phrase != "" {
+		fmt.Fprintf(&b, "recovery_phrase=%s\n", result.Phrase)
+	}
+	fmt.Fprintf(&b, "api_key=%s\n", result.APIKey)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return err
+	}
+	if _, err := f.WriteString(b.String()); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// printSignupResult prints with the default mode for this output (tests).
 func printSignupResult(result signupResult, asJSON bool) {
-	if asJSON {
+	printSignupResultTo(result, signupOutputMode(nil, asJSON))
+}
+
+// printSignupResultTo prints the account id, App ID and the two secrets to
+// keep — on screen, or into a private file whose path is printed. This is the
+// documented exception to the never-print-secrets rule.
+func printSignupResultTo(result signupResult, mode signupOutput) {
+	secretsPath := ""
+	if mode.SecretsFile != "" {
+		p := mode.SecretsFile
+		if p == "auto" {
+			var err error
+			p, err = defaultSecretsPath(result.AccountID)
+			if err != nil {
+				p = ""
+			}
+		}
+		if p != "" {
+			if err := writeSecretsFile(p, result); err == nil {
+				secretsPath = p
+			} else {
+				fmt.Fprintf(os.Stderr, "Warning: could not write the secrets file %s (%v); printing them instead so they are not lost.\n", p, err)
+			}
+		}
+	}
+	if mode.JSON {
 		out := map[string]any{
-			"account_id":      result.AccountID,
-			"api_key":         result.APIKey,
-			"recovery_phrase": result.Phrase,
-			"app_id":          result.AppID,
-			"logged_in":       result.AppID != "",
+			"account_id": result.AccountID,
+			"app_id":     result.AppID,
+			"logged_in":  result.AppID != "",
+		}
+		if secretsPath != "" {
+			out["secrets_file"] = secretsPath
+		} else {
+			out["api_key"] = result.APIKey
+			out["recovery_phrase"] = result.Phrase
 		}
 		if result.Readiness != nil {
 			out["readiness"] = result.Readiness
+		}
+		if v := buildTrialView(result.Account); v != nil {
+			out["trial"] = v
 		}
 		emitJSON(out)
 		return
@@ -180,15 +295,24 @@ func printSignupResult(result signupResult, asJSON bool) {
 	fmt.Println()
 	fmt.Println(bar)
 	fmt.Println("  ACCOUNT CREATED — KEEP THESE TWO THINGS SAFE")
-	fmt.Println("  They will not be shown again. Tessera's servers never see your phrase,")
-	fmt.Println("  and this machine does not save it: write it down now.")
-	fmt.Println(bar)
-	if result.Phrase != "" {
-		fmt.Println("  1. Recovery phrase (12 words) — restores your account and files:")
-		fmt.Printf("       %s\n", result.Phrase)
+	if secretsPath != "" {
+		fmt.Println("  Your recovery phrase and API key were NOT printed (this output is")
+		fmt.Println("  not a terminal). They are in a private file readable only by you:")
+		fmt.Printf("       %s\n", secretsPath)
+		fmt.Println("  Copy both into a password manager now, then delete that file:")
+		fmt.Printf("       rm %s\n", shellQuote(secretsPath))
+		fmt.Println("  Tessera's servers never see your phrase and cannot show either again.")
+	} else {
+		fmt.Println("  They will not be shown again. Tessera's servers never see your phrase,")
+		fmt.Println("  and this machine does not save it: write it down now.")
+		fmt.Println(bar)
+		if result.Phrase != "" {
+			fmt.Println("  1. Recovery phrase (12 words) — restores your account and files:")
+			fmt.Printf("       %s\n", result.Phrase)
+		}
+		fmt.Println("  2. API key — your account password for scripts and support:")
+		fmt.Printf("       %s\n", result.APIKey)
 	}
-	fmt.Println("  2. API key — your account password for scripts and support:")
-	fmt.Printf("       %s\n", result.APIKey)
 	fmt.Println(bar)
 	fmt.Printf("  Account ID: %s\n", result.AccountID)
 	if result.AppID != "" {
@@ -199,19 +323,26 @@ func printSignupResult(result signupResult, asJSON bool) {
 	fmt.Println()
 	fmt.Println("Lost this machine? Log back in anywhere with:")
 	fmt.Println("  tessera login \"<your 12-word recovery phrase>\"")
-	if result.Readiness != nil {
-		state, _ := result.Readiness["state"].(string)
-		msg, _ := result.Readiness["message"].(string)
+	v := buildTrialView(result.Account)
+	if v == nil && result.Readiness != nil {
+		v = buildTrialView(map[string]any{"readiness": result.Readiness})
+	}
+	if v != nil {
 		fmt.Println()
-		fmt.Printf("Status: %s\n  %s\n", readinessLabel(state), msg)
+		fmt.Printf("Balance: $%s\n", v.BalanceUSD)
+		printTrialBlock(v, "", 8)
 	}
 	fmt.Println()
-	if !stdoutIsTerminal() {
+	if secretsPath == "" && !stdoutIsTerminal() {
 		fmt.Fprintln(os.Stderr, "Note: the recovery phrase and API key above were written to a non-terminal output (a log or pipe). Keep that output private, or delete it after saving both secrets.")
 	}
-	next := "Next: tessera upload <file>."
-	if st, _ := result.Readiness["state"].(string); st == "free_trial" {
-		next = "Next: tessera upload <file> (your first upload is free)."
+	fmt.Println("Next: tessera upload <file>. Add funds any time: tessera topup 5 (crypto minimum ~$0.38 in USDC on Base, more for other coins; live list: tessera topup --minimums).")
+}
+
+// shellQuote single-quotes a path for a copy-paste command.
+func shellQuote(s string) string {
+	if !strings.ContainsAny(s, " '\"\\$`!*?&;|<>()") {
+		return s
 	}
-	fmt.Println(next + " Add funds any time: tessera topup 5 (crypto minimum ~$0.38 in USDC on Base, more for other coins; live list: tessera topup --minimums).")
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

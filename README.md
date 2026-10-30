@@ -12,14 +12,42 @@ version and verify everything you store — all from one static binary.
 ### macOS / Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/TesseraStorage/tessera-cli/main/install.sh | bash
+curl -fsSL https://tessera.storage/install.sh | sh
+# same script: curl -fsSL https://raw.githubusercontent.com/TesseraStorage/tessera-cli/main/install.sh | sh
+# a specific version: ... | sh -s v1.11.4
 ```
+
+The installer verifies the binary against the release's `SHA256SUMS`, never
+uses sudo and installs to `~/.local/bin`. If that directory is not on your
+`PATH` it adds one marked line to your shell's startup file (`~/.zshrc`,
+`~/.bashrc`/`~/.bash_profile`, fish's `config.fish`, else `~/.profile`): it
+asks first when it can reach your terminal, and does it automatically, saying
+which file it changed, when there is no terminal (agents, CI). Open a new shell
+or run `export PATH="$HOME/.local/bin:$PATH"` to use it right away.
+
+Installer environment variables:
+
+| Variable | Effect |
+|---|---|
+| `TESSERA_INSTALL_DIR` | Install somewhere other than `~/.local/bin` |
+| `TESSERA_NO_MODIFY_PATH=1` | Never edit shell startup files (or the Windows user PATH) |
+| `TESSERA_RELEASE_REPO=owner/repo` | Download from a fork or mirror instead of `TesseraStorage/tessera-cli`. The installer prints a warning, because the checksum then only proves the file matches *that* repo's release |
+| `TESSERA_RELEASE_BASE_URL` | Download the asset and `SHA256SUMS` from this base URL (air-gapped mirrors, tests); also warns |
+
+**Network needs.** Installing needs HTTPS to github.com. Using Tessera needs
+HTTPS to `tessera.storage` / `index.tessera.storage` **and outbound TCP to the
+storage hosts**, on the port each host announces (usually 9984; some use
+others such as 9994 or 9974). A network that allows only HTTP(S) cannot upload
+or download.
 
 ### Windows (PowerShell)
 
 ```powershell
-powershell -c "irm https://raw.githubusercontent.com/TesseraStorage/tessera-cli/main/install.ps1 | iex"
+powershell -c "irm https://tessera.storage/install.ps1 | iex"
 ```
+
+Installs to `%LOCALAPPDATA%\Tessera\bin` and adds it to your user PATH (new
+terminals pick it up). The same environment variables apply.
 
 ### Manual download
 
@@ -34,6 +62,7 @@ powershell -c "irm https://raw.githubusercontent.com/TesseraStorage/tessera-cli/
 
 ```bash
 tessera signup                   # Creates your account AND logs you in — save the 12 words + API key
+                                 # (piped/agent runs: secrets go to a 0600 file instead of stdout)
 tessera upload photo.png         # Erasure-coded across 30 Sia hosts
 tessera list                     # See all your files, with real names and paths
 tessera download photo.png       # Get it back, SHA-256 verified
@@ -207,11 +236,11 @@ the Mac, add a second pair with a different prefix (for example
 | `login --api-key <tsk_…> ["<12 words>"]` | Log in with your API key (adding the phrase restores the storage identity too) |
 | `login --email <e> [--token <t>]` | Billing sign-in with a magic link: request it, then complete with the emailed token |
 | `login --billing-logout` | End the billing session (an agent key, if any, is untouched) |
-| `signup [--name <n>] [--contact-email <e>] [--json] [--force]` | Create an account and log this machine in; the recovery phrase and API key are shown once — keep both |
+| `signup [--name <n>] [--contact-email <e>] [--json] [--force] [--secrets-file <path>] [--show-secrets]` | Create an account and log this machine in; the recovery phrase and API key are shown once — keep both. When stdout is not a terminal they go to a `0600` file instead (see below) |
 | `logout [--yes]` | Remove local credentials from `~/.tessera/` (account and files stay) |
 | `account delete [--yes]` | Permanently delete the account: keys revoked, files deleted, billing stopped. **No refund** of any balance. Type the account ID to confirm; `--yes` for scripts |
 | `update [--check] [--version vX.Y.Z]` | Install the latest release after verifying it against `SHA256SUMS` |
-| `whoami` | Show current account identity |
+| `whoami` | Show current account identity: account ID, App ID and the *public* key (the private `app_key` is never printed) |
 | `account [--json]` | Billing account dashboard (status, balance, allowance, active credential) |
 | `topup <amount> [--asset <code>] [--invoice] [--wallet] [--json] [--wait\|--no-wait]` | Add funds: x402 wallet (`--wallet`, any amount from $0.01), deposit address in a chosen coin (USDC on Base by default; `--asset xmr`, `btc`, `eth`, `usdttrc20`…), or browser invoice in any accepted coin (`--invoice`). `tessera topup --help` explains all three |
 | `topup --minimums [--asset <code>] [--json]` | Show the live per-rail minimums |
@@ -220,7 +249,7 @@ the Mac, add a second pair with a different prefix (for example
 | `wallet init\|show\|fund` | Optional local x402 wallet: create a key, show its address and balance, or print funding guidance |
 | `promo <code>` | Redeem a promo code on the billing account |
 | `status` | Account ready state + file count + total storage (Ready tracks repair redundancy; transfers run their own readiness check) |
-| `list [prefix]` | Files with real paths, sizes and dates |
+| `list [prefix]` | Files with real paths, sizes and dates (dates in your local time zone, labelled) |
 | `upload <path> [--as <remote>] [--quiet]` | Upload a file **or a whole folder** |
 | `download <path> [--out <file>]` | Download + SHA-256 verification |
 | `delete <path> [--purge]` | Move to trash (or purge permanently) |
@@ -234,7 +263,7 @@ the Mac, add a second pair with a different prefix (for example
 | `versions <path> [--restore <n>]` | List or restore retained versions (1 kept by default) |
 | `trash list\|restore\|empty\|rm` | Recover soft-deleted files |
 | `audit [path] [--verify]` | Check redundancy and integrity |
-| `usage [--by-folder] [--cost] [--json]` | Storage usage; with billing credentials a billing section, and `--cost` adds the netted egress estimate |
+| `usage [--by-folder] [--cost] [--json]` | Storage usage; with billing credentials a billing section (logical, stored and network size, downloads, balance, days left) |
 | `index --rebuild` | Rebuild the local metadata index |
 | `config` | Show or change settings |
 | `service install\|status\|print` | Background watcher definitions |
@@ -244,7 +273,7 @@ Add `--json` to `list`, `status`, `find`, `sync`, `usage`, `config`, `index`,
 `audit`, `topup`, and `account` for scripting. `topup --json` works on the
 default address, `--coins`, and `--wallet` paths; the legacy `--x402` challenge
 output remains text. `signup --json` prints the account id and its one-time API
-key.
+key and recovery phrase (or, with `--secrets-file <path>`, only the file path).
 
 ## Billing and agent accounts
 
@@ -256,7 +285,8 @@ again.
 ```bash
 # Create an agent account. The tsk_… API key is printed exactly once.
 tessera signup --name build-box --contact-email ops@example.com
-tessera signup --json               # {"account_id": "…", "api_key": "…"} for scripts
+tessera signup --json               # {"account_id": "…", "api_key": "…", …} for scripts
+tessera signup --secrets-file ./tessera-secrets.txt   # secrets to a 0600 file, never stdout
 tessera signup --force              # replace an existing agent key with a new account
 
 # Human sign-in with a magic link (stores a session cookie, not a key)
@@ -348,11 +378,19 @@ derives the app key from it, registers a recovery key with Tessera and prints
 the phrase and the API key once. Keep both: Tessera's servers never see the
 phrase, and signup does not save it on this machine either (only the derived
 app key and the API key are in `~/.tessera/config.json`). `tessera phrase show`
-works only if you saved the phrase with a master password at `tessera login`.
-When signup's output goes to a log or pipe instead of a terminal, it adds a
-stderr note to keep that output private. Signup also fetches the host list
-once, so the free-trial credit and host funding start right away and the
-balance `signup` and `tessera account` show is already the real one.
+works only if you saved an encrypted copy of the phrase at `tessera login` —
+the *phrase password* you chose there is local only, never sent to Tessera, and
+is not an account login.
+
+**Signup secrets in logs.** When signup's stdout is a terminal it prints the
+phrase and API key once, with the warning. When stdout is a pipe, file or agent
+log, it does **not** print them: it writes them to
+`~/.tessera/signup-secrets-<account>.txt` (mode `0600`) and prints that path
+plus an `rm` command for after you have stored them. `--secrets-file <path>`
+picks the file (also with `--json`, which then carries `secrets_file` instead
+of the secrets); `--show-secrets` prints them anyway. If the file cannot be
+written the secrets are printed, so the phrase is never lost. Signup also
+fetches the host list once, so the free-trial credit lands right away.
 
 **Seed login restores the same account.** On a new machine (or after
 `rm -rf ~/.tessera`), `tessera login "<12 words>"` proves the phrase to Tessera,
@@ -360,18 +398,23 @@ gets back the same account ID and a fresh API key, and derives the same App ID �
 headless, no browser, no password. A completed magic-link login with no storage
 identity yet finishes the same registration.
 
-**New accounts: free first upload, then a readiness check.** A new agent
-account starts at a $0 balance. On its first host-list fetch Tessera posts a
-$0.05 first-upload credit and funds enough storage hosts for that upload, which
-usually lands within a few seconds to a minute. `tessera account` can show
-`Ready: false` during this time, and a free account keeps showing it until its
-first paid top-up. That flag tracks long-term repair redundancy, not whether a
-transfer can run. Top-ups are open on both rails (NOWPayments and x402); see
+**New accounts: the free trial.** Every new account gets a one-time **$0.05
+credit**, added automatically within about a minute of signup (at the latest
+with the first upload); until it lands the balance reads $0.00. During the
+trial Tessera pays the storage hosts for you, and uploads, stored files and
+downloads are charged against the credit. `signup`, `status`, `account` and
+`usage` all show the same three things: the credit left, whether uploads are
+allowed now, and roughly how long the credit lasts at today's storage charge.
+`--json` has the same facts in a `trial` object (`state`, `trial_credit_usd`,
+`balance_usd`, `can_upload`, `top_up_required`, `days_left_estimate`). When the
+credit is used up, uploads are blocked until you top up. A free-trial account
+shows the network flag `host funding ready: false` until its first top-up;
+that is expected and does not stop uploads. Top-ups are open on both rails (NOWPayments and x402); see
 *Top-up minimums* above for each rail's minimum.
 
 Before every `upload`, `download`, `fetch` and sync transfer the CLI checks
 whether it can run. It dials each storage host over direct TCP (siamux, on the
-port the host announces, usually 9984; IP addresses first) and asks for this app
+port each host announces: usually 9984, some hosts use others; IP addresses first) and asks for this app
 key's balance there. An upload needs 30 funded, reachable hosts; a download
 needs 10 of the hosts that hold the file. The file name is checked first, so a
 missing file fails at once with *not found*. While funding is still landing,
@@ -390,13 +433,13 @@ cause:
 Set `TESSERA_SKIP_PREFLIGHT=1` to skip the check. Even then, a host-shortage
 error from the SDK is mapped to one of these messages.
 
-**Readiness.** `signup`, `login`, `status` and `account` print one readiness
-line: *free trial* (your first upload is prepaid), *top up to continue* (trial
-used or $0 balance), or *ready*. Other commands print it on stderr only when the
-state changes, and repeat an unchanged line at most every 6 hours
-(`TESSERA_NO_READINESS_NOTICE=1` turns it off). The indexer's "host funding
-ready" flag is false for a free-trial account until its first top-up — that is
-expected, not an error.
+**Readiness.** `signup`, `login`, `status` and `account` print the readiness
+block: *free trial* (credit left, uploads allowed), *top up to continue*
+(credit used up or $0 balance), or *ready*. Transfer commands (`upload`,
+`download`, `sync`, `share`, `fetch`) mention it on stderr only when something
+needs your action, such as a top-up — never during a working trial — and repeat
+an unchanged line at most every 6 hours (`TESSERA_NO_READINESS_NOTICE=1` turns
+it off).
 
 **Progress.** `upload` and `download` draw a live progress bar on stderr
 (phase — waiting for host funding, encoding, uploading shards X/30, pinning,
@@ -444,11 +487,25 @@ machine — only the EIP-3009 signature is sent. `--wallet` requires the x402 ra
 to be open for the account and cannot be combined with `--invoice`, `--x402` or
 `--payment`.
 
-**`usage` gained a billing section.** Without billing credentials the storage
-output is exactly what it always was. With a credential, `usage` appends a
-Billing block (open slabs, egress used vs allowance, balance, days left) and
-`--cost` adds a PAYG egress estimate that nets the allowance
-(`max(0, used − allowance) × $5/TB`, decimal TB) and is labelled an estimate.
+**`usage`: three sizes.** With a credential, `usage` appends a Billing block
+with three sizes for the same files:
+
+- *logical size*: your files' own bytes (a 1.7 MB PDF is 1.7 MB);
+- *stored*: whole 40 MiB slabs, which is what storage is charged on. A single
+  small file upload still takes a whole slab; folder uploads and `sync` pack
+  small files together into shared slabs;
+- *network size*: stored × 3. Each slab is erasure-coded into 30 pieces of
+  4 MiB on 30 hosts, and any 10 rebuild it. So one 1.7 MB file shows about
+  40 MiB stored and 120 MiB on the network.
+
+It also shows downloads, balance and *days left*, an estimate (balance ÷ today's
+daily storage charge for what you store now; more uploads or downloads shorten
+it). Download (egress) cost is charged from measured host spend, checked about
+every 5 minutes and taken from the balance; it is not reported as a byte
+count, so `usage`/`account` say so instead of showing "0 B", and the JSON has
+`egress_used_bytes: null` plus an `egress_note`. `--cost` prints a byte-based
+estimate only when the server reports egress in bytes. Sizes use binary units
+(KiB, MiB, GiB).
 `usage --json` gains additive `billing` keys (or `billing_error`) only when
 billing config exists; the old keys are unchanged.
 
@@ -526,9 +583,14 @@ tessera config --default-jobs 4
 tessera config --billing-url https://tessera.storage/api/v1
 ```
 
-Recovery phrase encryption is optional — you'll be asked on login. If enabled,
-the phrase is encrypted with a master password of your choice and saved locally.
-Without it, you must keep the 12 words yourself.
+Saving an encrypted copy of the recovery phrase is optional — you'll be asked
+on login. If you say yes, the phrase is encrypted with a *phrase password* of
+your choice (Argon2id + AES-GCM) and saved locally so `tessera phrase show` can
+print it later. The phrase password is never sent to Tessera and is not an
+account login. Without it, you must keep the 12 words yourself.
+
+`app_key` in this file is the **private** key derived from your phrase. It is
+never printed; `tessera whoami` shows only its public half as *Public key*.
 
 ## Further reading
 

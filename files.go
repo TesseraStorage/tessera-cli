@@ -897,7 +897,7 @@ func cmdVersions(args []string) {
 
 	fmt.Printf("Versions of %s (oldest first):\n\n", entry.Path)
 	for i, v := range versions {
-		fmt.Printf("  [%d]  %s  %10s  %s\n", i+1, v.ModTime.Format("2006-01-02 15:04:05"),
+		fmt.Printf("  [%d]  %s  %10s  %s\n", i+1, localStamp(v.ModTime, true),
 			formatBytes(uint64(v.Size)), shortHash(v.SHA256))
 	}
 	fmt.Printf("\nRestore with: tessera versions %s --restore <n>\n", entry.Path)
@@ -913,7 +913,7 @@ func displayTime(e *IndexEntry) string {
 	if t.IsZero() {
 		return "unknown"
 	}
-	return t.Format("2006-01-02 15:04")
+	return localStamp(t, false)
 }
 
 // mustObjectID parses a hex object id, fataling on corruption. Index entries
