@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -83,6 +84,9 @@ type readinessDeps struct {
 	// hostfilter together with its first host funding, a few seconds after the
 	// first host-list fetch, so $0 at the start is not yet conclusive.
 	balanceGrace time.Duration
+	// stallWait gives up early when enough hosts are reachable but the funded
+	// count has not grown for this long (funding is not going to land soon).
+	stallWait time.Duration
 }
 
 var (
@@ -90,6 +94,7 @@ var (
 	readinessMaxWait      = 120 * time.Second
 	readinessProbeTimeout = 8 * time.Second
 	readinessBalanceGrace = 30 * time.Second
+	readinessStallWait    = 45 * time.Second
 )
 
 // newReadinessDeps wires the probe to the real indexer, hosts and billing API.
@@ -106,6 +111,7 @@ var newReadinessDeps = func(cfg *Config) (readinessDeps, error) {
 		},
 		balance:      func() (float64, bool) { return billingBalanceUSD(cfg) },
 		balanceGrace: readinessBalanceGrace,
+		stallWait:    readinessStallWait,
 		sleep:        time.Sleep,
 		now:          time.Now,
 		progress: func(funded, needed int) {
@@ -123,14 +129,25 @@ var newReadinessDeps = func(cfg *Config) (readinessDeps, error) {
 
 // probeHost dials one host over siamux and checks this account's balance
 // against the cost of one sector write (upload) or read (download).
+//
+// Addresses are tried IP-literal first, each with its own share of the
+// timeout: on sandboxed networks with fake-IP DNS a hostname dial hangs until
+// its deadline, and it must not eat the budget of the IP address the indexer
+// also lists for the same host. siamux authenticates the host key, so the
+// order cannot let a different machine answer for the host.
 func probeHost(ctx context.Context, h hosts.HostInfo, acct rhp4.Account, upload bool) hostProbe {
 	ctx, cancel := context.WithTimeout(ctx, readinessProbeTimeout)
 	defer cancel()
-	for _, addr := range h.Addresses {
-		if addr.Protocol != siamux.Protocol {
-			continue
+	addrs := orderedSiamuxAddrs(h)
+	for i, addr := range addrs {
+		remaining := len(addrs) - i
+		dctx := ctx
+		var dcancel context.CancelFunc = func() {}
+		if dl, ok := ctx.Deadline(); ok && remaining > 1 {
+			dctx, dcancel = context.WithTimeout(ctx, time.Until(dl)/time.Duration(remaining))
 		}
-		t, err := siamux.Dial(ctx, addr.Address, h.PublicKey)
+		t, err := siamux.Dial(dctx, addr, h.PublicKey)
+		dcancel()
 		if err != nil {
 			continue
 		}
@@ -152,6 +169,24 @@ func probeHost(ctx context.Context, h hosts.HostInfo, acct rhp4.Account, upload 
 		return res
 	}
 	return hostProbe{}
+}
+
+// orderedSiamuxAddrs returns the host's siamux addresses with IP literals
+// first, keeping the indexer's order otherwise.
+func orderedSiamuxAddrs(h hosts.HostInfo) []string {
+	var ips, names []string
+	for _, a := range h.Addresses {
+		if a.Protocol != siamux.Protocol {
+			continue
+		}
+		host, _, err := net.SplitHostPort(a.Address)
+		if err == nil && net.ParseIP(host) != nil {
+			ips = append(ips, a.Address)
+		} else {
+			names = append(names, a.Address)
+		}
+	}
+	return append(ips, names...)
 }
 
 // billingBalanceUSD reads balance_usd from the billing account when a billing
@@ -182,6 +217,7 @@ func checkReadiness(ctx context.Context, d readinessDeps, needed int, upload boo
 	state := map[types.PublicKey]hostProbe{}
 	firstRound, unreachableRetried := true, false
 	lastFunded := -1
+	lastProgressFunded, lastProgressAt := -1, started
 	for round := 1; ; round++ {
 		list, err := d.listHosts(ctx)
 		if err != nil {
@@ -256,12 +292,16 @@ func checkReadiness(ctx context.Context, d readinessDeps, needed int, upload boo
 				return &e
 			}
 		}
-		if d.now().After(deadline) || (d.maxRounds > 0 && round >= d.maxRounds) {
+		if funded > lastProgressFunded {
+			lastProgressFunded, lastProgressAt = funded, d.now()
+		}
+		stalled := reachable >= needed && d.stallWait > 0 && d.now().Sub(lastProgressAt) >= d.stallWait
+		if d.now().After(deadline) || stalled || (d.maxRounds > 0 && round >= d.maxRounds) {
 			e := base
 			e.Code = readinessCodeNotReady
 			e.Message = fmt.Sprintf("account not ready yet: only %d of the %d hosts needed are funded for this account after waiting %s. "+
 				"Funding normally lands within seconds; retry in a minute, and check 'tessera account'.",
-				funded, needed, readinessMaxWait)
+				funded, needed, d.now().Sub(started).Round(time.Second))
 			return &e
 		}
 		if reachable >= needed && funded != lastFunded && d.progress != nil {
@@ -287,14 +327,25 @@ func networkMessage(reachable, needed, total int, upload bool) string {
 		return fmt.Sprintf("only %d storage hosts are currently usable, and each %s needs %d. Retry later.", total, op, needed)
 	}
 	return fmt.Sprintf("only %d of the %d needed hosts are reachable from your network (%d hosts probed). "+
-		"Each %s needs %d hosts reachable over TCP (siamux, usually port 9988). "+
-		"A firewall, VPN, proxy or sandboxed network is blocking the rest. Try from another network.",
+		"Each %s needs %d hosts reachable over direct TCP (siamux, on the port each host announces, usually 9984). "+
+		"Something on this network (a firewall, VPN, proxy or sandbox) is blocking direct TCP to the rest. "+
+		"Allow outbound TCP to the storage hosts, or run from a network that allows it; "+
+		"'tessera account --json' and https://tessera.storage/docs/errors explain more.",
 		reachable, needed, total, op, needed)
 }
 
 // requireTransferReady runs the readiness gate before an upload or download
 // and exits with the classified message when the account cannot transfer.
 func requireTransferReady(ctx context.Context, cfg *Config, upload bool) {
+	requireTransferReadyFor(ctx, cfg, upload, "")
+}
+
+// requireTransferReadyFor is requireTransferReady scoped to one stored object:
+// a download only needs the hosts that hold that object's shards, so it probes
+// those (GET /objects/{id}/hosts) rather than every listed host. The general
+// host list is still fetched each round because that is what triggers the
+// free-path funding.
+func requireTransferReadyFor(ctx context.Context, cfg *Config, upload bool, objectID string) {
 	if os.Getenv("TESSERA_SKIP_PREFLIGHT") == "1" {
 		return
 	}
@@ -305,6 +356,11 @@ func requireTransferReady(ctx context.Context, cfg *Config, upload bool) {
 	d, err := newReadinessDeps(cfg)
 	if err != nil {
 		fatal("%v", err)
+	}
+	if !upload && objectID != "" {
+		if lister := objectHostLister(cfg, objectID, d.listHosts); lister != nil {
+			d.listHosts = lister
+		}
 	}
 	transferProgress.Phase("checking host funding")
 	err = checkReadiness(ctx, d, needed, upload)
@@ -401,4 +457,26 @@ func explainFatalHostShortage(msg string) string {
 	}
 	upload := !strings.HasPrefix(strings.ToLower(msg), "download")
 	return explainSyncTransferError(errors.New(msg), upload).Error()
+}
+
+// objectHostLister returns a host lister that triggers funding via the general
+// host list and then returns the hosts storing objectID. Falls back to the
+// general list when the object's hosts cannot be fetched.
+var objectHostLister = func(cfg *Config, objectID string, general func(context.Context) ([]hosts.HostInfo, error)) func(context.Context) ([]hosts.HostInfo, error) {
+	id, err := parseObjectID(objectID)
+	if err != nil {
+		return nil
+	}
+	client, appKey, err := connectAPI(cfg)
+	if err != nil {
+		return nil
+	}
+	return func(ctx context.Context) ([]hosts.HostInfo, error) {
+		all, gerr := general(ctx)
+		obj, oerr := client.ObjectHosts(ctx, appKey, id)
+		if oerr != nil || len(obj) == 0 {
+			return all, gerr
+		}
+		return obj, nil
+	}
 }

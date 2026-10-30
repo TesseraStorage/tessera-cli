@@ -259,7 +259,15 @@ type readinessCache struct {
 	CheckedAt time.Time `json:"checked_at"`
 	State     string    `json:"state"`
 	Message   string    `json:"message"`
+	// ShownState/ShownAt record the last notice actually printed, so the
+	// same line is not repeated on every command.
+	ShownState string    `json:"shown_state,omitempty"`
+	ShownAt    time.Time `json:"shown_at,omitempty"`
 }
+
+// readinessNoticeRepeat is how long an unchanged readiness line stays quiet
+// after it was printed once.
+const readinessNoticeRepeat = 6 * time.Hour
 
 func readinessCachePath() string {
 	dir, err := configDir()
@@ -297,6 +305,14 @@ func readinessNotice(cfg *Config) string {
 	}
 	if c.State == "" || c.State == "funded" || c.State == "free_trial_active" {
 		return ""
+	}
+	if c.ShownState == c.State && time.Since(c.ShownAt) < readinessNoticeRepeat {
+		return ""
+	}
+	c.ShownState, c.ShownAt = c.State, time.Now()
+	if p != "" {
+		data, _ := json.Marshal(c)
+		_ = os.WriteFile(p, data, 0o600)
 	}
 	return "Account: " + readinessLabel(c.State) + ". " + c.Message
 }

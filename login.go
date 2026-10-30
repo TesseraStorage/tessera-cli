@@ -45,7 +45,7 @@ func connectSDK(ctx context.Context, cfg *Config) (*siastorage.SDK, func(), erro
 
 	sdk, err := builder.SDK(appKey)
 	if err != nil {
-		return nil, nil, fmt.Errorf("connection failed: %w — try 'tessera login'", err)
+		return nil, nil, fmt.Errorf("connection failed: %w — %s", err, connectionHint(err))
 	}
 	cleanup := func() { sdk.Close() }
 	return sdk, cleanup, nil
@@ -664,7 +664,8 @@ func registerStorageIdentity(cfg *Config, phraseArg, billingID string) error {
 		fmt.Printf("Account:  %s\n", billingID)
 	}
 	enableSeedLogin(&bc, phrase, billingID)
-	if acctErr == nil {
+	// signup prints readiness once, in its own summary.
+	if acctErr == nil && !suppressPhraseNote {
 		printReadiness(acct)
 	}
 	return nil
@@ -891,7 +892,8 @@ func cmdPhrase(args []string) {
 		sub = pos[0]
 	}
 	if hasFlag(args, "--help") || hasFlag(args, "-h") || sub != "show" {
-		fmt.Println("Usage: tessera phrase show   Reveal the locally-saved recovery phrase")
+		fmt.Println("Usage: tessera phrase show   Reveal the recovery phrase, if you saved it on this machine")
+		fmt.Println("                             with a master password at 'tessera login' (signup never saves it)")
 		return
 	}
 
@@ -938,7 +940,7 @@ func cmdWhoami() {
 	if cfg.PhraseEncrypted != "" {
 		fmt.Println("Recovery: encrypted phrase saved (password-protected)")
 	} else {
-		fmt.Println("Recovery: phrase NOT saved locally")
+		fmt.Println("Recovery: phrase not saved on this machine (only the app key is; keep your written copy)")
 	}
 }
 
@@ -1087,6 +1089,7 @@ func fatal(format string, args ...interface{}) {
 	transferProgress.Finish() // clear a live progress line first
 	msg := fmt.Sprintf(format, args...)
 	msg = explainFatalHostShortage(msg)
+	msg = redactURLs(msg)
 	if !strings.HasSuffix(msg, "\n") {
 		msg += "\n"
 	}
