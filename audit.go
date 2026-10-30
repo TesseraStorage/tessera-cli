@@ -373,7 +373,7 @@ func printUsageBilling(acct map[string]any, cost bool) {
 	field("stored", joinNonEmpty(" ", accountBytes(acct, "stored_bytes"), parenIf(slabCountText(acct) != "", slabCountText(acct)+" of 40 MiB")))
 	field("network size", joinNonEmpty(" ", accountBytes(acct, "network_bytes"), parenIf(accountBytes(acct, "network_bytes") != "", "3× redundancy across hosts")))
 	field("downloads", egressDisplay(acct))
-	balance := accountBalanceUSD(acct, "balance_usd")
+	balance := displayUSD(accountBalanceUSD(acct, "balance_usd"))
 	if balance != "" {
 		balance = "$" + balance
 	}
