@@ -714,7 +714,8 @@ func describeTopupError(err error) string {
 		return "processor_error — the payment processor failed and nothing was charged; try again shortly"
 	case be.Status == http.StatusPaymentRequired:
 		return fmt.Sprintf("x402 refused the payment: %s", dashIfEmpty(be.Code))
-	case be.Status == http.StatusUnauthorized:
+	case be.Status == http.StatusUnauthorized,
+		be.Status == http.StatusForbidden && be.Code == "account_closed":
 		return describeBillingError(err)
 	}
 	return err.Error()
