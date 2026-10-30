@@ -26,7 +26,7 @@ func TestProgressLineHasBytesPercentSpeedETA(t *testing.T) {
 	p.Shards(9, 30)
 	p.SetDone(30 << 20)
 	line := p.lineLocked()
-	for _, want := range []string{"↑ f.bin", "uploading shards 9/30", "/ 100.00 MB", "30%", "/s", "ETA 23s"} {
+	for _, want := range []string{"↑ f.bin", "uploading shards 9/30", "/ 100.00 MiB", "30%", "/s", "ETA 23s"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("line %q lacks %q", line, want)
 		}

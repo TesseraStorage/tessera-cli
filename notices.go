@@ -10,18 +10,17 @@ import (
 //   - "New version X available ... Run 'tessera update'": checked at most
 //     once a day (cached in update-check.json) in a goroutine, so it never
 //     delays the command; printed to stderr after the command finishes.
-//   - account readiness ("free trial — first upload is prepaid", "top up to
-//     continue", "still getting ready"): printed to stderr before transfer
-//     commands when the account is not fully funded, cached for 5 minutes.
+//   - account readiness ("top up to continue", "still getting ready"): printed
+//     to stderr before transfer commands only when an upload cannot run, at
+//     most once per state every 6 hours, cached for 5 minutes. A working free
+//     trial is never repeated here (status/account/usage explain it).
 
 // readinessNoticeCommands get the readiness line before they run. Commands
-// that print readiness themselves (signup, login, status, account) are not
-// listed.
+// that print readiness themselves (signup, login, status, account, usage)
+// and read-only listings are not listed.
 var readinessNoticeCommands = map[string]bool{
 	"upload": true, "put": true, "download": true, "get": true,
-	"sync": true, "list": true, "ls": true, "share": true, "fetch": true,
-	"usage": true, "du": true, "audit": true, "versions": true, "trash": true,
-	"delete": true, "rm": true, "find": true, "search": true, "whoami": true,
+	"sync": true, "share": true, "fetch": true,
 }
 
 const (

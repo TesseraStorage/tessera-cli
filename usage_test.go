@@ -77,7 +77,7 @@ func usageTestIndex() *Index {
 const usageTestStorageHuman = "Storage usage\n" +
 	"\n" +
 	"  files:           2\n" +
-	"  your files:      1.5 KB\n" +
+	"  your files:      1.5 KiB (logical size, as uploaded from this machine)\n" +
 	"\n" +
 	"  Note: Sia costs depend on your contracts and current host prices.\n" +
 	"  Run 'tessera status' for account readiness.\n"
@@ -120,11 +120,11 @@ func TestUsageStorageByFolder(t *testing.T) {
 	want := "Storage usage\n" +
 		"\n" +
 		"  files:           2\n" +
-		"  your files:      1.5 KB\n" +
+		"  your files:      1.5 KiB (logical size, as uploaded from this machine)\n" +
 		"\n" +
 		"  " + fmt.Sprintf("%-40s  %8s  %12s", "FOLDER", "FILES", "SIZE") + "\n" +
 		"  " + strings.Repeat("-", 64) + "\n" +
-		"  " + fmt.Sprintf("%-40s  %8d  %12s", "photos", 2, "1.5 KB") + "\n" +
+		"  " + fmt.Sprintf("%-40s  %8d  %12s", "photos", 2, "1.5 KiB") + "\n" +
 		"\n" +
 		"  Note: Sia costs depend on your contracts and current host prices.\n" +
 		"  Run 'tessera status' for account readiness.\n"
@@ -243,11 +243,12 @@ func TestUsageBillingSectionHuman(t *testing.T) {
 	for _, want := range []string{
 		"Billing",
 		"network size",
-		"360.00 MB",
-		"open slabs",
-		"3",
-		"egress used",
-		"1.19 MB of 4.77 MB allowance",
+		"360.00 MiB",
+		"3 slabs of 40 MiB",
+		"3× redundancy",
+		"downloads",
+		"measured host spend",
+		"Why the sizes differ",
 		"balance",
 		"$7.50",
 		"days left",
@@ -257,8 +258,8 @@ func TestUsageBillingSectionHuman(t *testing.T) {
 			t.Errorf("billing section missing %q:\n%s", want, stdout)
 		}
 	}
-	if line := lineWithPrefix(stdout, "period ends"); !strings.HasSuffix(strings.TrimSpace(line), "\u2014") {
-		t.Errorf("null period_end rendered %q, want an em dash", line)
+	if line := lineWithPrefix(stdout, "period ends"); !strings.HasSuffix(strings.TrimSpace(line), "\u2014") && !strings.Contains(line, "pay as you go") {
+		t.Errorf("null period_end rendered %q, want an em dash or the pay-as-you-go note", line)
 	}
 	if strings.Contains(stdout, egressEstimateLabel) {
 		t.Errorf("the --cost label printed without --cost:\n%s", stdout)
@@ -278,6 +279,7 @@ func TestUsageCostHuman(t *testing.T) {
 
 	fake := &fakeUsageAPI{acct: map[string]any{
 		"open_slabs":             float64(1),
+		"egress_measurement":     "bytes",
 		"egress_used_bytes":      float64(3e12),
 		"allowance_egress_bytes": float64(1e12),
 		"balance_usd":            "7.50",
@@ -298,7 +300,9 @@ func TestUsageCostHuman(t *testing.T) {
 	assertNoSecrets(t, stdout, "tsk_secret")
 
 	// allowance ≥ used ⇒ $0.00 (the fixture's used is below its allowance).
-	covered := &fakeUsageAPI{acct: accountObject(t, accountServerJSON)}
+	coveredAcct := accountObject(t, accountServerJSON)
+	coveredAcct["egress_measurement"] = "bytes"
+	covered := &fakeUsageAPI{acct: coveredAcct}
 	stubBillingClient(t, covered)
 	stdout, _ = captureOutput(t, func() { usageReport([]string{"--cost"}, cfg, usageTestIndex()) })
 	if !strings.Contains(stdout, "$0.00") {
@@ -318,6 +322,7 @@ func TestUsageJSONBillingAdditive(t *testing.T) {
 		"network_bytes":          float64(3e12),
 		"raw_bytes":              float64(4e12),
 		"open_slabs":             float64(3),
+		"egress_measurement":     "bytes",
 		"egress_used_bytes":      float64(3e12),
 		"allowance_egress_bytes": float64(1e12),
 		"balance_usd":            "7.50",
@@ -397,7 +402,7 @@ func TestUsageNullBillingFields(t *testing.T) {
 			t.Fatalf("null field rendered as %q:\n%s", artifact, stdout)
 		}
 	}
-	for _, prefix := range []string{"open slabs", "egress used", "balance", "period ends", "days left"} {
+	for _, prefix := range []string{"logical size", "stored", "network size", "balance", "period ends", "days left"} {
 		line := lineWithPrefix(stdout, prefix)
 		if line == "" {
 			t.Errorf("null field line %q missing:\n%s", prefix, stdout)
@@ -541,5 +546,36 @@ func TestUsageFlagsAreBooleans(t *testing.T) {
 		if takesValue(flag) {
 			t.Errorf("takesValue(%q) = true; it is a boolean and must not consume a value", flag)
 		}
+	}
+}
+
+// TestUsageCostWithoutByteMeter: the client-reported egress counter is
+// retired, so a server without egress_measurement=bytes gets no dollar
+// estimate from a stale 0, and --json nulls the counter with a note.
+func TestUsageCostWithoutByteMeter(t *testing.T) {
+	testConfigHome(t)
+	fake := &fakeUsageAPI{acct: map[string]any{
+		"open_slabs":        float64(1),
+		"egress_used_bytes": float64(0),
+		"balance_usd":       "0.05",
+		"days_left":         float64(4472),
+	}}
+	stubBillingClient(t, fake)
+	cfg := &Config{IndexerURL: defaultIndexer, BillingAPIURL: defaultBillingURL, BillingAgentKey: "tsk_secret"}
+	stdout, _ := captureOutput(t, func() { usageReport([]string{"--cost"}, cfg, usageTestIndex()) })
+	if strings.Contains(stdout, "$0.00") || strings.Contains(stdout, egressEstimateLabel) {
+		t.Fatalf("estimate computed from the retired counter:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "about 4472 days (~12 years)") || !strings.Contains(stdout, "estimate") {
+		t.Fatalf("days left not labelled as an estimate:\n%s", stdout)
+	}
+	stdout, _ = captureOutput(t, func() { usageReport([]string{"--json", "--cost"}, cfg, usageTestIndex()) })
+	var got map[string]any
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatal(err)
+	}
+	b := got["billing"].(map[string]any)
+	if b["egress_used_bytes"] != nil || b["egress_note"] == nil || b["egress_estimate_usd"] != nil {
+		t.Fatalf("billing json = %#v", b)
 	}
 }

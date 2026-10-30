@@ -327,7 +327,7 @@ func networkMessage(reachable, needed, total int, upload bool) string {
 		return fmt.Sprintf("only %d storage hosts are currently usable, and each %s needs %d. Retry later.", total, op, needed)
 	}
 	return fmt.Sprintf("only %d of the %d needed hosts are reachable from your network (%d hosts probed). "+
-		"Each %s needs %d hosts reachable over direct TCP (siamux, on the port each host announces, usually 9984). "+
+		"Each %s needs %d hosts reachable over direct TCP (siamux, on the port each host announces: usually 9984, some hosts use others such as 9994 or 9974). "+
 		"Something on this network (a firewall, VPN, proxy or sandbox) is blocking direct TCP to the rest. "+
 		"Allow outbound TCP to the storage hosts, or run from a network that allows it; "+
 		"'tessera account --json' and https://tessera.storage/docs/errors explain more.",

@@ -701,15 +701,18 @@ func printSuppliedPhraseNote() {
 	fmt.Println()
 }
 
-// promptProtectPhrase is the legacy optional master-password encryption of the
+// promptProtectPhrase is the optional phrase-password encryption of the
 // recovery phrase; the billing flow calls it only when stdin is a terminal.
 func promptProtectPhrase(cfg *Config, phrase string) {
-	fmt.Print("Protect recovery phrase with a master password? [Y/n] ")
+	fmt.Println("Optional: save an encrypted copy of the recovery phrase on this machine, so")
+	fmt.Println("'tessera phrase show' can display it later. It is locked with a phrase password")
+	fmt.Println("you choose now: local only, never sent to Tessera, and not your account login.")
+	fmt.Print("Save an encrypted copy? [Y/n] ")
 	var protect string
 	fmt.Scanln(&protect)
 	if strings.ToLower(protect) != "n" {
-		pass := readPassword("Master password: ")
-		confirm := readPassword("Confirm password:   ")
+		pass := readPassword("Phrase password: ")
+		confirm := readPassword("Confirm password: ")
 		if pass != confirm {
 			fmt.Println("Passwords don't match. Phrase will NOT be saved locally.")
 		} else if pass != "" {
@@ -881,7 +884,7 @@ func cmdLogout(args ...string) {
 }
 
 // cmdPhrase reveals the locally-saved recovery phrase, decrypted with the
-// master password set when it was originally saved during 'tessera login'.
+// phrase password chosen when it was saved during an interactive 'tessera login'.
 // This is the only local copy: the phrase itself is never sent to or
 // stored by the server, so if it wasn't saved (or the password is lost)
 // there is no recovery path other than the phrase the user wrote down.
@@ -892,8 +895,13 @@ func cmdPhrase(args []string) {
 		sub = pos[0]
 	}
 	if hasFlag(args, "--help") || hasFlag(args, "-h") || sub != "show" {
-		fmt.Println("Usage: tessera phrase show   Reveal the recovery phrase, if you saved it on this machine")
-		fmt.Println("                             with a master password at 'tessera login' (signup never saves it)")
+		fmt.Println("Usage: tessera phrase show   Reveal the recovery phrase saved on this machine")
+		fmt.Println()
+		fmt.Println("Works only if you chose to save an encrypted copy when running 'tessera login'")
+		fmt.Println("in a terminal. That copy is locked with a phrase password you picked then: it")
+		fmt.Println("stays on this machine, is never sent to Tessera and is not your account login.")
+		fmt.Println("'tessera signup' never saves the phrase (it prints it once, or writes it to a")
+		fmt.Println("private file when output is not a terminal).")
 		return
 	}
 
@@ -903,12 +911,12 @@ func cmdPhrase(args []string) {
 	}
 	if cfg.PhraseEncrypted == "" || cfg.PhraseSalt == "" {
 		fmt.Println("No recovery phrase is saved locally for this login.")
-		fmt.Println("(It was either not protected with a master password at login")
-		fmt.Println("time, or this identity was set up without one -- e.g. TESSERA_PHRASE.)")
+		fmt.Println("(A copy is saved only if you chose to at an interactive 'tessera login';")
+		fmt.Println("signup, scripted logins and TESSERA_PHRASE never save one. Use your written copy.)")
 		return
 	}
 
-	password := readPassword("Master password: ")
+	password := readPassword("Phrase password: ")
 	phrase, err := decryptPhrase(cfg.PhraseEncrypted, cfg.PhraseSalt, password)
 	if err != nil {
 		fatal("wrong password, or the saved phrase is corrupted: %v", err)
@@ -930,17 +938,19 @@ func cmdWhoami() {
 	if err != nil {
 		fatal("Not logged in. Run 'tessera login' first.")
 	}
-	fmt.Printf("Indexer:  %s\n", cfg.IndexerURL)
-	fmt.Printf("App ID:   %s\n", cfg.AppID)
+	fmt.Printf("Indexer:    %s\n", cfg.IndexerURL)
+	fmt.Printf("App ID:     %s\n", cfg.AppID)
 	if pub := appKeyPublicHex(cfg.AppKey); pub != "" {
-		fmt.Printf("App Key:  %s (public key; private key saved locally)\n", pub)
+		fmt.Printf("Public key: %s\n", pub)
+		fmt.Println("            (public half of your app key; the private app key stays in")
+		fmt.Println("            ~/.tessera/config.json as \"app_key\" and is never printed)")
 	} else {
-		fmt.Println("App Key:  (missing)")
+		fmt.Println("Public key: (missing: no app key on this machine, run 'tessera login')")
 	}
 	if cfg.PhraseEncrypted != "" {
-		fmt.Println("Recovery: encrypted phrase saved (password-protected)")
+		fmt.Println("Recovery:   encrypted copy of the phrase saved here ('tessera phrase show', needs your phrase password)")
 	} else {
-		fmt.Println("Recovery: phrase not saved on this machine (only the app key is; keep your written copy)")
+		fmt.Println("Recovery:   phrase not saved on this machine (only the app key is; keep your written copy)")
 	}
 }
 
@@ -1005,6 +1015,10 @@ func cmdStatus(args ...string) {
 		if r, ok := billingAcct["readiness"]; ok {
 			out["readiness"] = r
 		}
+		if v := buildTrialView(billingAcct); v != nil {
+			out["trial"] = v
+			out["balance_usd"] = v.BalanceUSD
+		}
 		if id := accountString(billingAcct, "billing_id"); id != "" {
 			out["account_id"] = id
 		}
@@ -1016,18 +1030,16 @@ func cmdStatus(args ...string) {
 		fmt.Printf("Account:   %s\n", id)
 	}
 	fmt.Printf("App ID:    %s\n", cfg.AppID)
-	if state, msg := accountReadiness(billingAcct); state != "" {
-		fmt.Printf("Status:    %s\n", readinessLabel(state))
-		if msg != "" {
-			fmt.Printf("           %s\n", msg)
-		}
+	if v := buildTrialView(billingAcct); v != nil {
+		fmt.Printf("Balance:   $%s\n", v.BalanceUSD)
+		printTrialBlock(v, "", 10)
 	}
 	fmt.Printf("Host funding ready: %v\n", acct.Ready)
 	if !acct.Ready {
 		fmt.Printf("           (%s)\n", readyNoteFor(acct.Ready, readinessState(billingAcct)))
 	}
 	fmt.Printf("Files:     %d\n", len(idx.Paths))
-	fmt.Printf("Total:     %s\n", formatBytes(idx.TotalSize()))
+	fmt.Printf("Total:     %s (your files' own size; 'tessera usage' shows stored and network size)\n", formatBytes(idx.TotalSize()))
 	if len(roots) > 0 {
 		fmt.Printf("Synced:    %d folder(s)", len(roots))
 		if pending > 0 {
@@ -1060,8 +1072,8 @@ func readinessState(billingAcct map[string]any) string {
 // born-paused until its first top-up.
 func readyNoteFor(ready bool, state string) string {
 	if !ready && state == "funded" {
-		return "funded: indexd is funding hosts for this account, which usually " +
-			"takes a few minutes after a top-up. Uploads wait for it automatically"
+		return "funded: your top-up is being turned into storage contracts with " +
+			"the hosts, which usually takes a few minutes. Uploads wait for it automatically"
 	}
 	return readyNote(ready)
 }
@@ -1070,9 +1082,10 @@ func readyNote(ready bool) string {
 	if ready {
 		return "host funding is past the repair-redundancy threshold"
 	}
-	return "expected for a free-trial or unfunded account: indexd only funds " +
-		"hosts itself after the first top-up. It is not an error — see Status " +
-		"above for what this account can do now"
+	return "normal before your first top-up: during the free trial Tessera pays " +
+		"the storage hosts for each upload itself, so this network flag stays off " +
+		"until the first top-up. It is not an error by itself; Status above says " +
+		"whether uploads can run now"
 }
 
 func readPassword(prompt string) string {

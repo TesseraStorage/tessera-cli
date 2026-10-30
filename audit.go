@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -190,6 +189,14 @@ func collectUsageStorage(idx *Index) (map[string]usageFolder, uint64) {
 	return byFolder, total
 }
 
+// parenIf wraps text in parentheses when cond holds, else "".
+func parenIf(cond bool, text string) string {
+	if !cond || text == "" {
+		return ""
+	}
+	return "(" + text + ")"
+}
+
 // usageReport renders `usage`. The storage block prints the same local-file
 // view with or without billing; when a billing credential is stored it appends
 // the account section (network size from GET /account, open slabs, egress,
@@ -264,7 +271,7 @@ func usageStorageJSON(idx *Index, total uint64, byFolder map[string]usageFolder)
 func printUsageStorage(idx *Index, total uint64, byFolder map[string]usageFolder, byFolderTable bool) {
 	fmt.Printf("Storage usage\n\n")
 	fmt.Printf("  files:           %d\n", len(idx.Paths))
-	fmt.Printf("  your files:      %s\n", formatBytes(total))
+	fmt.Printf("  your files:      %s (logical size, as uploaded from this machine)\n", formatBytes(total))
 
 	if byFolderTable && len(byFolder) > 0 {
 		fmt.Println()
@@ -327,6 +334,7 @@ func usageCostHint() {
 func usageBillingJSON(acct map[string]any, cost bool) map[string]any {
 	out := map[string]any{
 		"network_bytes":          acct["network_bytes"],
+		"stored_bytes":           acct["stored_bytes"],
 		"raw_bytes":              acct["raw_bytes"],
 		"open_slabs":             acct["open_slabs"],
 		"egress_used_bytes":      acct["egress_used_bytes"],
@@ -335,11 +343,18 @@ func usageBillingJSON(acct map[string]any, cost bool) map[string]any {
 		"period_end":             acct["period_end"],
 		"days_left":              acct["days_left"],
 	}
-	if cost {
+	out["size_note"] = strings.Join(sizeExplanation, " ")
+	if v := buildTrialView(acct); v != nil {
+		out["trial"] = v
+	}
+	if cost && egressMeasuredInBytes(acct) {
 		used, _ := accountUint64(acct, "egress_used_bytes")
 		allowance, _ := accountUint64(acct, "allowance_egress_bytes")
 		out["egress_estimate_usd"] = egressEstimateUSD(used, allowance)
+	} else if cost {
+		out["egress_estimate_usd"] = nil
 	}
+	honestEgressJSON(out, acct)
 	return out
 }
 
@@ -354,35 +369,36 @@ func printUsageBilling(acct map[string]any, cost bool) {
 	field := func(label, value string) {
 		fmt.Printf("  %-16s %s\n", label+":", dashIfEmpty(value))
 	}
-	field("network size", accountBytes(acct, "network_bytes"))
-	if slabs, ok := accountUint64(acct, "open_slabs"); ok {
-		field("open slabs", strconv.FormatUint(slabs, 10))
-	} else {
-		field("open slabs", "")
-	}
-	used := accountBytes(acct, "egress_used_bytes")
-	allowance := accountBytes(acct, "allowance_egress_bytes")
-	switch {
-	case used != "" && allowance != "":
-		field("egress used", fmt.Sprintf("%s of %s allowance", used, allowance))
-	case used != "":
-		field("egress used", used)
-	case allowance != "":
-		field("egress used", fmt.Sprintf("— of %s allowance", allowance))
-	default:
-		field("egress used", "")
-	}
+	field("logical size", joinNonEmpty(" ", accountBytes(acct, "raw_bytes"), parenIf(accountBytes(acct, "raw_bytes") != "", "your files, all machines")))
+	field("stored", joinNonEmpty(" ", accountBytes(acct, "stored_bytes"), parenIf(slabCountText(acct) != "", slabCountText(acct)+" of 40 MiB")))
+	field("network size", joinNonEmpty(" ", accountBytes(acct, "network_bytes"), parenIf(accountBytes(acct, "network_bytes") != "", "3× redundancy across hosts")))
+	field("downloads", egressDisplay(acct))
 	balance := accountBalanceUSD(acct, "balance_usd")
 	if balance != "" {
 		balance = "$" + balance
 	}
 	field("balance", balance)
-	field("period ends", accountString(acct, "period_end"))
-	field("days left", accountDaysLeft(acct))
-	if cost {
-		usedN, _ := accountUint64(acct, "egress_used_bytes")
-		allowanceN, _ := accountUint64(acct, "allowance_egress_bytes")
-		field("egress estimate", "$"+egressEstimateUSD(usedN, allowanceN))
-		fmt.Printf("    %s\n", egressEstimateLabel)
+	field("period ends", periodEndText(acct))
+	days := daysLeftEmptyText(acct)
+	if n, ok := accountUint64(acct, "days_left"); ok {
+		days = "about " + humanDays(n) + " (estimate at today's storage charge for what you store now)"
 	}
+	field("days left", days)
+	if cost {
+		if egressMeasuredInBytes(acct) {
+			usedN, _ := accountUint64(acct, "egress_used_bytes")
+			allowanceN, _ := accountUint64(acct, "allowance_egress_bytes")
+			field("egress estimate", "$"+egressEstimateUSD(usedN, allowanceN))
+			fmt.Printf("    %s\n", egressEstimateLabel)
+		} else {
+			field("egress estimate", "")
+			fmt.Println("    downloads are " + egressNote + "; watch the balance instead")
+		}
+	}
+	if v := buildTrialView(acct); v != nil {
+		fmt.Println()
+		printTrialBlock(v, "  ", 16)
+	}
+	fmt.Println()
+	printSizeExplanation("  ")
 }
