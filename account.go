@@ -125,13 +125,35 @@ func accountBalanceUSD(acct map[string]any, key string) string {
 	}
 }
 
+// displayUSD shortens an exact decimal string for people: more than four
+// decimals round to four ("0.04989375392" -> "0.0499"), anything shorter is
+// left alone. --json output keeps the exact value.
+func displayUSD(s string) string {
+	i := strings.Index(s, ".")
+	if i < 0 || len(s)-i-1 <= 4 {
+		return s
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return s
+	}
+	out := strconv.FormatFloat(f, 'f', 4, 64)
+	for strings.HasSuffix(out, "0") && len(out)-strings.Index(out, ".")-1 > 2 {
+		out = strings.TrimSuffix(out, "0")
+	}
+	if out == "0.00" && f > 0 {
+		return "<0.0001"
+	}
+	return out
+}
+
 // printAccountTable renders the human dashboard. Missing and null fields render
 // as an em dash rather than a Go formatting artifact.
 func printAccountTable(acct map[string]any, credential string) {
 	field := func(label, value string) {
 		fmt.Printf("  %-14s %s\n", label+":", dashIfEmpty(value))
 	}
-	balance := accountBalanceUSD(acct, "balance_usd")
+	balance := displayUSD(accountBalanceUSD(acct, "balance_usd"))
 	if balance != "" {
 		balance = "$" + balance
 	}
