@@ -112,7 +112,8 @@ func describePromoError(err error) string {
 		return "promo_conflict — the subscription already has a promo attached"
 	case be.Status == http.StatusConflict && be.Code == "promo_invalid":
 		return "promo_invalid — that is not a valid promo code"
-	case be.Status == http.StatusUnauthorized:
+	case be.Status == http.StatusUnauthorized,
+		be.Status == http.StatusForbidden && be.Code == "account_closed":
 		return describeBillingError(err)
 	}
 	return err.Error()

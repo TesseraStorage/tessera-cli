@@ -55,8 +55,16 @@ func (e *billingError) Error() string {
 // log in again, and a revoked agent key can only be replaced by a new agent
 // account via `signup --force`. Anything else passes through as the client
 // rendered it.
+// accountClosedMessage is shown for 403 account_closed: the account was
+// deleted or terminated, every key and session for it is dead, and top-ups,
+// promos and credentials are refused. Only a new account helps.
+const accountClosedMessage = "account_closed — this account has been deleted or closed, so its API key and sign-in no longer work and it cannot be topped up; create a new account with 'tessera signup --force'"
+
 func describeBillingError(err error) string {
 	var be *billingError
+	if errors.As(err, &be) && be.Status == http.StatusForbidden && be.Code == "account_closed" {
+		return accountClosedMessage
+	}
 	if errors.As(err, &be) && be.Status == http.StatusUnauthorized {
 		return fmt.Sprintf("authentication failed — run 'tessera signup' or 'tessera login' to sign in; if an agent key was revoked, run 'tessera signup --force' for a new agent account (%s)", be)
 	}
