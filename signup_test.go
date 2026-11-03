@@ -161,6 +161,11 @@ func TestSignupRequestBodyShape(t *testing.T) {
 	var paths, auths, cookies []string
 	var bodies []map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/auth/altcha-challenge" {
+			// proof-of-work prefetch (altcha_test.go covers it); no challenge here
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		paths = append(paths, r.URL.Path)
 		auths = append(auths, r.Header.Get("Authorization"))
 		cookie := ""
