@@ -14,7 +14,7 @@ version and verify everything you store — all from one static binary.
 ```bash
 curl -fsSL https://tessera.storage/install.sh | sh
 # same script: curl -fsSL https://raw.githubusercontent.com/TesseraStorage/tessera-cli/main/install.sh | sh
-# a specific version: ... | sh -s v1.11.4
+# a specific version: ... | sh -s v1.12.0
 ```
 
 The installer verifies the binary against the release's `SHA256SUMS`, never
@@ -358,7 +358,7 @@ payments through NOWPayments also have a per-coin minimum set by the processor:
 
 The server enforces the same minimums (`409 below_asset_minimum` with
 `minimum_usd`), so a hosted invoice below the minimum is never created. Clients
-pre-fill $5. Below a coin's minimum the error gives that minimum and points to
+pre-fill $1. Below a coin's minimum the error gives that minimum and points to
 x402 (`tessera wallet init`, then `topup <usd> --wallet`, or `--payment`), the
 only way to pay less, down to $0.01.
 
@@ -398,19 +398,26 @@ gets back the same account ID and a fresh API key, and derives the same App ID �
 headless, no browser, no password. A completed magic-link login with no storage
 identity yet finishes the same registration.
 
-**New accounts: the free trial.** Every new account gets a one-time **$0.05
-credit**, added automatically within about a minute of signup (at the latest
-with the first upload); until it lands the balance reads $0.00. During the
-trial Tessera pays the storage hosts for you, and uploads, stored files and
-downloads are charged against the credit. `signup`, `status`, `account` and
-`usage` all show the same three things: the credit left, whether uploads are
-allowed now, and roughly how long the credit lasts at today's storage charge.
-`--json` has the same facts in a `trial` object (`state`, `trial_credit_usd`,
-`balance_usd`, `can_upload`, `top_up_required`, `days_left_estimate`). When the
-credit is used up, uploads are blocked until you top up. A free-trial account
-shows the network flag `host funding ready: false` until its first top-up;
-that is expected and does not stop uploads. Top-ups are open on both rails (NOWPayments and x402); see
-*Top-up minimums* above for each rail's minimum.
+**New accounts: the free trial.** Every new account gets one upload of up to
+40 MiB (one block) and one download, free for 72 hours after signup. There is
+no credit: the balance stays **$0.00** and Tessera pays the storage hosts. A
+second upload, or a download after the free one, answers *Insufficient balance
+— top up to continue* with the payment options. 72 hours after signup an
+account that never topped up is suspended and its files are deleted. `signup`,
+`status`, `account` and `usage` all show the same lines: what the trial still
+allows and whether uploads are allowed now. `--json` has the same facts in a
+`trial` object (`state`, `trial_credit_usd` = `"0"`, `balance_usd`,
+`can_upload`, `top_up_required`). A free-trial account shows the network flag
+`host funding ready: false` until its first top-up; that is expected. Top-ups
+are open on both rails (NOWPayments and x402); see *Top-up minimums* above for
+each rail's minimum.
+
+**Prices.** `tessera rates` prints the live price card from the billing system
+(`GET /api/v1/billing/rates`, no login): storage **$2.50 per TB-month**
+($0.000105 per 40 MiB block per 30 days), uploads **$1 per TB** ($0.000042 per
+block), downloads **$10 per TB** ($0.000419 per block); one block uploaded,
+stored 30 days and downloaded once costs $0.000566. TB = 10^12 bytes. Amounts
+below $1 are shown with up to six decimals, from $1 up with two.
 
 Before every `upload`, `download`, `fetch` and sync transfer the CLI checks
 whether it can run. It dials each storage host over direct TCP (siamux, on the
@@ -426,7 +433,7 @@ cause:
   VPN, proxy or sandbox is blocking direct outbound TCP to the hosts. The
   indexer lists every host by IP as well as by name, so DNS-only sandboxes
   (fake-IP DNS) work; a network that allows only HTTP(S) does not.
-- *insufficient balance*: run `tessera topup 5` (see *Top-up minimums*).
+- *insufficient balance*: run `tessera topup 1` (see *Top-up minimums*).
 - *account not ready yet*: funding has not landed after the wait. Retry in a
   minute.
 

@@ -183,7 +183,7 @@ func TestCollectUsageStorage(t *testing.T) {
 }
 
 // TestEgressEstimateUSD pins the price card arithmetic: billable = max(0,
-// used − allowance) at $5 per decimal TB (1e12 bytes, not 2^40), rounded to
+// used − allowance) at $10 per decimal TB (1e12 bytes, not 2^40), rounded to
 // cents.
 func TestEgressEstimateUSD(t *testing.T) {
 	cases := []struct {
@@ -192,14 +192,14 @@ func TestEgressEstimateUSD(t *testing.T) {
 		allowance uint64
 		want      string
 	}{
-		{"allowance netted first", 2.5e12, 0.5e12, "10.00"},
+		{"allowance netted first", 1.5e12, 0.5e12, "10.00"},
 		{"allowance equals used", 1e12, 1e12, "0.00"},
 		{"allowance above used", 1e12, 2e12, "0.00"},
 		{"zero usage", 0, 0, "0.00"},
 		{"sub-cent usage rounds to zero", 1, 0, "0.00"},
-		{"fractional cents round to the nearest cent", 123456789000, 0, "0.62"},
-		{"decimal TB, not TiB", 1099511627776, 0, "5.50"},
-		{"exactly one decimal TB", 1e12, 0, "5.00"},
+		{"fractional cents round to the nearest cent", 123456789000, 0, "1.23"},
+		{"decimal TB, not TiB", 1099511627776, 0, "11.00"},
+		{"exactly one decimal TB", 1e12, 0, "10.00"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -280,7 +280,7 @@ func TestUsageCostHuman(t *testing.T) {
 	fake := &fakeUsageAPI{acct: map[string]any{
 		"open_slabs":             float64(1),
 		"egress_measurement":     "bytes",
-		"egress_used_bytes":      float64(3e12),
+		"egress_used_bytes":      float64(2e12),
 		"allowance_egress_bytes": float64(1e12),
 		"balance_usd":            "7.50",
 		"period_end":             nil,
@@ -371,8 +371,8 @@ func TestUsageJSONBillingAdditive(t *testing.T) {
 		t.Fatalf("usage --json --cost is not JSON: %v\n%s", err, stdout)
 	}
 	billingCost, ok := cost["billing"].(map[string]any)
-	if !ok || billingCost["egress_estimate_usd"] != "10.00" {
-		t.Fatalf("billing --cost = %#v, want egress_estimate_usd 10.00", cost["billing"])
+	if !ok || billingCost["egress_estimate_usd"] != "20.00" { // 2 TB over the allowance at $10/TB
+		t.Fatalf("billing --cost = %#v, want egress_estimate_usd 20.00", cost["billing"])
 	}
 }
 
