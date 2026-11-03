@@ -388,6 +388,9 @@ func isHostShortageError(err error) bool {
 // explainTransferError replaces a raw host-shortage error with its classified
 // cause (one fresh probe, no waiting). Other errors pass through unchanged.
 func explainTransferError(cfg *Config, err error, upload bool) error {
+	if _, ok := asPaymentRequired(err); ok {
+		return explainPaymentRequired(err)
+	}
 	if !isHostShortageError(err) {
 		return err
 	}
@@ -430,6 +433,9 @@ var (
 // explainSyncTransferError maps a host-shortage error from a sync transfer to
 // its classified cause, probing at most once per direction per process.
 func explainSyncTransferError(err error, upload bool) error {
+	if _, ok := asPaymentRequired(err); ok {
+		return explainPaymentRequired(err)
+	}
 	if !isHostShortageError(err) {
 		return err
 	}
@@ -452,6 +458,9 @@ func explainSyncTransferError(err error, upload bool) error {
 // explainFatalHostShortage is the last line of defence in fatal(): a raw SDK
 // host-shortage message is replaced by its classified cause.
 func explainFatalHostShortage(msg string) string {
+	if pe, ok := asPaymentRequired(errors.New(msg)); ok {
+		return pe.Error()
+	}
 	if !isHostShortageError(errors.New(msg)) {
 		return msg
 	}
