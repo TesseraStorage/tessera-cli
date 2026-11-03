@@ -65,6 +65,17 @@ func describeBillingError(err error) string {
 	if errors.As(err, &be) && be.Status == http.StatusForbidden && be.Code == "account_closed" {
 		return accountClosedMessage
 	}
+	if errors.As(err, &be) {
+		switch be.Code {
+		case "signup_limit", "altcha_required", "altcha_invalid":
+			if msg, ok := be.Extra["message"].(string); ok && msg != "" {
+				return fmt.Sprintf("%s (%s)", msg, be.Code)
+			}
+		}
+		if be.Status == http.StatusTooManyRequests && strings.HasPrefix(be.Code, "<") {
+			return "too many requests (HTTP 429) — wait a minute and try again"
+		}
+	}
 	if errors.As(err, &be) && be.Status == http.StatusUnauthorized {
 		return fmt.Sprintf("authentication failed — run 'tessera signup' or 'tessera login' to sign in; if an agent key was revoked, run 'tessera signup --force' for a new agent account (%s)", be)
 	}
@@ -312,9 +323,13 @@ func decodeBillingObject(data []byte) (map[string]any, error) {
 
 // MagicLink asks moneyd to email a single-use sign-in link. Public endpoint.
 func (b *httpBilling) MagicLink(email string) error {
+	sol := b.altchaSolution()
 	req, err := b.request(http.MethodPost, "/auth/magic-link", map[string]any{"email": email})
 	if err != nil {
 		return err
+	}
+	if sol != "" {
+		req.Header.Set(altchaHeader, sol)
 	}
 	_, _, err = b.do(req, authNone, "")
 	return err
@@ -360,9 +375,13 @@ func (b *httpBilling) CreateAgent(name, contactEmail string) (string, string, er
 	if contactEmail != "" {
 		body["contact_email"] = contactEmail
 	}
+	sol := b.altchaSolution()
 	req, err := b.request(http.MethodPost, "/agents", body)
 	if err != nil {
 		return "", "", err
+	}
+	if sol != "" {
+		req.Header.Set(altchaHeader, sol)
 	}
 	_, data, err := b.do(req, authNone, "")
 	if err != nil {

@@ -129,20 +129,34 @@ func accountBalanceUSD(acct map[string]any, key string) string {
 // decimals round to four ("0.04989375392" -> "0.0499"), anything shorter is
 // left alone. --json output keeps the exact value.
 func displayUSD(s string) string {
-	i := strings.Index(s, ".")
-	if i < 0 || len(s)-i-1 <= 4 {
+	if s == "" {
 		return s
 	}
 	f, err := strconv.ParseFloat(s, 64)
 	if err != nil {
 		return s
 	}
-	out := strconv.FormatFloat(f, 'f', 4, 64)
-	for strings.HasSuffix(out, "0") && len(out)-strings.Index(out, ".")-1 > 2 {
-		out = strings.TrimSuffix(out, "0")
+	neg := f < 0
+	if neg {
+		f = -f
 	}
-	if out == "0.00" && f > 0 {
-		return "<0.0001"
+	var out string
+	if f >= 1 {
+		// v1.12.0: two decimals from $1 up.
+		out = strconv.FormatFloat(f, 'f', 2, 64)
+	} else {
+		// v1.12.0: up to six decimals below $1 (one 40 MiB upload is
+		// $0.000042), trailing zeros trimmed down to two.
+		out = strconv.FormatFloat(f, 'f', 6, 64)
+		for strings.HasSuffix(out, "0") && len(out)-strings.Index(out, ".")-1 > 2 {
+			out = strings.TrimSuffix(out, "0")
+		}
+		if out == "0.00" && f > 0 {
+			out = "<0.000001"
+		}
+	}
+	if neg && out != "0.00" {
+		out = "-" + out
 	}
 	return out
 }
