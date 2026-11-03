@@ -287,8 +287,7 @@ func checkReadiness(ctx context.Context, d readinessDeps, needed int, upload boo
 			if bal, ok := d.balance(); ok && bal <= 0 {
 				e := base
 				e.Code = readinessCodeBalance
-				e.Message = fmt.Sprintf("insufficient balance: your account balance is $0.00 and only %d of the %d hosts needed are funded. "+
-					"Add funds with 'tessera topup 5' (crypto minimum ~$0.38 in USDC on Base; live list: 'tessera topup --minimums'), then retry.", funded, needed)
+				e.Message = balanceRefusal(funded, needed).Error()
 				return &e
 			}
 		}
@@ -391,6 +390,9 @@ func explainTransferError(cfg *Config, err error, upload bool) error {
 	if _, ok := asPaymentRequired(err); ok {
 		return explainPaymentRequired(err)
 	}
+	if pe, ok := shortageAfterPaymentRequired(err); ok {
+		return pe
+	}
 	if !isHostShortageError(err) {
 		return err
 	}
@@ -435,6 +437,9 @@ var (
 func explainSyncTransferError(err error, upload bool) error {
 	if _, ok := asPaymentRequired(err); ok {
 		return explainPaymentRequired(err)
+	}
+	if pe, ok := shortageAfterPaymentRequired(err); ok {
+		return pe
 	}
 	if !isHostShortageError(err) {
 		return err
