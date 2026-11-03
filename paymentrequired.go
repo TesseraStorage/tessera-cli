@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	indexdapp "go.sia.tech/indexd/api/appclient"
 )
@@ -93,4 +96,58 @@ func explainPaymentRequired(err error) error {
 		return fmt.Errorf("%w", pe)
 	}
 	return err
+}
+
+// seenPaymentRequired remembers the last 402 any HTTP call in this process
+// received. The SDK can swallow a 402 from its background host refresh and
+// later fail with a plain host shortage; that shortage is then reported with
+// the server's top-up wording instead (same text as a direct 402).
+var seenPaymentRequired atomic.Pointer[paymentRequiredError]
+
+// notePaymentRequired records a 402 response without consuming its body.
+func notePaymentRequired(resp *http.Response, err error) (*http.Response, error) {
+	if err != nil || resp == nil || resp.StatusCode != http.StatusPaymentRequired || resp.Body == nil {
+		return resp, err
+	}
+	buf, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(buf), resp.Body), resp.Body}
+	body := string(buf)
+	seenPaymentRequired.Store(&paymentRequiredError{
+		Reason:  paymentField(body, "reason"),
+		Message: paymentField(body, "message"),
+		Detail:  paymentField(body, "detail"),
+	})
+	return resp, err
+}
+
+// shortageAfterPaymentRequired returns the recorded 402 when err is a host
+// shortage that followed one in this process.
+func shortageAfterPaymentRequired(err error) (error, bool) {
+	if !isHostShortageError(err) {
+		return nil, false
+	}
+	if pe := seenPaymentRequired.Load(); pe != nil {
+		return fmt.Errorf("%w", pe), true
+	}
+	return nil, false
+}
+
+// balanceRefusal is the client-side "$0 balance" refusal, worded like the
+// server's 402 (and carrying its detail when one was seen in this process),
+// so every "you must top up" case reads the same.
+func balanceRefusal(funded, needed int) *paymentRequiredError {
+	pe := &paymentRequiredError{
+		Reason: "insufficient_balance",
+		Detail: fmt.Sprintf("Your account balance is $0.00 and only %d of the %d hosts needed are funded.", funded, needed),
+	}
+	if seen := seenPaymentRequired.Load(); seen != nil {
+		pe.Reason, pe.Message = seen.Reason, seen.Message
+		if seen.Detail != "" {
+			pe.Detail = seen.Detail
+		}
+	}
+	return pe
 }

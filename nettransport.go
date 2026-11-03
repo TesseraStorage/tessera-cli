@@ -35,14 +35,14 @@ func init() {
 
 func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if !retryableRequest(req) {
-		return t.next.RoundTrip(req)
+		return notePaymentRequired(t.next.RoundTrip(req))
 	}
 	var resp *http.Response
 	var err error
 	for attempt := 0; ; attempt++ {
 		resp, err = t.next.RoundTrip(req)
 		if err == nil || attempt >= transientRetries || !isTransientNetErr(err) {
-			return resp, err
+			return notePaymentRequired(resp, err)
 		}
 		select {
 		case <-req.Context().Done():

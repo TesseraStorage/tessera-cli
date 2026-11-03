@@ -3,6 +3,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -40,5 +42,42 @@ func TestAsPaymentRequiredStringOnlyAndOthers(t *testing.T) {
 	}
 	if got := explainFatalHostShortage("HTTP 402: " + sample402); !strings.Contains(got, "tessera topup 5") {
 		t.Fatalf("fatal path: %q", got)
+	}
+}
+
+func TestShortageAfterRecorded402(t *testing.T) {
+	seenPaymentRequired.Store(nil)
+	defer seenPaymentRequired.Store(nil)
+	if _, ok := shortageAfterPaymentRequired(errors.New("download failed: no more hosts available")); ok {
+		t.Fatal("no 402 seen yet")
+	}
+	resp := &http.Response{StatusCode: 402, Body: io.NopCloser(strings.NewReader(sample402))}
+	resp, _ = notePaymentRequired(resp, nil)
+	if b, _ := io.ReadAll(resp.Body); string(b) != sample402 {
+		t.Fatal("body must be preserved")
+	}
+	msg := explainFatalHostShortage("download failed: no more hosts available")
+	for _, want := range []string{"Insufficient balance — top up to continue", "free trial", "tessera topup 5 --wallet", "tessera.storage/account"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("missing %q in %q", want, msg)
+		}
+	}
+	if _, ok := shortageAfterPaymentRequired(errors.New("permission denied")); ok {
+		t.Fatal("only shortages map to the 402")
+	}
+}
+
+func TestBalanceRefusalMatchesServerWording(t *testing.T) {
+	seenPaymentRequired.Store(nil)
+	defer seenPaymentRequired.Store(nil)
+	s := balanceRefusal(3, 10).Error()
+	for _, want := range []string{"Insufficient balance — top up to continue", "only 3 of the 10 hosts", "tessera topup 5 --wallet", "--asset xmr", "tessera.storage/account"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %q in %q", want, s)
+		}
+	}
+	notePaymentRequired(&http.Response{StatusCode: 402, Body: io.NopCloser(strings.NewReader(sample402))}, nil)
+	if s := balanceRefusal(3, 10).Error(); !strings.Contains(s, "free trial") {
+		t.Fatalf("server detail not used: %q", s)
 	}
 }
