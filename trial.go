@@ -16,12 +16,14 @@ import (
 // structured fields of GET /account (readiness.state/can_upload/free_trial,
 // balance_usd, days_left) and every command renders the same lines from it.
 
-// trialCreditUSDDefault is the one-time free-trial credit (moneyd rate card
-// promo_001), used only when the server does not report trial_credit_usd.
-const trialCreditUSDDefault = "0.05"
+// trialCreditUSDDefault is the free-trial credit used when the server does not
+// report trial_credit_usd. Since Money 10 (2026-11-03) the trial carries no
+// credit: it is one 40 MiB block upload plus one download within 72 hours of
+// signup at a $0.00 balance (Tessera pays the storage hosts).
+const trialCreditUSDDefault = "0"
 
 // topUpHint is the plain top-up instruction shown when an upload is blocked.
-const topUpHint = "tessera topup 5 (crypto minimum about $0.38 in USDC on Base, more for other coins; live list: tessera topup --minimums)"
+const topUpHint = "tessera topup 1 (crypto minimum about $0.38 in USDC on Base, more for other coins; live list: tessera topup --minimums)"
 
 // trialView is the consistent trial/balance state. It is also emitted as the
 // "trial" object of account/status/usage --json.
@@ -93,6 +95,9 @@ func readinessMessage(r map[string]any) string {
 // another upload is allowed right now.
 func trialLines(v *trialView, serverMsg string) (summary, uploads string) {
 	credit := "$" + v.CreditUSD
+	if v.FreeTrial && creditIsZero(v.CreditUSD) {
+		return blockTrialLines(v, serverMsg)
+	}
 	switch {
 	case v.FreeTrial && v.State == "free_trial" && !v.CreditPosted:
 		summary = "Free trial: new accounts get a one-time " + credit + " credit and Tessera pays the storage hosts for you. " +
@@ -112,7 +117,7 @@ func trialLines(v *trialView, serverMsg string) (summary, uploads string) {
 		if v.CreditPosted && v.DaysLeft != nil {
 			uploads += fmt.Sprintf(", while the credit lasts (%s)", daysLeftPhrase(*v.DaysLeft))
 		}
-		uploads += ". Top up any time to keep storing beyond the trial: tessera topup 5"
+		uploads += ". Top up any time to keep storing beyond the trial: tessera topup 1"
 	case v.CanUpload:
 		uploads = "Uploads: allowed."
 	case v.TopUpRequired:
@@ -121,6 +126,37 @@ func trialLines(v *trialView, serverMsg string) (summary, uploads string) {
 		uploads = "Uploads: not possible right now."
 		if serverMsg != "" && summary != serverMsg {
 			uploads += " " + serverMsg
+		}
+	}
+	return summary, uploads
+}
+
+func creditIsZero(s string) bool {
+	f, err := strconv.ParseFloat(s, 64)
+	return s == "" || (err == nil && f == 0)
+}
+
+// blockTrialLines renders the Money-10 trial: one 40 MiB block upload and one
+// download, free for 72 hours after signup, balance $0.00, no credit.
+func blockTrialLines(v *trialView, serverMsg string) (summary, uploads string) {
+	switch {
+	case v.State == "free_trial" && v.CanUpload:
+		summary = "Free trial: one upload of up to 40 MiB (one block) and one download, free for 72 hours after signup; " +
+			"Tessera pays the storage hosts. Your balance stays $0.00."
+		uploads = "Uploads: allowed now, no top-up needed. Top up any time to keep storing beyond the trial: tessera topup 1"
+	case v.State == "free_trial_active":
+		summary = "Free trial: your free upload is stored; your one free download is still available. " +
+			"Files are deleted 72 hours after signup unless you top up."
+		uploads = "Uploads: blocked until you top up: " + topUpHint
+	default:
+		summary = "Free trial used or ended (one upload and one download, 72 hours after signup)."
+		if serverMsg != "" {
+			summary = serverMsg
+		}
+		if v.CanUpload {
+			uploads = "Uploads: allowed."
+		} else {
+			uploads = "Uploads: blocked until you top up: " + topUpHint
 		}
 	}
 	return summary, uploads
@@ -172,6 +208,15 @@ func egressDisplay(acct map[string]any) string {
 	if egressMeasuredInBytes(acct) {
 		return accountBytes(acct, "egress_used_bytes")
 	}
+	if blocks, ok := accountUint64(acct, "egress_billed_blocks"); ok {
+		// Money-10 servers: egress_used_bytes is exactly the billed 40 MiB
+		// blocks, so show bytes, blocks and dollars together.
+		s := accountBytes(acct, "egress_used_bytes") + " billed (" + strconv.FormatUint(blocks, 10) + " blocks of 40 MiB"
+		if usd := accountBalanceUSD(acct, "egress_billed_usd"); usd != "" {
+			s += ", $" + displayUSD(usd)
+		}
+		return s + ") this period; measured from host spend about every 5 minutes"
+	}
 	if usd := accountBalanceUSD(acct, "egress_billed_usd"); usd != "" {
 		return "$" + displayUSD(usd) + " this period — " + egressNote
 	}
@@ -182,6 +227,11 @@ func egressDisplay(acct map[string]any) string {
 // why, so agents do not read a permanent 0 as "no downloads".
 func honestEgressJSON(out map[string]any, acct map[string]any) {
 	if egressMeasuredInBytes(acct) {
+		return
+	}
+	if blocks, ok := accountUint64(acct, "egress_billed_blocks"); ok {
+		out["egress_billed_blocks"] = blocks
+		out["egress_billed_usd"] = acct["egress_billed_usd"]
 		return
 	}
 	if _, ok := out["egress_used_bytes"]; ok {

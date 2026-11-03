@@ -99,8 +99,8 @@ func TestTopupValueFlagsRegistered(t *testing.T) {
 }
 
 // TestValidateTopupAmountLocalShapeOnly: the CLI checks presence and a positive
-// numeric shape only — moneyd owns the real $5–$10000 range, so values below
-// $5 must pass the local check untouched.
+// numeric shape only — moneyd owns the real range (from the $0.01 floor), so small
+// values must pass the local check untouched.
 func TestValidateTopupAmountLocalShapeOnly(t *testing.T) {
 	for _, ok := range []string{"5", "12.50", "0.01", "10000", "1e3", ".5", "5."} {
 		if err := validateTopupAmount(ok); err != nil {
