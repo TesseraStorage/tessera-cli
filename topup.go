@@ -955,15 +955,15 @@ Three ways to pay:
        tessera topup <usd> --payment <base64 X-PAYMENT>
 
   2. Deposit address in a coin you choose (default: USDC on Base).
-       tessera topup 5                     # USDC on Base
-       tessera topup 5 --asset xmr         # Monero; also btc, eth, sol, ltc,
-       tessera topup 5 --asset usdttrc20   # usdtbsc, usdcsol, ... (358 coins)
+       tessera topup 1                     # USDC on Base
+       tessera topup 10 --asset xmr        # Monero; also btc, eth, sol, ltc,
+       tessera topup 15 --asset usdttrc20  # usdtbsc, usdcsol, ... (358 coins)
      Each coin has a minimum set by the payment processor (NOWPayments),
      fetched live: about $0.38 for USDC on Base, more for most other coins.
 
   3. Browser invoice: open a link and pay in any accepted coin
      (USDC, USDT, BTC, ETH, XMR, SOL, LTC and hundreds more).
-       tessera topup 5 --invoice
+       tessera topup 1 --invoice
 
 Options:
   --asset <code>   coin for a deposit address (alias: --coin, --pay-currency);

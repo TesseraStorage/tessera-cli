@@ -298,17 +298,18 @@ func printUsageStorage(idx *Index, total uint64, byFolder map[string]usageFolder
 
 // Billing price card constants used by the --cost estimate.
 const (
-	// egressUSDPerTB is the PAYG egress rate from the price card.
-	egressUSDPerTB = 5.0
+	// egressUSDPerTB is the PAYG download rate from the price card
+	// ($10 per decimal TB since 2026-11-03; live card: tessera rates).
+	egressUSDPerTB = 10.0
 	// decimalTBBytes is a decimal terabyte (1e12 bytes), the unit the price
 	// card prices in — not 2^40.
 	decimalTBBytes = 1e12
 	// egressEstimateLabel is the mandatory --cost disclaimer.
-	egressEstimateLabel = "estimate only; allowance netted; excludes plan fees/credits ($5/TB PAYG)"
+	egressEstimateLabel = "estimate only; allowance netted; excludes plan fees/credits ($10/TB downloads; live rates: tessera rates)"
 )
 
 // egressEstimateUSD returns the PAYG egress overage estimate formatted to
-// cents: billable = max(0, used − allowance), then billable / 1e12 × $5, the
+// cents: billable = max(0, used − allowance), then billable / 1e12 × $10, the
 // price card's decimal-TB rate. An allowance that covers the usage yields
 // "0.00".
 func egressEstimateUSD(used, allowance uint64) string {

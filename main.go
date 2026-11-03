@@ -158,6 +158,10 @@ func main() {
 		cmdAudit(args)
 	case "usage", "du":
 		cmdUsage(args)
+	case "rates", "prices", "pricing":
+		if err := runRates(args); err != nil {
+			fatal("%v", err)
+		}
 	case "index":
 		cmdIndex(args)
 	case "config":
@@ -235,6 +239,13 @@ private app key stays in ~/.tessera/config.json as "app_key" and is never
 printed), and whether an encrypted copy of the recovery phrase is saved here
 (only if you chose one, with a phrase password, at an interactive
 'tessera login'; see 'tessera phrase show').
+`,
+	"rates": `Usage: {exe} rates [--json]
+
+Show the live price card from the billing system (no login needed): storage
+per TB-month, uploads and downloads per TB, per GB and per 40 MiB block, and
+what one block costs end to end. TB = 10^12 bytes. --json prints the raw
+GET /api/v1/billing/rates document.
 `,
 	"usage": `Usage: {exe} usage [--by-folder] [--cost] [--json]
 
@@ -332,6 +343,7 @@ More:
   {exe} versions <path>         List retained versions
   {exe} trash list|restore|empty|rm <path>
   {exe} audit [path]            Verify durability of stored data
+  {exe} rates [--json]          Live prices: storage, uploads, downloads (no login)
   {exe} usage [--by-folder] [--cost] [--json]
                              Storage usage; --cost adds the netted egress estimate
   {exe} index --rebuild         Rebuild the local metadata index
@@ -368,10 +380,10 @@ Billing & account:
   {exe} promo <code>            Redeem a promo code
 
 Account readiness (shown by signup, login, status, account and usage):
-  free trial         new accounts get a one-time $0.05 credit (added within
-                     about a minute of signup) and Tessera pays the storage
-                     hosts; uploads are allowed while the credit lasts
-  top up to continue the trial credit is used or the balance is $0: tessera topup 5
+  free trial         one upload of up to 40 MiB (one block) and one download,
+                     free for 72 hours after signup; the balance stays $0.00
+                     and Tessera pays the storage hosts
+  top up to continue the trial is used or ended, or the balance is $0: tessera topup 1
   ready              funded; uploads and downloads run normally
 Other commands mention readiness only when an upload cannot run.
 The low-level "host funding ready" flag stays false until the first top-up,
