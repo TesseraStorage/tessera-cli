@@ -24,10 +24,17 @@ func trialAcct(state string, balance string, canUpload bool, days any) map[strin
 // no credit; every state says so explicitly and consistently.
 func TestTrialViewStates(t *testing.T) {
 	v := buildTrialView(trialAcct("free_trial", "0", true, nil))
-	if v.CreditPosted || !v.CanUpload || v.CreditUSD != "0" || !strings.Contains(v.Summary, "one upload of up to 40 MiB") ||
+	if v.CreditPosted || !v.CanUpload || (v.CreditUSD != "" && v.CreditUSD != "0") || !v.CreditDeprecated ||
+		!strings.Contains(v.Summary, "one upload of up to 40 MiB") ||
 		!strings.Contains(v.Summary, "balance stays $0.00") || !strings.HasPrefix(v.UploadsLine, "Uploads: allowed now") ||
 		!strings.Contains(v.Summary, "tessera topup 1") {
 		t.Fatalf("free_trial view: %+v", v)
+	}
+	if v.DaysLeft != nil {
+		t.Fatalf("Money-10 trial must null days_left_estimate, got %v", *v.DaysLeft)
+	}
+	if strings.Count(v.Summary, "Free trial:") != 1 {
+		t.Fatalf("Summary must not double 'Free trial:' prefix: %q", v.Summary)
 	}
 	if v.ShortBanner == "" || !strings.Contains(v.ShortBanner, "Free trial active") {
 		t.Fatalf("free_trial short banner: %+v", v)
@@ -154,5 +161,24 @@ func TestEgressDisplayTrialDownload(t *testing.T) {
 	}
 	if got := egressDisplay(acct); got != "1 free trial download (not billed)" {
 		t.Fatalf("trial download display: %q", got)
+	}
+}
+
+func TestTrialKeptUntilNoDoublePrefix(t *testing.T) {
+	a := trialAcct("free_trial", "0", true, float64(0))
+	a["readiness"].(map[string]any)["trial_ends_at"] = "2026-11-08T09:00:00Z"
+	a["days_left"] = float64(0)
+	v := buildTrialView(a)
+	if v.FileKeptUntil != "2026-11-08T09:00:00Z" {
+		t.Fatalf("FileKeptUntil: %q", v.FileKeptUntil)
+	}
+	if v.DaysLeft != nil {
+		t.Fatalf("days_left must be null on trial, got %v", *v.DaysLeft)
+	}
+	if strings.Count(v.Summary, "Free trial:") != 1 {
+		t.Fatalf("double Free trial prefix: %q", v.Summary)
+	}
+	if !strings.Contains(v.Summary, "File kept until") {
+		t.Fatalf("missing keep-until: %q", v.Summary)
 	}
 }

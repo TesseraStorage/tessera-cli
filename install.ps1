@@ -6,7 +6,7 @@
 # install when the checksum is missing or does not match.
 #
 #   iwr -useb https://tessera.storage/install.ps1 | iex
-#   & ([scriptblock]::Create((iwr -useb https://tessera.storage/install.ps1))) v1.11.4   # a specific version
+#   & ([scriptblock]::Create((iwr -useb https://tessera.storage/install.ps1))) vX.Y.Z   # a specific tagged version
 #
 # PATH: installs to %LOCALAPPDATA%\Tessera\bin and adds that directory to your
 # user PATH (new terminals pick it up). Set TESSERA_NO_MODIFY_PATH=1 to skip.

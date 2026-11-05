@@ -151,21 +151,47 @@ func signup(args []string, asJSON bool) (signupResult, error) {
 	return result, nil
 }
 
-// warmHostFunding fetches the host list once, best effort. The indexer
-// starts funding the new account's host accounts (and applies the free-trial
-// credit) on its first host-list request, so doing it here means the balance
-// shown by signup and 'tessera account' is already the real one and the
-// first upload does not wait for funding from zero.
+// warmHostFunding fetches the host list once so the indexer claims the
+// one-time trial host set and enqueues funding, then waits until enough
+// hosts are funded for a trial upload (30 of 30+spares). Signup used to
+// return as soon as the list was fetched, so the first upload still waited
+// ~20s for the last of 30 hosts (TT run 5 #7).
 var signupWarmHosts = warmHostFunding
+
+// signupFundingNeeded is how many funded GoodForUpload hosts a trial upload
+// needs (10 data + 20 parity). Spares are funded too (trial bag is ~40).
+const signupFundingNeeded = dataShards + parityShards
+
+// signupFundingWait is the max time signup waits for host funding after the
+// warm host-list call. Funding is async (hostfilter fundWorkers); most
+// accounts are ready well under a minute.
+const signupFundingWait = 90 * time.Second
 
 func warmHostFunding(cfg *Config) {
 	client, appKey, err := connectAPI(cfg)
 	if err != nil || len(appKey) != 64 {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	_, _ = client.Hosts(ctx, appKey)
+
+	// Wait until enough hosts show a funded balance so the first upload does
+	// not stall on "waiting for host funding: 29/30".
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), signupFundingWait)
+	defer waitCancel()
+	d, derr := newReadinessDeps(cfg)
+	if derr != nil {
+		return
+	}
+	d.progress = func(funded, needed int) {
+		fmt.Fprintf(os.Stderr, "Host funding: %d/%d hosts funded (trial hosts are prepaid at signup)...\n", funded, needed)
+	}
+	if err := checkReadiness(waitCtx, d, signupFundingNeeded, true); err != nil {
+		fmt.Fprintf(os.Stderr, "Note: host funding is still catching up (%v). The first upload will wait for the rest.\n", err)
+		return
+	}
+	fmt.Fprintln(os.Stderr, "Host funding ready for trial upload.")
 }
 
 // createAgentAccount calls POST /agents and, on success, stores the one-time
@@ -273,6 +299,12 @@ func printSignupResultTo(result signupResult, mode signupOutput) {
 		if p != "" {
 			if err := writeSecretsFile(p, result); err == nil {
 				secretsPath = p
+				// Remember the path (including custom --secrets-file) so
+				// `tessera secrets done` can delete it later.
+				if cfg, err := loadConfig(); err == nil {
+					cfg.SignupSecretsFile = p
+					_ = saveConfig(cfg)
+				}
 			} else {
 				fmt.Fprintf(os.Stderr, "Warning: could not write the secrets file %s (%v); printing them instead so they are not lost.\n", p, err)
 			}

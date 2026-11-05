@@ -53,6 +53,11 @@ type Config struct {
 	BillingAPIURL   string `json:"billing_api_url,omitempty"`
 	BillingSession  string `json:"billing_session,omitempty"`
 	BillingAgentKey string `json:"billing_agent_key,omitempty"`
+
+	// SignupSecretsFile is the path of the plaintext signup-secrets file left
+	// by a non-TTY (or --secrets-file) signup. `tessera secrets done` deletes
+	// this path even when it is outside ~/.tessera.
+	SignupSecretsFile string `json:"signup_secrets_file,omitempty"`
 }
 
 // configDir returns the directory holding credentials and state. The
