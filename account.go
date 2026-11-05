@@ -183,12 +183,13 @@ func printAccountTable(acct map[string]any, credential string) {
 		}
 	}
 	field("Downloads", egressDisplay(acct))
-	days := accountDaysLeft(acct)
-	if days != "" {
-		n, _ := accountUint64(acct, "days_left")
+	days := ""
+	if n, ok := accountUint64(acct, "days_left"); ok && n > 0 {
 		days = "about " + humanDays(n) + " (estimate at today's storage charge for what you store now)"
-	} else {
-		days = daysLeftEmptyText(acct)
+	} else if alt := daysLeftEmptyText(acct); alt != "" {
+		days = alt
+	} else if n, ok := accountUint64(acct, "days_left"); ok {
+		days = "about " + humanDays(n) + " (estimate at today's storage charge for what you store now)"
 	}
 	field("Days left", days)
 	field("Credential", credentialText(credential))

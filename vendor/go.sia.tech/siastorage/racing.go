@@ -5,8 +5,8 @@ import "sync"
 const (
 	// raceFactor sets how long we wait before racing. We only start a second
 	// attempt once a host takes more than raceFactor times the normal time, so
-	// only the real stragglers get raced.
-	raceFactor = 1.5
+	// only the real stragglers get raced. TT-nov5: 1.2 (was 1.5) fails over to spares sooner.
+	raceFactor = 1.2
 
 	// raceWindow limits how far ahead of the read head a chunk may race. Racing
 	// chunks the reader does not need yet would steal bandwidth from the ones it

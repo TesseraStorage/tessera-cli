@@ -1038,6 +1038,9 @@ func cmdStatus(args ...string) {
 	if !acct.Ready {
 		fmt.Printf("           (%s)\n", readyNoteFor(acct.Ready, readinessState(billingAcct)))
 	}
+	if rem := secretsFileReminder(); rem != "" {
+		fmt.Println("Reminder:  " + rem)
+	}
 	fmt.Printf("Files:     %d\n", len(idx.Paths))
 	fmt.Printf("Total:     %s (your files' own size; 'tessera usage' shows stored and network size)\n", formatBytes(idx.TotalSize()))
 	if len(roots) > 0 {

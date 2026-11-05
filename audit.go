@@ -380,8 +380,12 @@ func printUsageBilling(acct map[string]any, cost bool) {
 	}
 	field("balance", balance)
 	field("period ends", periodEndText(acct))
-	days := daysLeftEmptyText(acct)
-	if n, ok := accountUint64(acct, "days_left"); ok {
+	days := ""
+	if n, ok := accountUint64(acct, "days_left"); ok && n > 0 {
+		days = "about " + humanDays(n) + " (estimate at today's storage charge for what you store now)"
+	} else if alt := daysLeftEmptyText(acct); alt != "" {
+		days = alt
+	} else if n, ok := accountUint64(acct, "days_left"); ok {
 		days = "about " + humanDays(n) + " (estimate at today's storage charge for what you store now)"
 	}
 	field("days left", days)

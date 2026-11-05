@@ -265,6 +265,11 @@ func (r *Remote) Upload(ctx context.Context, req uploadRequest, onProgress func(
 	var shardMu sync.Mutex
 	shardsDone := 0
 	bar.Start("↑ "+req.Name, req.Size, "encoding")
+	// TT-nov5 K: explain padding / 30×4 MiB so a small trial file does not look stuck.
+	if !quietMode {
+		fmt.Fprintln(os.Stderr, "  Note: Tessera pads each file up to a 40 MiB slab, then splits it into 30 pieces of 4 MiB")
+		fmt.Fprintln(os.Stderr, "  (plus spares) across hosts — so a small upload still sends about 120 MiB on the wire.")
+	}
 	defer bar.Finish()
 	opts := []siastorage.UploadOption{siastorage.WithRedundancy(dataShards, parityShards)}
 	if bar != nil {
