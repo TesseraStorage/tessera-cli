@@ -505,16 +505,20 @@ with three sizes for the same files:
   4 MiB on 30 hosts, and any 10 rebuild it. So one 1.7 MB file shows about
   40 MiB stored and 120 MiB on the network.
 
-It also shows downloads, balance and *days left*, an estimate (balance ÷ today's
-daily storage charge for what you store now; more uploads or downloads shorten
-it). Download (egress) cost is charged from measured host spend, checked about
-every 5 minutes and taken from the balance; it is not reported as a byte
-count, so `usage`/`account` say so instead of showing "0 B", and the JSON has
-`egress_used_bytes: null` plus an `egress_note`. `--cost` prints a byte-based
-estimate only when the server reports egress in bytes. Sizes use binary units
+It also shows downloads, balance and *days left*. On a free trial, *days left*
+is the 72-hour keep-until time (`file_kept_until` / `trial_expires_at` in JSON;
+`days_left` is `null`). After you top up, *days left* is balance ÷ today's
+daily storage charge for what you store now. A free trial download shows the
+downloaded size as "(1 free trial download, not billed)" in
+`egress_used_bytes`; after top-up, download cost is charged from measured host
+spend (checked about every 5 minutes). `--cost` prints a byte-based estimate
+only when the server reports egress in bytes. Sizes use binary units
 (KiB, MiB, GiB).
 `usage --json` gains additive `billing` keys (or `billing_error`) only when
-billing config exists; the old keys are unchanged.
+billing config exists; the old keys are unchanged. The `trial` object is the
+preferred view of trial state; overlapping fields are omitted from `readiness`
+in `account --json` to avoid duplication. `trial_credit_usd` is deprecated
+(always `"0"` / omitted on Money-10).
 
 ## Safety
 

@@ -49,23 +49,42 @@ func cmdSecrets(args []string) {
 			fmt.Println("Deleted " + p)
 		}
 	}
+	if cfg, err := loadConfig(); err == nil && cfg.SignupSecretsFile != "" {
+		cfg.SignupSecretsFile = ""
+		_ = saveConfig(cfg)
+	}
 }
 
 func findSignupSecretsFiles() []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(p string) {
+		if p == "" || seen[p] {
+			return
+		}
+		if _, err := os.Stat(p); err != nil {
+			return
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	// Honor a custom --secrets-file path recorded in config (TT run 5 #11).
+	if cfg, err := loadConfig(); err == nil && cfg.SignupSecretsFile != "" {
+		add(cfg.SignupSecretsFile)
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil
+		return out
 	}
 	dir := filepath.Join(home, ".tessera")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil
+		return out
 	}
-	var out []string
 	for _, e := range entries {
 		name := e.Name()
-		if name == "signup-secrets.txt" || strings.HasPrefix(name, "signup-secrets-") && strings.HasSuffix(name, ".txt") {
-			out = append(out, filepath.Join(dir, name))
+		if name == "signup-secrets.txt" || (strings.HasPrefix(name, "signup-secrets-") && strings.HasSuffix(name, ".txt")) {
+			add(filepath.Join(dir, name))
 		}
 	}
 	return out
@@ -79,4 +98,11 @@ func secretsFileReminder() string {
 		return ""
 	}
 	return "Secrets file still present (" + paths[0] + "). After the phrase is saved elsewhere, run: tessera secrets done"
+}
+
+
+// secretsFileHint is a one-line prompt after a successful upload/download when
+// a plaintext signup-secrets file is still on disk (TT run 5 #11).
+func secretsFileHint() string {
+	return secretsFileReminder()
 }

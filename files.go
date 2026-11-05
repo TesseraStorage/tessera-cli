@@ -97,13 +97,14 @@ func cmdList(args []string) {
 		return
 	}
 
-	fmt.Printf("%-44s  %10s  %s\n", "PATH", "SIZE", "MODIFIED")
-	fmt.Println(strings.Repeat("-", 78))
+	fmt.Printf("%-44s  %10s  %-19s  %s\n", "PATH", "SIZE", "UPLOADED", "MODIFIED")
+	fmt.Println(strings.Repeat("-", 100))
 	for _, e := range shown {
-		fmt.Printf("%-44s  %10s  %s\n", truncate(e.Path, 44), formatBytes(uint64(e.Size)), displayTime(e))
+		fmt.Printf("%-44s  %10s  %-19s  %s\n", truncate(e.Path, 44), formatBytes(uint64(e.Size)), uploadedTime(e), modifiedTime(e))
 	}
-	fmt.Println(strings.Repeat("-", 78))
+	fmt.Println(strings.Repeat("-", 100))
 	fmt.Printf("%d file(s), %s\n", len(shown), formatBytes(total))
+	fmt.Println("(UPLOADED = time stored on Tessera; MODIFIED = local file mtime when known)")
 }
 
 // cmdUploadPath uploads a file or, when given a directory, uploads every file
@@ -124,7 +125,10 @@ func cmdUploadPath(src string, args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
 	defer cancel()
 
+	// Wall clock includes the host-funding wait (TT run 5 #6).
+	wallStart := time.Now()
 	requireTransferReady(ctx, cfg, true)
+	fundingWait := time.Since(wallStart)
 
 	rt, idx, cleanup, err := connectForWrite(ctx, cfg)
 	if err != nil {
@@ -135,6 +139,12 @@ func cmdUploadPath(src string, args []string) {
 	if fi.IsDir() {
 		if err := uploadDir(ctx, rt, idx, src, asFlag); err != nil {
 			fatal("%v", explainTransferError(cfg, err, true))
+		}
+		if fundingWait > time.Second {
+			fmt.Printf("Total wall time: %.1fs (including %.1fs waiting for host funding)\n", time.Since(wallStart).Seconds(), fundingWait.Seconds())
+		}
+		if rem := secretsFileHint(); rem != "" {
+			fmt.Println(rem)
 		}
 		return
 	}
@@ -148,8 +158,11 @@ func cmdUploadPath(src string, args []string) {
 		remotePath = rel
 	}
 
-	if err := uploadOne(ctx, rt, idx, src, remotePath); err != nil {
+	if err := uploadOneWithWall(ctx, rt, idx, src, remotePath, wallStart, fundingWait); err != nil {
 		fatal("%v", explainTransferError(cfg, err, true))
+	}
+	if rem := secretsFileHint(); rem != "" {
+		fmt.Println(rem)
 	}
 }
 
@@ -214,6 +227,12 @@ func recordUploaded(rt *Remote, idx *Index, req uploadRequest, info PathInfo, st
 
 // uploadOne uploads a single file and updates the local index.
 func uploadOne(ctx context.Context, rt *Remote, idx *Index, localPath, remotePath string) error {
+	return uploadOneWithWall(ctx, rt, idx, localPath, remotePath, time.Time{}, 0)
+}
+
+// uploadOneWithWall is uploadOne that reports total wall time including any
+// host-funding wait that happened before the transfer started.
+func uploadOneWithWall(ctx context.Context, rt *Remote, idx *Index, localPath, remotePath string, wallStart time.Time, fundingWait time.Duration) error {
 	req, already, err := prepareUpload(ctx, rt, idx, localPath, remotePath)
 	if err != nil {
 		return err
@@ -227,7 +246,19 @@ func uploadOne(ctx context.Context, rt *Remote, idx *Index, localPath, remotePat
 	if err != nil {
 		return err
 	}
-	return recordUploaded(rt, idx, req, info, start)
+	if err := recordUploaded(rt, idx, req, info, start); err != nil {
+		return err
+	}
+	if !wallStart.IsZero() {
+		wall := time.Since(wallStart).Seconds()
+		xfer := time.Since(start).Seconds()
+		if fundingWait > time.Second {
+			fmt.Printf("  wall %.1fs total (%.1fs transfer + %.1fs waiting for host funding)\n", wall, xfer, fundingWait.Seconds())
+		} else if wall > xfer+0.5 {
+			fmt.Printf("  wall %.1fs total\n", wall)
+		}
+	}
+	return nil
 }
 
 // recordUploadInSyncState updates a sync root's state after an upload made
@@ -302,6 +333,10 @@ func cmdDownload(args []string) {
 	pos := positional(args)
 	name := pos[0]
 	outName, _ := flagValue(args, "--out")
+	// Second positional is the destination path (TT run 5 #11). --out wins.
+	if outName == "" && len(pos) >= 2 {
+		outName = pos[1]
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
@@ -351,6 +386,9 @@ func cmdDownload(args []string) {
 		fmt.Printf("SHA-256: %s (no reference hash stored)\n", got)
 	}
 	fmt.Printf("Saved as: %s\n", dest)
+	if rem := secretsFileHint(); rem != "" {
+		fmt.Println(rem)
+	}
 }
 
 func cmdDelete(args []string) {
@@ -692,10 +730,10 @@ func cmdFind(args []string) {
 		fmt.Printf("No matches for %q.\n", pattern)
 		return
 	}
-	fmt.Printf("%-52s  %10s  %s\n", "PATH", "SIZE", "MODIFIED")
-	fmt.Println(strings.Repeat("-", 86))
+	fmt.Printf("%-52s  %10s  %-19s  %s\n", "PATH", "SIZE", "UPLOADED", "MODIFIED")
+	fmt.Println(strings.Repeat("-", 108))
 	for _, e := range matches {
-		fmt.Printf("%-52s  %10s  %s\n", truncate(e.Path, 52), formatBytes(uint64(e.Size)), displayTime(e))
+		fmt.Printf("%-52s  %10s  %-19s  %s\n", truncate(e.Path, 52), formatBytes(uint64(e.Size)), uploadedTime(e), modifiedTime(e))
 	}
 	fmt.Printf("%d match(es)\n", len(matches))
 }
@@ -903,12 +941,32 @@ func cmdVersions(args []string) {
 	fmt.Printf("\nRestore with: tessera versions %s --restore <n>\n", entry.Path)
 }
 
-// displayTime prefers the file's own mtime but falls back to the indexer's
-// event time for objects uploaded before sync metadata existed.
+// uploadedTime is when the object was stored on Tessera (index Updated).
+func uploadedTime(e *IndexEntry) string {
+	if e == nil || e.Updated.IsZero() {
+		return "unknown"
+	}
+	return localStamp(e.Updated, false)
+}
+
+// modifiedTime is the local file mtime when known; "—" when absent so it is
+// never confused with the upload time (TT run 5 #8).
+func modifiedTime(e *IndexEntry) string {
+	if e == nil || e.ModTime.IsZero() {
+		return "—"
+	}
+	return localStamp(e.ModTime, false)
+}
+
+// displayTime prefers upload time (Updated), falling back to local mtime.
+// Kept for callers that want a single column.
 func displayTime(e *IndexEntry) string {
-	t := e.ModTime
+	if e == nil {
+		return "unknown"
+	}
+	t := e.Updated
 	if t.IsZero() {
-		t = e.Updated
+		t = e.ModTime
 	}
 	if t.IsZero() {
 		return "unknown"
