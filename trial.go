@@ -231,7 +231,11 @@ func printTrialBlock(v *trialView, indent string, labelWidth int) {
 	}
 	label("Status:", readinessLabel(v.State))
 	label("", v.Summary)
-	label("", v.UploadsLine)
+	// TT-nov5 E: skip UploadsLine when Summary already carries the same
+	// "blocked until you top up" wording (server readiness message often does).
+	if v.UploadsLine != "" && !strings.Contains(v.Summary, "blocked until you top up") {
+		label("", v.UploadsLine)
+	}
 }
 
 // ---------------------------------------------------------------- egress
