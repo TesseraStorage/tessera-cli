@@ -264,8 +264,9 @@ func printBillingAccountSummary(acct map[string]any) {
 	if bal := accountBalanceUSD(acct, "balance_usd"); bal != "" {
 		field("Balance", "$"+displayUSD(bal))
 	}
-	field("Plan", accountString(acct, "plan"))
-	field("Days left", accountString(acct, "days_left"))
+	if r := readinessMap(acct); r == nil || r["free_trial"] != true {
+		field("Days left", accountString(acct, "days_left"))
+	}
 	fmt.Println()
 	fmt.Println("Session saved. Run 'tessera account' for the full dashboard.")
 	fmt.Println("Sign out with 'tessera login --billing-logout'.")
@@ -1085,7 +1086,7 @@ func readyNote(ready bool) string {
 	if ready {
 		return "host funding is past the repair-redundancy threshold"
 	}
-	return "normal before your first top-up: during the free trial Tessera pays " +
+	return "normal before your first top-up: during technical validation Tessera covers " +
 		"the storage hosts for each upload itself, so this network flag stays off " +
 		"until the first top-up. It is not an error by itself; Status above says " +
 		"whether uploads can run now"

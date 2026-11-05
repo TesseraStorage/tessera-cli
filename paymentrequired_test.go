@@ -57,7 +57,7 @@ func TestShortageAfterRecorded402(t *testing.T) {
 		t.Fatal("body must be preserved")
 	}
 	msg := explainFatalHostShortage("download failed: no more hosts available")
-	for _, want := range []string{"Insufficient balance — top up to continue", "free trial", "tessera topup 1 --wallet", "tessera.storage/account"} {
+	for _, want := range []string{"Insufficient balance — top up to continue", "Technical validation (one upload of up to 40 MiB and one download) has been used", "tessera topup 1 --wallet", "tessera.storage/account"} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("missing %q in %q", want, msg)
 		}
@@ -77,7 +77,7 @@ func TestBalanceRefusalMatchesServerWording(t *testing.T) {
 		}
 	}
 	notePaymentRequired(&http.Response{StatusCode: 402, Body: io.NopCloser(strings.NewReader(sample402))}, nil)
-	if s := balanceRefusal(3, 10).Error(); !strings.Contains(s, "free trial") {
+	if s := balanceRefusal(3, 10).Error(); !strings.Contains(s, "Technical validation") || strings.Contains(s, "free trial") || strings.Contains(s, "only 3 of the 10") {
 		t.Fatalf("server detail not used: %q", s)
 	}
 }

@@ -8,7 +8,9 @@ import (
 	"strings"
 )
 
-// cmdPromo redeems a promo code for the stored billing account.
+// cmdPromo redeems a promo code for the stored billing account. It is kept for
+// operators but is not listed in the public help or README (wording pass
+// 2026-11-06: promo is not a public product surface).
 //
 //	tessera promo <code>
 //
@@ -73,17 +75,13 @@ func runPromo(api billingAPI, code string) error {
 	return nil
 }
 
-// printPromoResult renders the redemption summary. periods_remaining is a
-// number for free_periods and fee promos and null for credit grants; a null or
-// missing value is omitted rather than rendered as a Go artifact.
+// printPromoResult renders the redemption summary (kind and value). Billing
+// periods are not shown: Tessera is pay-as-you-go only.
 func printPromoResult(resp map[string]any) {
 	fmt.Println("Promo code redeemed.")
 	fmt.Println()
 	fmt.Printf("  Kind:              %s\n", topupField(resp, "kind"))
 	fmt.Printf("  Value:             %s\n", topupField(resp, "value"))
-	if periods, ok := accountUint64(resp, "periods_remaining"); ok {
-		fmt.Printf("  Periods remaining: %d\n", periods)
-	}
 }
 
 // describePromoError maps a failed redemption to guidance. Every code moneyd's
@@ -107,9 +105,10 @@ func describePromoError(err error) string {
 	case be.Status == http.StatusConflict && be.Code == "promo_new_accounts_only":
 		return "promo_new_accounts_only — the code is only for accounts that have never been funded"
 	case be.Status == http.StatusConflict && be.Code == "no_active_subscription":
-		return "no_active_subscription — that fee promo needs an active subscription"
+		// Legacy server code; the CLI no longer names subscriptions.
+		return "promo_not_applicable — that code cannot be applied to this account"
 	case be.Status == http.StatusConflict && be.Code == "promo_conflict":
-		return "promo_conflict — the subscription already has a promo attached"
+		return "promo_conflict — this account already has a promo attached"
 	case be.Status == http.StatusConflict && be.Code == "promo_invalid":
 		return "promo_invalid — that is not a valid promo code"
 	case be.Status == http.StatusUnauthorized,

@@ -247,7 +247,6 @@ the Mac, add a second pair with a different prefix (for example
 | `topup <amount> [--x402] [--pay-currency <asset>] [--payment <b64>]` | Advanced x402: print the challenge to sign externally, or submit a signed authorization |
 | `topup --coins [--json]` | List the coins accepted for top-ups |
 | `wallet init\|show\|fund` | Optional local x402 wallet: create a key, show its address and balance, or print funding guidance |
-| `promo <code>` | Redeem a promo code on the billing account |
 | `status` | Account ready state + file count + total storage (Ready tracks repair redundancy; transfers run their own readiness check) |
 | `list [prefix]` | Files with real paths, sizes and dates (dates in your local time zone, labelled) |
 | `upload <path> [--as <remote>] [--quiet]` | Upload a file **or a whole folder** |
@@ -294,7 +293,7 @@ tessera login --email you@example.com
 tessera login --email you@example.com --token <token>   # completes the sign-in
 tessera login --billing-logout      # ends the session; an agent key is untouched
 
-# Dashboard, top-ups and promos
+# Dashboard and top-ups
 tessera account                     # billing id, status, balance, allowance, credential
 tessera account --json
 tessera topup 25                    # direct payment address (USDC on Base by default)
@@ -307,7 +306,6 @@ tessera topup 25 --no-wait          # create and return immediately
 tessera topup --coins               # list accepted coins
 tessera topup 25 --x402             # print the challenge to sign externally
 tessera topup 25 --payment <base64 X-PAYMENT>   # submit the signed authorization
-tessera promo WELCOME10
 tessera usage --cost                # billing section + netted egress estimate
 
 # Optional local wallet for --wallet top-ups
@@ -390,7 +388,8 @@ plus an `rm` command for after you have stored them. `--secrets-file <path>`
 picks the file (also with `--json`, which then carries `secrets_file` instead
 of the secrets); `--show-secrets` prints them anyway. If the file cannot be
 written the secrets are printed, so the phrase is never lost. Signup also
-fetches the host list once, so the free-trial credit lands right away.
+fetches the host list once and waits until enough hosts are funded for the
+technical-validation upload.
 
 **Seed login restores the same account.** On a new machine (or after
 `rm -rf ~/.tessera`), `tessera login "<12 words>"` proves the phrase to Tessera,
@@ -398,17 +397,16 @@ gets back the same account ID and a fresh API key, and derives the same App ID �
 headless, no browser, no password. A completed magic-link login with no storage
 identity yet finishes the same registration.
 
-**New accounts: the free trial.** Every new account gets one upload of up to
-40 MiB (one block) and one download, free for 72 hours after signup. There is
-no credit: the balance stays **$0.00** and Tessera pays the storage hosts. A
-second upload, or a download after the free one, answers *Insufficient balance
-— top up to continue* with the payment options. 72 hours after signup an
-account that never topped up is suspended and its files are deleted. `signup`,
-`status`, `account` and `usage` all show the same lines: what the trial still
-allows and whether uploads are allowed now. `--json` has the same facts in a
-`trial` object (`state`, `trial_credit_usd` = `"0"`, `balance_usd`,
-`can_upload`, `top_up_required`). A free-trial account shows the network flag
-`host funding ready: false` until its first top-up; that is expected. Top-ups
+**New accounts: technical validation.** Technical validation: one upload of
+up to 40 MiB and one download. Balance stays **$0.00**. Tessera covers the
+hosts. After that, top up to continue. A second upload, or a second download,
+answers *Insufficient balance — top up to continue* with the payment options.
+`signup`, `status`, `account` and `usage` all show the same lines: what
+technical validation still allows and whether uploads are allowed now.
+`--json` has the same facts in a `trial` object (`state`, `balance_usd`,
+`can_upload`, `top_up_required`; the JSON key names are unchanged). An account
+in technical validation shows the network flag `host funding ready: false`
+until its first top-up; that is expected. Top-ups
 are open on both rails (NOWPayments and x402); see *Top-up minimums* above for
 each rail's minimum.
 
@@ -441,10 +439,10 @@ Set `TESSERA_SKIP_PREFLIGHT=1` to skip the check. Even then, a host-shortage
 error from the SDK is mapped to one of these messages.
 
 **Readiness.** `signup`, `login`, `status` and `account` print the readiness
-block: *free trial* (credit left, uploads allowed), *top up to continue*
-(credit used up or $0 balance), or *ready*. Transfer commands (`upload`,
+block: *technical validation* (one upload and one download at $0.00), *top up
+to continue* (technical validation used, or a $0 balance), or *ready*. Transfer commands (`upload`,
 `download`, `sync`, `share`, `fetch`) mention it on stderr only when something
-needs your action, such as a top-up — never during a working trial — and repeat
+needs your action, such as a top-up — never during a working technical validation — and repeat
 an unchanged line at most every 6 hours (`TESSERA_NO_READINESS_NOTICE=1` turns
 it off).
 
@@ -505,18 +503,17 @@ with three sizes for the same files:
   4 MiB on 30 hosts, and any 10 rebuild it. So one 1.7 MB file shows about
   40 MiB stored and 120 MiB on the network.
 
-It also shows downloads, balance and *days left*. On a free trial, *days left*
-is the 72-hour keep-until time (`file_kept_until` / `trial_expires_at` in JSON;
-`days_left` is `null`). After you top up, *days left* is balance ÷ today's
-daily storage charge for what you store now. A free trial download shows the
-downloaded size as "(1 free trial download, not billed)" in
-`egress_used_bytes`; after top-up, download cost is charged from measured host
+It also shows downloads, balance and *days left*. During technical validation
+*days left* reads "not applicable" (`days_left` is `null` in JSON). After you
+top up, *days left* is balance ÷ today's daily storage charge for what you
+store now. The technical-validation download shows the downloaded size as
+"(1 technical-validation download, not billed)" in `egress_used_bytes`; after top-up, download cost is charged from measured host
 spend (checked about every 5 minutes). `--cost` prints a byte-based estimate
 only when the server reports egress in bytes. Sizes use binary units
 (KiB, MiB, GiB).
 `usage --json` gains additive `billing` keys (or `billing_error`) only when
 billing config exists; the old keys are unchanged. The `trial` object is the
-preferred view of trial state; overlapping fields are omitted from `readiness`
+preferred view of technical-validation state; overlapping fields are omitted from `readiness`
 in `account --json` to avoid duplication. `trial_credit_usd` is deprecated
 (always `"0"` / omitted on Money-10).
 
