@@ -36,7 +36,7 @@ func TestTrialSummaryRoundsBalanceButJSONKeepsExact(t *testing.T) {
 	if v.BalanceUSD != "0.24989375392" {
 		t.Errorf("json balance = %q", v.BalanceUSD)
 	}
-	if want := "Free trial: $0.249894 of your one-time $0.25 credit left."; len(v.Summary) < len(want) || v.Summary[:len(want)] != want {
+	if want := "Technical validation: $0.249894 balance left."; len(v.Summary) < len(want) || v.Summary[:len(want)] != want {
 		t.Errorf("summary = %q", v.Summary)
 	}
 }

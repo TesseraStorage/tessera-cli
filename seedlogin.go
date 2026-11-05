@@ -228,9 +228,9 @@ func readinessLabel(state string) string {
 	case "funded":
 		return "ready"
 	case "free_trial":
-		return "free trial"
+		return "technical validation"
 	case "free_trial_active":
-		return "free trial"
+		return "technical validation (upload used)"
 	case "top_up_required":
 		return "top up to continue"
 	case "setup_incomplete":
@@ -304,7 +304,7 @@ func readinessNotice(cfg *Config) string {
 			_ = os.WriteFile(p, data, 0o600)
 		}
 	}
-	// Only states that need action get the line; a working free trial is
+	// Only states that need action get the line; a working technical validation is
 	// explained by signup/status/account/usage and never repeated (TT retest 3).
 	if !readinessNeedsAction(c.State) {
 		return ""

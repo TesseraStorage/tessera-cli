@@ -113,7 +113,8 @@ func TestCmdPromoCreditGrant(t *testing.T) {
 	assertNoSecrets(t, out, "tsk_secret")
 }
 
-// TestCmdPromoFreePeriods: a periods-carrying redemption prints the count.
+// TestCmdPromoFreePeriods: billing periods are a subscription concept, so a
+// periods-carrying redemption no longer prints a "Periods remaining" line.
 func TestCmdPromoFreePeriods(t *testing.T) {
 	testConfigHome(t)
 	fake := &fakePromoAPI{resp: map[string]any{
@@ -134,8 +135,8 @@ func TestCmdPromoFreePeriods(t *testing.T) {
 	if !strings.Contains(out, "free_periods") {
 		t.Errorf("promo output missing the kind:\n%s", out)
 	}
-	if line := lineWithPrefix(out, "Periods remaining"); !strings.Contains(line, "2") {
-		t.Errorf("periods line = %q, want the count 2", line)
+	if strings.Contains(out, "Periods") {
+		t.Errorf("promo output still prints billing periods:\n%s", out)
 	}
 	assertNoSecrets(t, out, "tsk_secret")
 }
@@ -155,7 +156,7 @@ func TestRunPromoErrorOutcomes(t *testing.T) {
 		{"409 promo_exhausted", `{"detail":{"error":"promo_exhausted"}}`, http.StatusConflict, "promo_exhausted"},
 		{"409 promo_inactive", `{"detail":{"error":"promo_inactive"}}`, http.StatusConflict, "promo_inactive"},
 		{"409 promo_new_accounts_only", `{"detail":{"error":"promo_new_accounts_only"}}`, http.StatusConflict, "promo_new_accounts_only"},
-		{"409 no_active_subscription", `{"detail":{"error":"no_active_subscription"}}`, http.StatusConflict, "no_active_subscription"},
+		{"409 no_active_subscription", `{"detail":{"error":"no_active_subscription"}}`, http.StatusConflict, "promo_not_applicable"},
 		{"409 promo_conflict", `{"detail":{"error":"promo_conflict"}}`, http.StatusConflict, "promo_conflict"},
 		{"409 promo_invalid", `{"detail":{"error":"promo_invalid"}}`, http.StatusConflict, "promo_invalid"},
 		{"401 bearer points at signup or login", `{"detail":{"error":"unauthorized"}}`, http.StatusUnauthorized, "tessera signup"},
@@ -174,6 +175,9 @@ func TestRunPromoErrorOutcomes(t *testing.T) {
 				t.Fatalf("a failed redemption printed success output:\n%s", out)
 			}
 			msg := describePromoError(runErr)
+			if strings.Contains(strings.ToLower(msg), "subscription") {
+				t.Errorf("guidance %q mentions a subscription", msg)
+			}
 			if !strings.Contains(msg, tc.want) {
 				t.Errorf("guidance %q missing %q", msg, tc.want)
 			}

@@ -6,7 +6,6 @@
 //	tessera signup      Create an agent account (API key shown once)
 //	tessera account     Show billing account, balance, and usage
 //	tessera topup       Add funds (NOWPayments invoice or x402 USDC)
-//	tessera promo       Redeem a promo code
 //	tessera logout      Remove local credentials
 //	tessera whoami      Show current account identity
 //	tessera status      Account info + total storage used
@@ -380,17 +379,19 @@ Billing & account:
                              other coins); x402 (--wallet) from the $0.01 floor
   {exe} wallet init|show|fund   Local x402 wallet (opt-in)
   {exe} login --billing-logout  End the email session (API key untouched)
-  {exe} promo <code>            Redeem a promo code
 
 Account readiness (shown by signup, login, status, account and usage):
-  free trial         one upload of up to 40 MiB (one block) and one download,
-                     free for 72 hours after signup; the balance stays $0.00
-                     and Tessera pays the storage hosts
-  top up to continue the trial is used or ended, or the balance is $0: tessera topup 1
+  technical validation
+                     one upload of up to 40 MiB and one download; the balance
+                     stays $0.00 and Tessera covers the hosts. After that, top
+                     up to continue
+  top up to continue
+                     technical validation is used, or the balance is $0:
+                     tessera topup 1
   ready              funded; uploads and downloads run normally
 Other commands mention readiness only when an upload cannot run.
 The low-level "host funding ready" flag stays false until the first top-up,
-because during the trial Tessera pays the hosts per upload; that is expected.
+because during technical validation Tessera covers the hosts; that is expected.
 Uploads and downloads check host funding first, wait while it lands, and say
 what is missing if they cannot run. TESSERA_SKIP_PREFLIGHT=1 skips that check.
 

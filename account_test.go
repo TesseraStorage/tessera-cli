@@ -137,7 +137,6 @@ func TestPrintAccountTableNulls(t *testing.T) {
 		"agent",
 		"pending",
 		"$0",
-		"payg",
 		"measured host spend", // retired egress byte counter is not shown as 0 B
 		"agent key",
 		"https://tessera.storage/account",
@@ -145,6 +144,9 @@ func TestPrintAccountTableNulls(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("table missing %q:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "Plan:") || strings.Contains(out, "payg") {
+		t.Errorf("table still shows a plan line:\n%s", out)
 	}
 }
 
@@ -215,7 +217,6 @@ func TestCmdAccountHumanTable(t *testing.T) {
 		"human",
 		"active",
 		"$7.50",
-		"payg",
 		"4.77 MiB",            // allowance_egress_bytes = 5,000,000
 		"measured host spend", // downloads row replaces the retired byte counter
 		"29",
@@ -225,6 +226,9 @@ func TestCmdAccountHumanTable(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("human table missing %q:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "Plan:") {
+		t.Errorf("human table still shows a plan line:\n%s", out)
 	}
 	if line := lineWithPrefix(out, "Credential"); !strings.Contains(line, "session") {
 		t.Errorf("credential line = %q, want the session", line)
