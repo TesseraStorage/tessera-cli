@@ -28,16 +28,21 @@ const topUpHint = "tessera topup 1 (crypto minimum about $0.38 in USDC on Base, 
 // trialView is the consistent trial/balance state. It is also emitted as the
 // "trial" object of account/status/usage --json.
 type trialView struct {
-	State         string  `json:"state"`
-	FreeTrial     bool    `json:"free_trial"`
-	CreditUSD     string  `json:"trial_credit_usd,omitempty"`
-	CreditPosted  bool    `json:"trial_credit_posted"`
-	BalanceUSD    string  `json:"balance_usd"`
-	CanUpload     bool    `json:"can_upload"`
-	TopUpRequired bool    `json:"top_up_required"`
-	DaysLeft      *uint64 `json:"days_left_estimate"`
-	Summary       string  `json:"summary"`
-	UploadsLine   string  `json:"uploads"`
+	State             string  `json:"state"`
+	FreeTrial         bool    `json:"free_trial"`
+	CreditUSD         string  `json:"trial_credit_usd,omitempty"`
+	CreditPosted      bool    `json:"trial_credit_posted"`
+	BalanceUSD        string  `json:"balance_usd"`
+	CanUpload         bool    `json:"can_upload"`
+	TopUpRequired     bool    `json:"top_up_required"`
+	DaysLeft          *uint64 `json:"days_left_estimate"`
+	TrialEndsAt       string  `json:"trial_ends_at,omitempty"`
+	TrialUploadUsed   bool    `json:"trial_upload_used,omitempty"`
+	TrialDownloadUsed bool    `json:"trial_download_used,omitempty"`
+	GraceEndsAt       string  `json:"grace_ends_at,omitempty"`
+	Summary           string  `json:"summary"`
+	UploadsLine       string  `json:"uploads"`
+	ShortBanner       string  `json:"short_banner,omitempty"`
 }
 
 func readinessMap(acct map[string]any) map[string]any {
@@ -82,7 +87,16 @@ func buildTrialView(acct map[string]any) *trialView {
 	if n, ok := accountUint64(acct, "days_left"); ok {
 		v.DaysLeft = &n
 	}
+	v.TrialEndsAt, _ = r["trial_ends_at"].(string)
+	v.GraceEndsAt, _ = r["grace_ends_at"].(string)
+	if b, ok := r["trial_upload_used"].(bool); ok {
+		v.TrialUploadUsed = b
+	}
+	if b, ok := r["trial_download_used"].(bool); ok {
+		v.TrialDownloadUsed = b
+	}
 	v.Summary, v.UploadsLine = trialLines(v, readinessMessage(r))
+	v.ShortBanner = shortTrialBanner(v)
 	return v
 }
 
@@ -117,7 +131,6 @@ func trialLines(v *trialView, serverMsg string) (summary, uploads string) {
 		if v.CreditPosted && v.DaysLeft != nil {
 			uploads += fmt.Sprintf(", while the credit lasts (%s)", daysLeftPhrase(*v.DaysLeft))
 		}
-		uploads += ". Top up any time to keep storing beyond the trial: tessera topup 1"
 	case v.CanUpload:
 		uploads = "Uploads: allowed."
 	case v.TopUpRequired:
@@ -139,14 +152,14 @@ func creditIsZero(s string) bool {
 // blockTrialLines renders the Money-10 trial: one 40 MiB block upload and one
 // download, free for 72 hours after signup, balance $0.00, no credit.
 func blockTrialLines(v *trialView, serverMsg string) (summary, uploads string) {
+	keptUntil := trialKeptUntilPhrase(v)
 	switch {
 	case v.State == "free_trial" && v.CanUpload:
-		summary = "Free trial: one upload of up to 40 MiB (one block) and one download, free for 72 hours after signup; " +
-			"Tessera pays the storage hosts. Your balance stays $0.00."
-		uploads = "Uploads: allowed now, no top-up needed. Top up any time to keep storing beyond the trial: tessera topup 1"
+		summary = "Free trial: one upload of up to 40 MiB (one block) and one download. " + keptUntil +
+			" Tessera pays the storage hosts. Your balance stays $0.00. Top up any time to keep storing beyond the trial: tessera topup 1"
+		uploads = "Uploads: allowed now, no top-up needed"
 	case v.State == "free_trial_active":
-		summary = "Free trial: your free upload is stored; your one free download is still available. " +
-			"Files are deleted 72 hours after signup unless you top up."
+		summary = "Free trial: your free upload is stored; your one free download is still available. " + keptUntil
 		uploads = "Uploads: blocked until you top up: " + topUpHint
 	default:
 		summary = "Free trial used or ended (one upload and one download, 72 hours after signup)."
@@ -160,6 +173,38 @@ func blockTrialLines(v *trialView, serverMsg string) (summary, uploads string) {
 		}
 	}
 	return summary, uploads
+}
+
+// trialKeptUntilPhrase is the 72h keep-until line for trial accounts.
+func trialKeptUntilPhrase(v *trialView) string {
+	if v != nil && v.TrialEndsAt != "" {
+		if t, err := time.Parse(time.RFC3339, v.TrialEndsAt); err == nil {
+			return "Free trial: file kept until " + localStamp(t, false) + ", then deleted unless you top up."
+		}
+		return "Free trial: file kept until " + v.TrialEndsAt + ", then deleted unless you top up."
+	}
+	return "Files are deleted 72 hours after signup unless you top up."
+}
+
+// shortTrialBanner is one short line for commands other than account/status.
+func shortTrialBanner(v *trialView) string {
+	if v == nil {
+		return ""
+	}
+	if !v.FreeTrial {
+		if v.TopUpRequired {
+			return "Top up to continue: " + topUpHint
+		}
+		return ""
+	}
+	switch v.State {
+	case "free_trial":
+		return "Free trial active (1 upload + 1 download). Top up any time: tessera topup 1"
+	case "free_trial_active":
+		return "Free trial: upload used; 1 free download left. Top up to upload again: tessera topup 1"
+	default:
+		return "Free trial used — top up to continue: tessera topup 1"
+	}
 }
 
 // daysLeftPhrase labels days_left as what it is: an estimate at the current
@@ -205,6 +250,15 @@ func egressMeasuredInBytes(acct map[string]any) bool {
 
 // egressDisplay is the human value for the downloads row.
 func egressDisplay(acct map[string]any) string {
+	if r := readinessMap(acct); r != nil {
+		if used, _ := r["trial_download_used"].(bool); used {
+			blocks, hasBlocks := accountUint64(acct, "egress_billed_blocks")
+			usd := accountBalanceUSD(acct, "egress_billed_usd")
+			if (!hasBlocks || blocks == 0) && (usd == "" || creditIsZero(usd)) {
+				return "1 free trial download (not billed)"
+			}
+		}
+	}
 	if egressMeasuredInBytes(acct) {
 		return accountBytes(acct, "egress_used_bytes")
 	}
@@ -259,10 +313,27 @@ func printSizeExplanation(indent string) {
 }
 
 // slabCountText renders "1 slab" / "3 slabs".
+// TT-nov5: never show "0 slabs" when stored_bytes > 0 (sector-meter lag);
+// derive ceil(stored_bytes / 40 MiB) until open_slabs catches up.
 func slabCountText(acct map[string]any) string {
 	n, ok := accountUint64(acct, "open_slabs")
 	if !ok {
-		return ""
+		n = 0
+	}
+	if n == 0 {
+		if stored, sok := accountUint64(acct, "stored_bytes"); sok && stored > 0 {
+			const mib40 = uint64(40 * 1024 * 1024)
+			n = (stored + mib40 - 1) / mib40
+			if n == 0 {
+				n = 1
+			}
+		}
+	}
+	if n == 0 {
+		if !ok {
+			return ""
+		}
+		return "0 slabs"
 	}
 	if n == 1 {
 		return "1 slab"
@@ -303,7 +374,36 @@ func periodEndText(acct map[string]any) string {
 }
 
 // daysLeftEmptyText says why there is no days-left estimate yet.
+// TT-nov5: for trial accounts prefer the keep-until phrase over a dash /
+// "about 0 days"; for paid $0 accounts explain grace.
 func daysLeftEmptyText(acct map[string]any) string {
+	if n, ok := accountUint64(acct, "days_left"); ok && n > 0 {
+		return ""
+	}
+	if r := readinessMap(acct); r != nil {
+		if ft, _ := r["free_trial"].(bool); ft {
+			ends, _ := r["trial_ends_at"].(string)
+			if ends != "" {
+				if t, err := time.Parse(time.RFC3339, ends); err == nil {
+					return "free trial: file kept until " + localStamp(t, false) + ", then deleted unless you top up"
+				}
+				return "free trial: file kept until " + ends + ", then deleted unless you top up"
+			}
+			return "free trial: file kept for 72 hours after signup, then deleted unless you top up"
+		}
+		if grace, _ := r["grace_ends_at"].(string); grace != "" {
+			if t, err := time.Parse(time.RFC3339, grace); err == nil {
+				return "balance $0: retrieval grace until " + localStamp(t, false) + "; top up to keep storing"
+			}
+			return "balance $0: retrieval grace until " + grace + "; top up to keep storing"
+		}
+	}
+	bal := accountBalanceUSD(acct, "balance_usd")
+	if creditIsZero(bal) {
+		if n, ok := accountUint64(acct, "stored_bytes"); ok && n > 0 {
+			return "balance $0: top up to keep storing (a short retrieval grace may still apply)"
+		}
+	}
 	if _, ok := accountUint64(acct, "days_left"); ok {
 		return ""
 	}

@@ -291,7 +291,12 @@ func readinessNotice(cfg *Config) string {
 		}
 		c.State, c.Message = accountReadiness(acct)
 		if v := buildTrialView(acct); v != nil {
-			c.Message = v.UploadsLine
+			// TT-nov5 H: one short line elsewhere; full banner stays on account/status.
+			if v.ShortBanner != "" {
+				c.Message = v.ShortBanner
+			} else {
+				c.Message = v.UploadsLine
+			}
 		}
 		c.CheckedAt = time.Now()
 		if p != "" {

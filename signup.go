@@ -63,18 +63,26 @@ func cmdSignup(args []string) {
 		fmt.Println("Gives you your 12-word recovery phrase and API key ONCE — keep both safe.")
 		fmt.Println("The phrase alone restores the account later: tessera login \"<12 words>\"")
 		fmt.Println()
+		fmt.Println("Options:")
+		fmt.Println("  --name <name>           display name for the account (optional)")
+		fmt.Println("  --contact-email <email> optional. Stored only so Tessera can email billing")
+		fmt.Println("                          notices (low balance, suspension) for this agent")
+		fmt.Println("                          account. Not required for signup, login, or storage.")
+		fmt.Println("                          Never used as a login identifier.")
+		fmt.Println()
 		fmt.Println("Where the two secrets go:")
 		fmt.Println("  terminal            printed on screen")
 		fmt.Println("  not a terminal      (a pipe, log or agent) written to a private 0600 file,")
 		fmt.Println("                      ~/.tessera/signup-secrets-<account>.txt, and only its")
 		fmt.Println("                      path is printed. Copy both into your password manager,")
-		fmt.Println("                      then delete the file.")
+		fmt.Println("                      then delete the file (or run: tessera secrets done).")
 		fmt.Println("  --secrets-file <p>  always write them to <p> (0600) instead of printing")
 		fmt.Println("  --show-secrets      print them even when output is not a terminal")
 		fmt.Println("  --json              api_key and recovery_phrase are JSON fields; with")
 		fmt.Println("                      --secrets-file they are left out and secrets_file is set")
 		fmt.Println("The API key is also saved in ~/.tessera/config.json for this machine; the")
-		fmt.Println("phrase is not (only the secrets file holds it, until you delete it).")
+		fmt.Println("phrase is not saved there. Login may offer to store an encrypted local copy")
+		fmt.Println("of the phrase (optional, locked with a phrase password you choose).")
 		fmt.Println("This command does not run when only --help/-h is given.")
 		return
 	}
@@ -303,8 +311,9 @@ func printSignupResultTo(result signupResult, mode signupOutput) {
 		fmt.Printf("       rm %s\n", shellQuote(secretsPath))
 		fmt.Println("  Tessera's servers never see your phrase and cannot show either again.")
 	} else {
-		fmt.Println("  They will not be shown again. Tessera's servers never see your phrase,")
-		fmt.Println("  and this machine does not save it: write it down now.")
+		fmt.Println("  They will not be shown again. Tessera's servers never see your phrase.")
+		fmt.Println("  This machine does not save the phrase unless you later choose an encrypted")
+		fmt.Println("  local copy at login (optional). Write it down now.")
 		fmt.Println(bar)
 		if result.Phrase != "" {
 			fmt.Println("  1. Recovery phrase (12 words) — restores your account and files:")
@@ -337,6 +346,10 @@ func printSignupResultTo(result signupResult, mode signupOutput) {
 		fmt.Fprintln(os.Stderr, "Note: the recovery phrase and API key above were written to a non-terminal output (a log or pipe). Keep that output private, or delete it after saving both secrets.")
 	}
 	fmt.Println("Next: tessera upload <file>. Add funds any time: tessera topup 1 (crypto minimum ~$0.38 in USDC on Base, more for other coins; live list: tessera topup --minimums).")
+	if secretsPath != "" {
+		fmt.Println("When the phrase and API key are safe in your password manager, delete the secrets file:")
+		fmt.Println("  tessera secrets done")
+	}
 }
 
 // shellQuote single-quotes a path for a copy-paste command.
