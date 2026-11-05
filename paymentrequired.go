@@ -15,8 +15,8 @@ import (
 )
 
 // paymentRequiredError is the server's 402 "Insufficient balance — top up to
-// continue" (host list, upload or download refused at $0 or after the free
-// trial), turned into guidance with the commands that actually top up.
+// continue" (host list, upload or download refused at $0 or after technical
+// validation), turned into guidance with the commands that actually top up.
 type paymentRequiredError struct {
 	Reason  string
 	Message string
@@ -30,13 +30,23 @@ func (e *paymentRequiredError) Error() string {
 	}
 	var b strings.Builder
 	b.WriteString(msg)
-	if e.Detail != "" {
-		b.WriteString("\n  " + e.Detail)
+	if d := publicPaymentDetail(e.Detail); d != "" {
+		b.WriteString("\n  " + d)
 	}
 	b.WriteString("\n  Pay from this CLI's wallet (USDC on Base): tessera wallet init && tessera topup 1 --wallet")
 	b.WriteString("\n  Pay in XMR, BTC, ETH, USDT or another coin:  tessera topup 10 --asset xmr  (minimums: tessera topup --minimums)")
 	b.WriteString("\n  Or top up at https://tessera.storage/account")
 	return b.String()
+}
+
+// publicPaymentDetail keeps the server's 402 detail unless it still uses the
+// retired wording (free trial, a timer, subscriptions); then the CLI states it
+// in the technical-validation terms instead (wording pass 2026-11-06).
+func publicPaymentDetail(d string) string {
+	if d == "" || publicServerMessage(d) != "" {
+		return d
+	}
+	return "Technical validation (one upload of up to 40 MiB and one download) has been used. Top up to continue."
 }
 
 var paymentFieldRE = map[string]*regexp.Regexp{

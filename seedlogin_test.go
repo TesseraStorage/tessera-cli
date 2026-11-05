@@ -117,7 +117,7 @@ func TestSeedLoginRestoresSameAccountHeadless(t *testing.T) {
 			t.Errorf("output mentions %q:\n%s", bad, out)
 		}
 	}
-	if !strings.Contains(out, "AGNT-1") || !strings.Contains(out, "Free trial") {
+	if !strings.Contains(out, "AGNT-1") || !strings.Contains(out, "Technical validation") || strings.Contains(out, "Free trial") {
 		t.Errorf("output lacks account / readiness:\n%s", out)
 	}
 }
