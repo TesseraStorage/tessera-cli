@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// Free-trial and balance presentation (Money-10; TT run 5).
+// Technical-validation and balance presentation (Money-10; TT run 5).
 //
 // account, status, usage and signup used to print moneyd's readiness message
 // verbatim, which read "$0.00" next to "top up", or "$0.05 left" next to "your
@@ -16,10 +16,11 @@ import (
 // structured fields of GET /account (readiness.state/can_upload/free_trial,
 // balance_usd, days_left) and every command renders the same lines from it.
 
-// trialCreditUSDDefault is the free-trial credit used when the server does not
-// report trial_credit_usd. Since Money 10 (2026-11-03) the trial carries no
-// credit: it is one 40 MiB block upload plus one download within 72 hours of
-// signup at a $0.00 balance (Tessera pays the storage hosts).
+// trialCreditUSDDefault is the legacy trial credit used when the server does
+// not report trial_credit_usd. Since Money 10 (2026-11-03) the zero-balance
+// allowance ("technical validation") carries no credit: one upload of up to
+// 40 MiB and one download at a $0.00 balance (Tessera covers the hosts).
+// User-facing text never names a timer for it.
 const trialCreditUSDDefault = "0"
 
 // topUpHint is the plain top-up instruction shown when an upload is blocked.
@@ -37,16 +38,16 @@ type trialView struct {
 	TopUpRequired     bool    `json:"top_up_required"`
 	DaysLeft          *uint64 `json:"days_left_estimate"`
 	TrialEndsAt       string  `json:"trial_ends_at,omitempty"`
-	FileKeptUntil     string  `json:"file_kept_until,omitempty"` // ISO; alias of trial_ends_at (72h keep-until)
+	FileKeptUntil     string  `json:"file_kept_until,omitempty"` // ISO; alias of trial_ends_at (JSON only; never printed)
 	TrialUploadUsed   bool    `json:"trial_upload_used,omitempty"`
 	TrialDownloadUsed bool    `json:"trial_download_used,omitempty"`
 	GraceEndsAt       string  `json:"grace_ends_at,omitempty"`
 	// CreditDeprecated is set when trial_credit_usd is kept only for older
 	// clients (Money-10 trial has no credit; balance stays $0.00).
-	CreditDeprecated  bool    `json:"trial_credit_deprecated,omitempty"`
-	Summary           string  `json:"summary"`
-	UploadsLine       string  `json:"uploads"`
-	ShortBanner       string  `json:"short_banner,omitempty"`
+	CreditDeprecated bool   `json:"trial_credit_deprecated,omitempty"`
+	Summary          string `json:"summary"`
+	UploadsLine      string `json:"uploads"`
+	ShortBanner      string `json:"short_banner,omitempty"`
 }
 
 func readinessMap(acct map[string]any) map[string]any {
@@ -130,29 +131,32 @@ func readinessMessage(r map[string]any) string {
 // trialLines renders the two plain lines: what the account has, and whether
 // another upload is allowed right now.
 func trialLines(v *trialView, serverMsg string) (summary, uploads string) {
-	credit := "$" + v.CreditUSD
 	if v.FreeTrial && creditIsZero(v.CreditUSD) {
 		return blockTrialLines(v, serverMsg)
 	}
+	if v.FreeTrial {
+		// Legacy server that still posts a credit: state the balance plainly,
+		// without the retired "one-time credit" / "free trial" sentences.
+		summary = fmt.Sprintf("Technical validation: $%s balance left. Uploads, stored files and downloads are charged against it; Tessera covers the hosts.", displayUSD(v.BalanceUSD))
+		switch {
+		case v.CanUpload:
+			uploads = "Uploads: allowed now, no top-up needed"
+			if v.DaysLeft != nil {
+				uploads += fmt.Sprintf(", while the balance lasts (%s)", daysLeftPhrase(*v.DaysLeft))
+			}
+		default:
+			uploads = "Uploads: blocked until you top up: " + topUpHint
+		}
+		return summary, uploads
+	}
+	serverMsg = publicServerMessage(serverMsg)
 	switch {
-	case v.FreeTrial && v.State == "free_trial" && !v.CreditPosted:
-		summary = "Free trial: new accounts get a one-time " + credit + " credit and Tessera pays the storage hosts for you. " +
-			"The credit is added automatically within about a minute of signup (at the latest with your first upload); until then the balance reads $0.00."
-	case v.FreeTrial && v.CanUpload:
-		summary = fmt.Sprintf("Free trial: $%s of your one-time %s credit left. Your uploads, stored files and downloads are charged against it; Tessera pays the storage hosts.", displayUSD(v.BalanceUSD), credit)
-	case v.FreeTrial:
-		summary = "Free trial: your one-time " + credit + " credit is used up."
 	case v.State == "funded":
 		summary = "Funded: balance $" + displayUSD(v.BalanceUSD) + "."
 	default:
 		summary = serverMsg
 	}
 	switch {
-	case v.CanUpload && v.FreeTrial:
-		uploads = "Uploads: allowed now, no top-up needed"
-		if v.CreditPosted && v.DaysLeft != nil {
-			uploads += fmt.Sprintf(", while the credit lasts (%s)", daysLeftPhrase(*v.DaysLeft))
-		}
 	case v.CanUpload:
 		uploads = "Uploads: allowed."
 	case v.TopUpRequired:
@@ -171,22 +175,26 @@ func creditIsZero(s string) bool {
 	return s == "" || (err == nil && f == 0)
 }
 
-// blockTrialLines renders the Money-10 trial: one 40 MiB block upload and one
-// download, free for 72 hours after signup, balance $0.00, no credit.
+// technicalValidationSummary is the locked wording for the zero-balance
+// allowance (CLI wording pass, 2026-11-06). No timer, no "free trial".
+const technicalValidationSummary = "Technical validation: one upload of up to 40 MiB and one download. " +
+	"Balance stays $0.00. Tessera covers the hosts. After that, top up to continue: tessera topup 1"
+
+// blockTrialLines renders technical validation: one upload of up to 40 MiB
+// and one download, balance $0.00, Tessera covers the hosts.
 func blockTrialLines(v *trialView, serverMsg string) (summary, uploads string) {
-	keptUntil := trialKeptUntilPhrase(v)
 	switch {
 	case v.State == "free_trial" && v.CanUpload:
-		summary = "Free trial: one upload of up to 40 MiB (one block) and one download. " + keptUntil +
-			" Tessera pays the storage hosts. Your balance stays $0.00. Top up any time to keep storing beyond the trial: tessera topup 1"
+		summary = technicalValidationSummary
 		uploads = "Uploads: allowed now, no top-up needed"
 	case v.State == "free_trial_active":
-		summary = "Free trial: your free upload is stored; your one free download is still available. " + keptUntil
+		summary = "Technical validation: upload used; your one download is still available. " +
+			"Balance stays $0.00. Tessera covers the hosts. After that, top up to continue: tessera topup 1"
 		uploads = "Uploads: blocked until you top up: " + topUpHint
 	default:
-		summary = "Free trial used or ended (one upload and one download, 72 hours after signup)."
-		if serverMsg != "" {
-			summary = serverMsg
+		summary = "Technical validation used (one upload and one download). Top up to continue: tessera topup 1"
+		if m := publicServerMessage(serverMsg); m != "" {
+			summary = m
 		}
 		if v.CanUpload {
 			uploads = "Uploads: allowed."
@@ -197,17 +205,17 @@ func blockTrialLines(v *trialView, serverMsg string) (summary, uploads string) {
 	return summary, uploads
 }
 
-// trialKeptUntilPhrase is the 72h keep-until line for trial accounts.
-func trialKeptUntilPhrase(v *trialView) string {
-	// Do not start with "Free trial:" — callers already prefix that; doubling
-	// it produced "Free trial: … Free trial: file kept until …" (TT run 5 #10).
-	if v != nil && v.TrialEndsAt != "" {
-		if t, err := time.Parse(time.RFC3339, v.TrialEndsAt); err == nil {
-			return "File kept until " + localStamp(t, false) + ", then deleted unless you top up."
+// publicServerMessage drops a server readiness message that still uses the
+// retired wording (free trial, foray, a timer, subscriptions), so the CLI's own
+// technical-validation lines are shown instead. Other messages pass through.
+func publicServerMessage(m string) string {
+	l := strings.ToLower(m)
+	for _, bad := range []string{"trial", "foray", "72 hour", "72h", "subscription", "starter", "renew", "kept until", "deleted"} {
+		if strings.Contains(l, bad) {
+			return ""
 		}
-		return "File kept until " + v.TrialEndsAt + ", then deleted unless you top up."
 	}
-	return "Files are deleted 72 hours after signup unless you top up."
+	return m
 }
 
 // shortTrialBanner is one short line for commands other than account/status.
@@ -223,11 +231,11 @@ func shortTrialBanner(v *trialView) string {
 	}
 	switch v.State {
 	case "free_trial":
-		return "Free trial active (1 upload + 1 download). Top up any time: tessera topup 1"
+		return "Technical validation available (1 upload + 1 download). Top up any time: tessera topup 1"
 	case "free_trial_active":
-		return "Free trial: upload used; 1 free download left. Top up to upload again: tessera topup 1"
+		return "Technical validation: upload used; 1 download left. Top up to upload again: tessera topup 1"
 	default:
-		return "Free trial used — top up to continue: tessera topup 1"
+		return "Technical validation used — top up to continue: tessera topup 1"
 	}
 }
 
@@ -267,7 +275,7 @@ func printTrialBlock(v *trialView, indent string, labelWidth int) {
 // egressNote replaces the old "egress used" byte count. The client-reported
 // egress feed is retired, so egress_used_bytes is always 0; downloads are
 // billed from measured host spend instead, as USD debits.
-const egressNote = "charged from measured host spend (checked about every 5 minutes) and taken from your balance; trial downloads report actual bytes (not billed)"
+const egressNote = "charged from measured host spend (checked about every 5 minutes) and taken from your balance; the technical-validation download reports actual bytes (not billed)"
 
 // egressMeasuredInBytes reports whether the server still sends a meaningful
 // egress byte count (a server that does says so with egress_measurement).
@@ -284,12 +292,12 @@ func egressDisplay(acct map[string]any) string {
 			usd := accountBalanceUSD(acct, "egress_billed_usd")
 			if (!hasBlocks || blocks == 0) && (usd == "" || creditIsZero(usd)) {
 				if n, ok := accountUint64(acct, "egress_used_bytes"); ok && n > 0 {
-					return formatBytes(n) + " (1 free trial download, not billed)"
+					return formatBytes(n) + " (1 technical-validation download, not billed)"
 				}
 				if n, ok := accountUint64(acct, "raw_bytes"); ok && n > 0 {
-					return formatBytes(n) + " (1 free trial download, not billed)"
+					return formatBytes(n) + " (1 technical-validation download, not billed)"
 				}
-				return "1 free trial download (not billed)"
+				return "1 technical-validation download (not billed)"
 			}
 		}
 	}
@@ -326,7 +334,7 @@ func honestEgressJSON(out map[string]any, acct map[string]any) {
 				if used, _ := r["trial_download_used"].(bool); used {
 					if n, ok := accountUint64(acct, "egress_used_bytes"); ok && n > 0 {
 						out["egress_used_bytes"] = n
-						out["egress_note"] = "1 free trial download (not billed); bytes are the downloaded size"
+						out["egress_note"] = "1 technical-validation download (not billed); bytes are the downloaded size"
 						return
 					}
 				}
@@ -338,7 +346,7 @@ func honestEgressJSON(out map[string]any, acct map[string]any) {
 		if used, _ := r["trial_download_used"].(bool); used {
 			if n, ok := accountUint64(acct, "egress_used_bytes"); ok && n > 0 {
 				out["egress_used_bytes"] = n
-				out["egress_note"] = "1 free trial download (not billed); bytes are the downloaded size"
+				out["egress_note"] = "1 technical-validation download (not billed); bytes are the downloaded size"
 				return
 			}
 		}
@@ -429,22 +437,15 @@ func periodEndText(acct map[string]any) string {
 }
 
 // daysLeftEmptyText says why there is no days-left estimate yet.
-// TT-nov5: for trial accounts prefer the keep-until phrase over a dash /
-// "about 0 days"; for paid $0 accounts explain grace.
+// TT-nov5: technical-validation accounts get a plain "not applicable" instead
+// of a dash / "about 0 days" (no timer is shown); paid $0 accounts explain grace.
 func daysLeftEmptyText(acct map[string]any) string {
 	if n, ok := accountUint64(acct, "days_left"); ok && n > 0 {
 		return ""
 	}
 	if r := readinessMap(acct); r != nil {
 		if ft, _ := r["free_trial"].(bool); ft {
-			ends, _ := r["trial_ends_at"].(string)
-			if ends != "" {
-				if t, err := time.Parse(time.RFC3339, ends); err == nil {
-					return "free trial: file kept until " + localStamp(t, false) + ", then deleted unless you top up"
-				}
-				return "free trial: file kept until " + ends + ", then deleted unless you top up"
-			}
-			return "free trial: file kept for 72 hours after signup, then deleted unless you top up"
+			return "not applicable (technical validation; balance stays $0.00)"
 		}
 		if grace, _ := r["grace_ends_at"].(string); grace != "" {
 			if t, err := time.Parse(time.RFC3339, grace); err == nil {

@@ -95,5 +95,5 @@ func printRates(doc map[string]any) {
 		fmt.Printf("  One block (upload + 30 days stored + one full download): %s\n", rateUSD(rateStr(one, "total_usd")))
 	}
 	fmt.Println("  TB = 10^12 bytes. Billing is per 40 MiB block; storage is charged per day.")
-	fmt.Println("  No subscription needed; top up any amount from $0.01: tessera topup 1")
+	fmt.Println("  Top up any amount from $0.01: tessera topup 1")
 }

@@ -199,7 +199,6 @@ func printAccountTable(acct map[string]any, credential string) {
 	field("Kind", accountString(acct, "kind"))
 	field("Status", accountString(acct, "status"))
 	field("Balance", balance)
-	field("Plan", accountString(acct, "plan"))
 	field("Period ends", periodEndText(acct))
 	if _, ok := acct["allowance_egress_bytes"]; ok {
 		if n, _ := accountUint64(acct, "allowance_egress_bytes"); n > 0 {
