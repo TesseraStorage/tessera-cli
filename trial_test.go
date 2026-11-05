@@ -26,15 +26,19 @@ func TestTrialViewStates(t *testing.T) {
 	v := buildTrialView(trialAcct("free_trial", "0", true, nil))
 	if v.CreditPosted || !v.CanUpload || v.CreditUSD != "0" || !strings.Contains(v.Summary, "one upload of up to 40 MiB") ||
 		!strings.Contains(v.Summary, "balance stays $0.00") || !strings.HasPrefix(v.UploadsLine, "Uploads: allowed now") ||
-		!strings.Contains(v.UploadsLine, "tessera topup 1") {
+		!strings.Contains(v.Summary, "tessera topup 1") {
 		t.Fatalf("free_trial view: %+v", v)
+	}
+	if v.ShortBanner == "" || !strings.Contains(v.ShortBanner, "Free trial active") {
+		t.Fatalf("free_trial short banner: %+v", v)
 	}
 	if strings.Contains(v.Summary+v.UploadsLine, "credit") {
 		t.Fatalf("block trial must not mention a credit: %+v", v)
 	}
 	v = buildTrialView(trialAcct("free_trial_active", "0", false, nil))
 	if v.CanUpload || !strings.Contains(v.Summary, "one free download is still available") ||
-		!strings.Contains(v.Summary, "deleted 72 hours after signup") || !strings.HasPrefix(v.UploadsLine, "Uploads: blocked until you top up") {
+		!(strings.Contains(v.Summary, "deleted 72 hours after signup") || strings.Contains(v.Summary, "file kept until") || strings.Contains(v.Summary, "Files are deleted 72 hours")) ||
+		!strings.HasPrefix(v.UploadsLine, "Uploads: blocked until you top up") {
 		t.Fatalf("active view: %+v", v)
 	}
 	v = buildTrialView(trialAcct("top_up_required", "0", false, nil))
@@ -124,5 +128,31 @@ func TestEgressDisplayBilledBlocks(t *testing.T) {
 	honestEgressJSON(out, acct)
 	if out["egress_used_bytes"] == nil || out["egress_billed_blocks"] != uint64(3) {
 		t.Fatalf("honestEgressJSON nulled billed bytes: %#v", out)
+	}
+}
+
+
+func TestSlabCountTextLag(t *testing.T) {
+	acct := map[string]any{"open_slabs": float64(0), "stored_bytes": float64(40 * 1024 * 1024)}
+	if got := slabCountText(acct); got != "1 slab" {
+		t.Fatalf("lagging meter: got %q", got)
+	}
+	acct2 := map[string]any{"open_slabs": float64(0), "stored_bytes": float64(0)}
+	if got := slabCountText(acct2); got != "0 slabs" {
+		t.Fatalf("empty store: got %q", got)
+	}
+}
+
+func TestEgressDisplayTrialDownload(t *testing.T) {
+	acct := map[string]any{
+		"egress_billed_blocks": float64(0),
+		"egress_billed_usd":    "0",
+		"readiness": map[string]any{
+			"state": "free_trial_active", "free_trial": true,
+			"trial_download_used": true, "can_upload": false,
+		},
+	}
+	if got := egressDisplay(acct); got != "1 free trial download (not billed)" {
+		t.Fatalf("trial download display: %q", got)
 	}
 }
