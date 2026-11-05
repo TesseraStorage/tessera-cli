@@ -84,13 +84,37 @@ func credentialText(credential string) string {
 // for --json. Server fields pass through untouched (balance_usd stays a string,
 // nulls stay null); the credential's value is never added.
 func accountWithCredential(acct map[string]any, credential string) map[string]any {
-	out := make(map[string]any, len(acct)+1)
+	out := make(map[string]any, len(acct)+4)
 	for k, v := range acct {
 		out[k] = v
 	}
 	out["credential"] = credential
 	if v := buildTrialView(acct); v != nil {
 		out["trial"] = v
+		// Trial: days_left:0 from burn/balance reads as "deleted now" while
+		// text says N days keep-until. Force null and expose ISO keep-until.
+		if v.FreeTrial && creditIsZero(v.CreditUSD) {
+			out["days_left"] = nil
+			if v.FileKeptUntil != "" {
+				out["file_kept_until"] = v.FileKeptUntil
+				out["trial_expires_at"] = v.FileKeptUntil
+			}
+			// Dedupe: drop overlapping trial_* keys from readiness copy so
+			// agents read them from "trial" (TT run 5 #5). Keep state/message.
+			if r, ok := out["readiness"].(map[string]any); ok {
+				rc := make(map[string]any, len(r))
+				for rk, rv := range r {
+					switch rk {
+					case "trial_ends_at", "trial_upload_used", "trial_download_used",
+						"trial_credit_usd", "trial_credit_posted", "trial_credit_deprecated",
+						"grace_ends_at", "free_trial", "can_upload", "top_up_required":
+						continue
+					}
+					rc[rk] = rv
+				}
+				out["readiness"] = rc
+			}
+		}
 	}
 	honestEgressJSON(out, acct)
 	return out

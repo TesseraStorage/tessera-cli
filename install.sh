@@ -7,7 +7,7 @@
 # when the checksum is missing or does not match.
 #
 #   curl -fsSL https://tessera.storage/install.sh | sh
-#   curl -fsSL https://tessera.storage/install.sh | sh -s v1.11.4   # a specific version
+#   curl -fsSL https://tessera.storage/install.sh | sh -s vX.Y.Z     # a specific tagged version
 #
 # PATH: the binary goes to ~/.local/bin. If that directory is not on your
 # PATH, the installer adds one line to your shell's startup file (~/.zshrc,

@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// Free-trial and balance presentation (v1.11.4, TT retest 3).
+// Free-trial and balance presentation (Money-10; TT run 5).
 //
 // account, status, usage and signup used to print moneyd's readiness message
 // verbatim, which read "$0.00" next to "top up", or "$0.05 left" next to "your
@@ -37,9 +37,13 @@ type trialView struct {
 	TopUpRequired     bool    `json:"top_up_required"`
 	DaysLeft          *uint64 `json:"days_left_estimate"`
 	TrialEndsAt       string  `json:"trial_ends_at,omitempty"`
+	FileKeptUntil     string  `json:"file_kept_until,omitempty"` // ISO; alias of trial_ends_at (72h keep-until)
 	TrialUploadUsed   bool    `json:"trial_upload_used,omitempty"`
 	TrialDownloadUsed bool    `json:"trial_download_used,omitempty"`
 	GraceEndsAt       string  `json:"grace_ends_at,omitempty"`
+	// CreditDeprecated is set when trial_credit_usd is kept only for older
+	// clients (Money-10 trial has no credit; balance stays $0.00).
+	CreditDeprecated  bool    `json:"trial_credit_deprecated,omitempty"`
 	Summary           string  `json:"summary"`
 	UploadsLine       string  `json:"uploads"`
 	ShortBanner       string  `json:"short_banner,omitempty"`
@@ -72,22 +76,40 @@ func buildTrialView(acct map[string]any) *trialView {
 	if v.BalanceUSD == "" {
 		v.BalanceUSD = "0.00"
 	}
-	balance, _ := strconv.ParseFloat(v.BalanceUSD, 64)
 	if v.FreeTrial {
-		v.CreditUSD = trialCreditUSDDefault
-		if s := accountBalanceUSD(r, "trial_credit_usd"); s != "" {
-			v.CreditUSD = s
+		// Money-10: no credit. Keep trial_credit_usd out of JSON when it is
+		// "0"/absent so agents do not treat it as a spendable balance, but set
+		// CreditDeprecated so older docs that mention the field still make sense.
+		rawCredit := accountBalanceUSD(r, "trial_credit_usd")
+		if rawCredit != "" && !creditIsZero(rawCredit) {
+			v.CreditUSD = rawCredit
 		}
 		if posted, ok := r["trial_credit_posted"].(bool); ok {
 			v.CreditPosted = posted
-		} else {
-			v.CreditPosted = v.State != "free_trial" || balance > 0
+		}
+		if creditIsZero(v.CreditUSD) {
+			v.CreditDeprecated = true
+			v.CreditPosted = false
+			v.CreditUSD = "" // omitempty
 		}
 	}
-	if n, ok := accountUint64(acct, "days_left"); ok {
+	// Money-10 zero-credit trial: days_left from burn/balance is meaningless
+	// at $0 (reads as "deleted now"). Prefer null + file_kept_until.
+	// Legacy credited trials still expose days_left_estimate.
+	if v.FreeTrial && creditIsZero(v.CreditUSD) {
+		v.DaysLeft = nil
+	} else if n, ok := accountUint64(acct, "days_left"); ok {
 		v.DaysLeft = &n
 	}
 	v.TrialEndsAt, _ = r["trial_ends_at"].(string)
+	if v.TrialEndsAt == "" {
+		if s := accountString(acct, "file_kept_until"); s != "" {
+			v.TrialEndsAt = s
+		} else if s := accountString(acct, "trial_expires_at"); s != "" {
+			v.TrialEndsAt = s
+		}
+	}
+	v.FileKeptUntil = v.TrialEndsAt
 	v.GraceEndsAt, _ = r["grace_ends_at"].(string)
 	if b, ok := r["trial_upload_used"].(bool); ok {
 		v.TrialUploadUsed = b
@@ -177,11 +199,13 @@ func blockTrialLines(v *trialView, serverMsg string) (summary, uploads string) {
 
 // trialKeptUntilPhrase is the 72h keep-until line for trial accounts.
 func trialKeptUntilPhrase(v *trialView) string {
+	// Do not start with "Free trial:" — callers already prefix that; doubling
+	// it produced "Free trial: … Free trial: file kept until …" (TT run 5 #10).
 	if v != nil && v.TrialEndsAt != "" {
 		if t, err := time.Parse(time.RFC3339, v.TrialEndsAt); err == nil {
-			return "Free trial: file kept until " + localStamp(t, false) + ", then deleted unless you top up."
+			return "File kept until " + localStamp(t, false) + ", then deleted unless you top up."
 		}
-		return "Free trial: file kept until " + v.TrialEndsAt + ", then deleted unless you top up."
+		return "File kept until " + v.TrialEndsAt + ", then deleted unless you top up."
 	}
 	return "Files are deleted 72 hours after signup unless you top up."
 }
@@ -243,7 +267,7 @@ func printTrialBlock(v *trialView, indent string, labelWidth int) {
 // egressNote replaces the old "egress used" byte count. The client-reported
 // egress feed is retired, so egress_used_bytes is always 0; downloads are
 // billed from measured host spend instead, as USD debits.
-const egressNote = "charged from measured host spend (checked about every 5 minutes) and taken from your balance; not reported as a byte count"
+const egressNote = "charged from measured host spend (checked about every 5 minutes) and taken from your balance; trial downloads report actual bytes (not billed)"
 
 // egressMeasuredInBytes reports whether the server still sends a meaningful
 // egress byte count (a server that does says so with egress_measurement).
@@ -259,6 +283,12 @@ func egressDisplay(acct map[string]any) string {
 			blocks, hasBlocks := accountUint64(acct, "egress_billed_blocks")
 			usd := accountBalanceUSD(acct, "egress_billed_usd")
 			if (!hasBlocks || blocks == 0) && (usd == "" || creditIsZero(usd)) {
+				if n, ok := accountUint64(acct, "egress_used_bytes"); ok && n > 0 {
+					return formatBytes(n) + " (1 free trial download, not billed)"
+				}
+				if n, ok := accountUint64(acct, "raw_bytes"); ok && n > 0 {
+					return formatBytes(n) + " (1 free trial download, not billed)"
+				}
 				return "1 free trial download (not billed)"
 			}
 		}
@@ -290,7 +320,28 @@ func honestEgressJSON(out map[string]any, acct map[string]any) {
 	if blocks, ok := accountUint64(acct, "egress_billed_blocks"); ok {
 		out["egress_billed_blocks"] = blocks
 		out["egress_billed_usd"] = acct["egress_billed_usd"]
+		// Trial download bytes may be reported even when billed blocks are 0.
+		if blocks == 0 {
+			if r := readinessMap(acct); r != nil {
+				if used, _ := r["trial_download_used"].(bool); used {
+					if n, ok := accountUint64(acct, "egress_used_bytes"); ok && n > 0 {
+						out["egress_used_bytes"] = n
+						out["egress_note"] = "1 free trial download (not billed); bytes are the downloaded size"
+						return
+					}
+				}
+			}
+		}
 		return
+	}
+	if r := readinessMap(acct); r != nil {
+		if used, _ := r["trial_download_used"].(bool); used {
+			if n, ok := accountUint64(acct, "egress_used_bytes"); ok && n > 0 {
+				out["egress_used_bytes"] = n
+				out["egress_note"] = "1 free trial download (not billed); bytes are the downloaded size"
+				return
+			}
+		}
 	}
 	if _, ok := out["egress_used_bytes"]; ok {
 		out["egress_used_bytes"] = nil
