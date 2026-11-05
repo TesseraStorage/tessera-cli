@@ -216,3 +216,29 @@ func TestTrialKeptUntilNoDoublePrefix(t *testing.T) {
 		t.Fatalf("keep-until leaked into summary: %q", v.Summary)
 	}
 }
+
+// TestPublicReadinessJSON: --json keeps readiness keys but never passes on a
+// server message with retired wording.
+func TestPublicReadinessJSON(t *testing.T) {
+	r := map[string]any{"state": "top_up_required", "free_trial": true,
+		"message": "Free trial used (one upload and one download)."}
+	acct := map[string]any{"readiness": r}
+	got, ok := publicReadinessJSON(r, buildTrialView(acct)).(map[string]any)
+	if !ok {
+		t.Fatalf("not a map")
+	}
+	if len(got) != len(r) || got["state"] != "top_up_required" {
+		t.Errorf("keys/values changed: %v", got)
+	}
+	msg, _ := got["message"].(string)
+	if strings.Contains(strings.ToLower(msg), "trial") || !strings.Contains(msg, "Technical validation") {
+		t.Errorf("message = %q", msg)
+	}
+	if r["message"] != "Free trial used (one upload and one download)." {
+		t.Errorf("input map was mutated")
+	}
+	clean := map[string]any{"state": "funded", "message": "Ready."}
+	if g := publicReadinessJSON(clean, nil).(map[string]any); g["message"] != "Ready." {
+		t.Errorf("clean message changed: %v", g)
+	}
+}
