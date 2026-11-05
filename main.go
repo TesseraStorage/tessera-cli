@@ -90,6 +90,8 @@ func main() {
 		cmdSignup(args)
 	case "account":
 		cmdAccount(args)
+	case "secrets":
+		cmdSecrets(args)
 	case "topup":
 		if !hasFlag(args, "--coins") && !hasFlag(args, "--minimums") && !hasFlag(args, "--help") && !hasFlag(args, "-h") && len(positional(args)) < 1 {
 			usageError("topup <amount> [--asset <code>] [--invoice] [--wallet] [--json] [--wait|--no-wait]  (tessera topup --help)")
@@ -353,6 +355,7 @@ More:
   {exe} service install|start|stop|status
                              Run the watcher as a background service
   {exe} uninstall               Remove the watcher, this binary, and (optionally) local state
+  {exe} secrets done           Delete the plaintext signup-secrets file after you saved the phrase
   {exe} phrase show             Reveal the phrase, if you saved an encrypted copy at an
                              interactive 'tessera login' (locked with a local phrase
                              password; signup never saves one)
