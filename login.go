@@ -1014,7 +1014,7 @@ func cmdStatus(args ...string) {
 			"pending_sync": pending,
 		}
 		if r, ok := billingAcct["readiness"]; ok {
-			out["readiness"] = r
+			out["readiness"] = publicReadinessJSON(r, buildTrialView(billingAcct))
 		}
 		if v := buildTrialView(billingAcct); v != nil {
 			out["trial"] = v
