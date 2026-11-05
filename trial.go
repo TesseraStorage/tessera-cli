@@ -468,3 +468,27 @@ func daysLeftEmptyText(acct map[string]any) string {
 	}
 	return ""
 }
+
+// publicReadinessJSON returns the readiness block for --json output. Keys and
+// every other value pass through untouched; only a server "message" that still
+// carries retired wording (see publicServerMessage) is replaced by the CLI's
+// own summary, so --json never says what the human text no longer says.
+func publicReadinessJSON(r any, v *trialView) any {
+	m, ok := r.(map[string]any)
+	if !ok {
+		return r
+	}
+	msg, isStr := m["message"].(string)
+	if !isStr || msg == "" || publicServerMessage(msg) != "" {
+		return r
+	}
+	out := make(map[string]any, len(m))
+	for k, val := range m {
+		out[k] = val
+	}
+	out["message"] = ""
+	if v != nil {
+		out["message"] = v.Summary
+	}
+	return out
+}

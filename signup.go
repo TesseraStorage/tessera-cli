@@ -185,13 +185,13 @@ func warmHostFunding(cfg *Config) {
 		return
 	}
 	d.progress = func(funded, needed int) {
-		fmt.Fprintf(os.Stderr, "Host funding: %d/%d hosts funded (trial hosts are prepaid at signup)...\n", funded, needed)
+		fmt.Fprintf(os.Stderr, "Host funding: %d/%d hosts funded (Tessera prepays the hosts at signup)...\n", funded, needed)
 	}
 	if err := checkReadiness(waitCtx, d, signupFundingNeeded, true); err != nil {
 		fmt.Fprintf(os.Stderr, "Note: host funding is still catching up (%v). The first upload will wait for the rest.\n", err)
 		return
 	}
-	fmt.Fprintln(os.Stderr, "Host funding ready for trial upload.")
+	fmt.Fprintln(os.Stderr, "Host funding ready for the technical-validation upload.")
 }
 
 // createAgentAccount calls POST /agents and, on success, stores the one-time
@@ -323,7 +323,7 @@ func printSignupResultTo(result signupResult, mode signupOutput) {
 			out["recovery_phrase"] = result.Phrase
 		}
 		if result.Readiness != nil {
-			out["readiness"] = result.Readiness
+			out["readiness"] = publicReadinessJSON(result.Readiness, buildTrialView(map[string]any{"readiness": result.Readiness}))
 		}
 		if v := buildTrialView(result.Account); v != nil {
 			out["trial"] = v

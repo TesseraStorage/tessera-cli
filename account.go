@@ -116,6 +116,9 @@ func accountWithCredential(acct map[string]any, credential string) map[string]an
 			}
 		}
 	}
+	if r, ok := out["readiness"]; ok {
+		out["readiness"] = publicReadinessJSON(r, buildTrialView(acct))
+	}
 	honestEgressJSON(out, acct)
 	return out
 }
