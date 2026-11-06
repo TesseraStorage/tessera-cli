@@ -337,6 +337,12 @@ func cmdDownload(args []string) {
 	if outName == "" && len(pos) >= 2 {
 		outName = pos[1]
 	}
+	// --offset/--length: a partial read. Flag syntax is checked before any
+	// network work; the bounds are checked once the file size is known.
+	rng, err := parseDownloadRange(args)
+	if err != nil {
+		fatal("%v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
@@ -354,21 +360,51 @@ func cmdDownload(args []string) {
 		fatal("%v", err)
 	}
 
+	rng, clamped, err := rng.resolve(entry.Size)
+	if err != nil {
+		fatal("%s: %v", entry.Path, err)
+	}
+
 	requireTransferReadyFor(ctx, cfg, false, entry.ObjectID)
 
 	dest := outName
 	if dest == "" {
 		dest = filepath.Base(entry.Path)
+		if rng.Set {
+			dest = defaultRangeName(entry.Path, rng)
+		}
 	}
 
-	fmt.Printf("Downloading %s (%s)...\n", entry.Path, formatBytes(uint64(entry.Size)))
+	if rng.Set {
+		fmt.Printf("Downloading bytes %d-%d of %s (%s of %s)...\n", rng.Offset, rng.end()-1, entry.Path, formatBytes(rng.Length), formatBytes(uint64(entry.Size)))
+		if clamped {
+			fmt.Printf("Range clamped to the end of the file (%d bytes available from offset %d).\n", rng.Length, rng.Offset)
+		}
+	} else {
+		fmt.Printf("Downloading %s (%s)...\n", entry.Path, formatBytes(uint64(entry.Size)))
+	}
 
 	start := time.Now()
-	n, err := rt.Download(ctx, pathInfoFromIndex(entry), dest, 0644)
+	n, err := rt.DownloadRange(ctx, pathInfoFromIndex(entry), dest, 0644, rng)
 	if err != nil {
 		fatal("download: %v", explainTransferError(cfg, err, false))
 	}
 	elapsed := time.Since(start)
+
+	if rng.Set {
+		got, err := hashFile(dest)
+		if err != nil {
+			fatal("hash %s: %v", dest, err)
+		}
+		speed := float64(n) / elapsed.Seconds() / (1 << 20)
+		fmt.Printf("Downloaded %s (bytes %d-%d) in %.1fs (%.2f MB/s)\n", formatBytes(uint64(n)), rng.Offset, rng.end()-1, elapsed.Seconds(), speed)
+		fmt.Printf("SHA-256 of range: %s (partial read; the whole-file hash is checked only on a full download)\n", got)
+		fmt.Printf("Saved as: %s\n", dest)
+		if rem := secretsFileHint(); rem != "" {
+			fmt.Println(rem)
+		}
+		return
+	}
 
 	got, err := hashFile(dest)
 	if err != nil {

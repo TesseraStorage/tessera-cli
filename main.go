@@ -122,7 +122,7 @@ func main() {
 		cmdUploadPath(positional(args)[0], args)
 	case "download", "get":
 		if len(positional(args)) < 1 {
-			usageError("download <path> [--out <file>]")
+			usageError("download <path> [--out <file>] [--offset <bytes>] [--length <bytes>]")
 		}
 		cmdDownload(args)
 	case "delete", "rm":
@@ -197,12 +197,24 @@ Upload a file or a folder (folders are uploaded recursively).
 
 Env: TESSERA_SKIP_PREFLIGHT=1 skips the host readiness check.
 `,
-	"download": `Usage: {exe} download <path> [--out <file>] [--quiet]
+	"download": `Usage: {exe} download <path> [--out <file>] [--offset <bytes>] [--length <bytes>] [--quiet]
 
 Download a stored file and verify its SHA-256.
 
-  --out <file>  Local file name (default: the remote file's base name)
-  --quiet       Hide live progress (or set TESSERA_QUIET=1)
+  --out <file>        Local file name (default: the remote file's base name;
+                      for a range: <name>.bytes-<first>-<last>)
+  --offset <bytes>    Start reading at this byte (0 = first byte)
+  --length <bytes>    Read this many bytes (default: to the end of the file)
+  --quiet             Hide live progress (or set TESSERA_QUIET=1)
+
+With --offset and/or --length the download is limited to that byte range and
+only the slabs covering it are fetched (a seek inside a large video does not
+download the whole file). The range is clamped to the file size; an offset at
+or past the end is an error. A range read prints the range's SHA-256; the
+whole-file SHA-256 is checked only on a full download.
+
+Interrupted downloads restart from the beginning. To resume by hand, use
+--offset with the number of bytes already on disk and append the result.
 `,
 	"delete": `Usage: {exe} delete <path> [--purge] [--yes]
 
@@ -321,8 +333,9 @@ Files:
   {exe} list [prefix]           List files (path, size, date)
   {exe} upload <path> [--as <remote-path>] [--quiet]
                              Upload a file or folder (--as: name it remotely)
-  {exe} download <path> [--out <file>] [--quiet]
-                             Download a file (--out: local file name)
+  {exe} download <path> [--out <file>] [--offset <bytes>] [--length <bytes>] [--quiet]
+                             Download a file (--out: local file name;
+                             --offset/--length: only that byte range)
                              (live progress on stderr: phase, bytes, %, speed, ETA;
                              plain lines every 10s when stderr is not a terminal;
                              --quiet / TESSERA_QUIET=1 hides it)

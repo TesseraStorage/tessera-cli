@@ -632,6 +632,13 @@ func (r *Remote) DeleteObject(ctx context.Context, objectID string) error {
 // Download streams an object to a local file atomically and sets its mtime to
 // the recorded source mtime so subsequent runs agree it is unchanged.
 func (r *Remote) Download(ctx context.Context, info PathInfo, dest string, mode os.FileMode) (int64, error) {
+	return r.DownloadRange(ctx, info, dest, mode, byteRange{})
+}
+
+// DownloadRange downloads part of an object (rng resolved against info.Size;
+// the zero byteRange means the whole object). The SDK fetches only the slabs
+// covering the range.
+func (r *Remote) DownloadRange(ctx context.Context, info PathInfo, dest string, mode os.FileMode, rng byteRange) (int64, error) {
 	key, err := parseObjectID(info.ObjectID)
 	if err != nil {
 		return 0, fmt.Errorf("bad object reference for %s: %w", info.Path, err)
@@ -640,20 +647,27 @@ func (r *Remote) Download(ctx context.Context, info PathInfo, dest string, mode 
 	if err != nil {
 		return 0, fmt.Errorf("fetch %s (object %s): %w — if this persists, run 'tessera index --rebuild'", info.Path, shortHash(info.ObjectID), err)
 	}
-	rc, err := r.sdk.Download(obj)
+	rc, err := r.sdk.Download(obj, rng.downloadOptions()...)
 	if err != nil {
 		return 0, fmt.Errorf("download %s: %w", info.Path, err)
 	}
 	defer rc.Close()
 
+	total := info.Size
+	if rng.Set {
+		total = int64(rng.Length)
+	}
 	bar := transferProgress
-	bar.Start("↓ "+path.Base(info.Path), info.Size, "downloading")
+	bar.Start("↓ "+path.Base(info.Path), total, "downloading")
 	defer bar.Finish()
 	n, err := copyFileAtomic(dest, &countingReader{r: rc, fn: bar.Add}, mode)
 	if err != nil {
 		return n, err
 	}
-	if !info.ModTime.IsZero() {
+	if rng.Set && n != total {
+		return n, fmt.Errorf("download %s: got %d bytes for range %d-%d, expected %d", info.Path, n, rng.Offset, rng.end()-1, total)
+	}
+	if !rng.Set && !info.ModTime.IsZero() {
 		_ = os.Chtimes(dest, info.ModTime, info.ModTime)
 	}
 	return n, nil
