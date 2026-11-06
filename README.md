@@ -250,7 +250,7 @@ the Mac, add a second pair with a different prefix (for example
 | `status` | Account ready state + file count + total storage (Ready tracks repair redundancy; transfers run their own readiness check) |
 | `list [prefix]` | Files with real paths, sizes and dates (dates in your local time zone, labelled) |
 | `upload <path> [--as <remote>] [--quiet]` | Upload a file **or a whole folder** |
-| `download <path> [--out <file>]` | Download + SHA-256 verification |
+| `download <path> [--out <file>] [--offset <bytes>] [--length <bytes>]` | Download + SHA-256 verification; with `--offset`/`--length` only that byte range (only the slabs covering it are fetched). Interrupted downloads restart from the beginning; resume by hand with `--offset` = bytes already on disk |
 | `delete <path> [--purge]` | Move to trash (or purge permanently) |
 | `share <path>` | Create a 30-day share link |
 | `fetch <url> [name]` | Download a shared file |
