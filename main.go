@@ -38,12 +38,14 @@ import (
 // cmdStatus's network calls.
 var statusCommand = cmdStatus
 
-// version is the build version. CI injects it from the release tag so it can
-// never drift from the release:
+// version is the build version. The release workflow injects it from the git
+// tag (v1.12.7 is the release this tree is for; the tag is cut after a live
+// server test, not by this change):
 //
 //	go build -ldflags "-X main.version=${GITHUB_REF_NAME}" .
 //
-// It stays "dev" for local and non-tag builds.
+// It stays "dev" for local and non-tag builds, so a tag and `tessera version`
+// cannot drift.
 var version = "dev"
 
 // cmdVersion prints this build's version. The value is injected at release
@@ -194,6 +196,9 @@ Upload a file or a folder (folders are uploaded recursively).
   --as <remote-path>  Store it under this remote name (folders: remote prefix;
                       default for a folder: tessera/<name>)
   --quiet             Hide live progress (or set TESSERA_QUIET=1)
+
+During technical validation one upload of up to 40 MiB (one slab) is allowed.
+With a balance, files of any size can be uploaded.
 
 Env: TESSERA_SKIP_PREFLIGHT=1 skips the host readiness check.
 `,
@@ -380,6 +385,8 @@ Billing & account:
                              Add funds: x402 wallet (any amount from $0.01),
                              deposit address in a chosen coin (USDC on Base by
                              default; XMR, BTC, ETH, USDT...), or browser invoice.
+                             A terminal also shows a USDC-on-Base QR
+                             (--no-qr to hide; --qr=address for the address only).
                              See 'tessera topup --help'.
   {exe} topup <amount> [--json] [--wait|--no-wait]
                              Machine-readable output; poll until a terminal state
@@ -403,10 +410,11 @@ Account readiness (shown by signup, login, status, account and usage):
                      tessera topup 1
   ready              funded; uploads and downloads run normally
 Other commands mention readiness only when an upload cannot run.
-The low-level "host funding ready" flag stays false until the first top-up,
-because during technical validation Tessera covers the hosts; that is expected.
-Uploads and downloads check host funding first, wait while it lands, and say
-what is missing if they cannot run. TESSERA_SKIP_PREFLIGHT=1 skips that check.
+status prints "Account funded: yes/no". The low-level host-funding flag
+(JSON key "ready") stays false until the first top-up, because during
+technical validation Tessera covers the hosts; that is expected. Uploads and
+downloads check host funding first and can still wait for it after the
+account is funded. TESSERA_SKIP_PREFLIGHT=1 skips that check.
 
 Indexer: https://index.tessera.storage
 Docs:    https://tessera.storage

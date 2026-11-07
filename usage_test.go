@@ -79,7 +79,7 @@ const usageTestStorageHuman = "Storage usage\n" +
 	"  files:           2\n" +
 	"  your files:      1.5 KiB (logical size, as uploaded from this machine)\n" +
 	"\n" +
-	"  Note: Sia costs depend on your contracts and current host prices.\n" +
+	"  Note: Billed at the published rates: tessera rates.\n" +
 	"  Run 'tessera status' for account readiness.\n"
 
 // usageTestStorageJSON is the exact --json storage output for usageTestIndex
@@ -126,7 +126,7 @@ func TestUsageStorageByFolder(t *testing.T) {
 		"  " + strings.Repeat("-", 64) + "\n" +
 		"  " + fmt.Sprintf("%-40s  %8d  %12s", "photos", 2, "1.5 KiB") + "\n" +
 		"\n" +
-		"  Note: Sia costs depend on your contracts and current host prices.\n" +
+		"  Note: Billed at the published rates: tessera rates.\n" +
 		"  Run 'tessera status' for account readiness.\n"
 	if stdout != want {
 		t.Fatalf("usage --by-folder output changed:\n got:\n%q\nwant:\n%q", stdout, want)
@@ -558,7 +558,7 @@ func TestUsageCostWithoutByteMeter(t *testing.T) {
 		"open_slabs":        float64(1),
 		"egress_used_bytes": float64(0),
 		"balance_usd":       "0.05",
-		"days_left":         float64(4472),
+		"days_left":         float64(100),
 	}}
 	stubBillingClient(t, fake)
 	cfg := &Config{IndexerURL: defaultIndexer, BillingAPIURL: defaultBillingURL, BillingAgentKey: "tsk_secret"}
@@ -566,7 +566,7 @@ func TestUsageCostWithoutByteMeter(t *testing.T) {
 	if strings.Contains(stdout, "$0.00") || strings.Contains(stdout, egressEstimateLabel) {
 		t.Fatalf("estimate computed from the retired counter:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "about 4472 days (~12 years)") || !strings.Contains(stdout, "estimate") {
+	if !strings.Contains(stdout, "about 100 days") || !strings.Contains(stdout, "estimate") {
 		t.Fatalf("days left not labelled as an estimate:\n%s", stdout)
 	}
 	stdout, _ = captureOutput(t, func() { usageReport([]string{"--json", "--cost"}, cfg, usageTestIndex()) })
@@ -577,5 +577,47 @@ func TestUsageCostWithoutByteMeter(t *testing.T) {
 	b := got["billing"].(map[string]any)
 	if b["egress_used_bytes"] != nil || b["egress_note"] == nil || b["egress_estimate_usd"] != nil {
 		t.Fatalf("billing json = %#v", b)
+	}
+	if _, ok := b["last_metered_at"]; ok {
+		t.Fatalf("missing last_metered_at must be omitted: %#v", b)
+	}
+}
+
+func TestUsageLastMeteredAt(t *testing.T) {
+	testConfigHome(t)
+	const raw = "2026-11-07T13:04:05Z"
+	fake := &fakeUsageAPI{acct: map[string]any{
+		"balance_usd":     "1.00",
+		"last_metered_at": raw,
+	}}
+	stubBillingClient(t, fake)
+	cfg := &Config{IndexerURL: defaultIndexer, BillingAPIURL: defaultBillingURL, BillingAgentKey: "tsk_secret"}
+	stdout, _ := captureOutput(t, func() { usageReport(nil, cfg, usageTestIndex()) })
+	label, ok := lastMeteredLabel(fake.acct)
+	if !ok || !strings.Contains(stdout, "last metered:") || !strings.Contains(stdout, label) {
+		t.Fatalf("human last metered missing (%q):\n%s", label, stdout)
+	}
+	stdout, _ = captureOutput(t, func() { usageReport([]string{"--json"}, cfg, usageTestIndex()) })
+	var got map[string]any
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatal(err)
+	}
+	b := got["billing"].(map[string]any)
+	if b["last_metered_at"] != raw {
+		t.Fatalf("json last_metered_at = %#v", b["last_metered_at"])
+	}
+
+	fake.acct = map[string]any{"balance_usd": "1.00", "last_metered_at": nil}
+	stdout, _ = captureOutput(t, func() { usageReport(nil, cfg, usageTestIndex()) })
+	if strings.Contains(stdout, "last metered") {
+		t.Fatalf("null last_metered_at printed:\n%s", stdout)
+	}
+	stdout, _ = captureOutput(t, func() { usageReport([]string{"--json"}, cfg, usageTestIndex()) })
+	got = map[string]any{}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["billing"].(map[string]any)["last_metered_at"]; ok {
+		t.Fatalf("null last_metered_at leaked into json: %#v", got["billing"])
 	}
 }

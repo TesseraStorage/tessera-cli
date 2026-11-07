@@ -264,7 +264,10 @@ func signDigest(key *secp256k1.PrivateKey, digest []byte) ([]byte, error) {
 const walletUsageText = `Usage:
   tessera wallet init    Create a local wallet for x402 payments (opt-in)
   tessera wallet show    Show the wallet address and USDC balance
-  tessera wallet fund    Explain how to fund the wallet
+  tessera wallet fund [--no-qr] [--qr=address]
+                         Explain how to fund the wallet. On a terminal, also
+                         shows a USDC-on-Base QR (--no-qr hides it;
+                         --qr=address encodes only the address).
 
 The wallet is optional. The default 'tessera topup <amount>' path needs no
 wallet: it prints a payment address you can fund from any wallet or exchange.`
@@ -349,8 +352,9 @@ func runWalletShow(args []string) error {
 
 // runWalletFund explains funding without moving anything or touching the key.
 func runWalletFund(args []string) error {
-	if len(args) != 0 {
-		return errors.New("usage: tessera wallet fund")
+	style, quiet, jsonOut, err := parseWalletFundArgs(args)
+	if err != nil {
+		return err
 	}
 	wallet, err := loadWallet()
 	if err != nil {
@@ -369,7 +373,44 @@ func runWalletFund(args []string) error {
 	fmt.Println()
 	fmt.Println("Send only USDC on Base. Other assets or networks may be lost. The key")
 	fmt.Println("stays on this machine; back it up.")
+	// No amount and no send-before time: the QR omits uint256.
+	printDepositQR(os.Stdout, depositQR{
+		Address:  wallet.Address,
+		Currency: "usdcbase",
+		Network:  "base",
+		Style:    style,
+		JSON:     jsonOut,
+		Quiet:    quiet,
+	})
 	return nil
+}
+
+// parseWalletFundArgs accepts the QR flags and nothing else. --json and
+// --quiet only suppress the QR; wallet fund has no machine-readable mode.
+func parseWalletFundArgs(args []string) (style qrStyle, quiet, jsonOut bool, err error) {
+	style, err = parseQRStyle(args)
+	if err != nil {
+		return 0, false, false, err
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--no-qr" || a == "--quiet" || a == "-q" || a == "--json":
+		case a == "--qr":
+			if i+1 >= len(args) {
+				return 0, false, false, errors.New("--qr requires a value: --qr=address")
+			}
+			i++
+		case strings.HasPrefix(a, "--qr="):
+		case strings.HasPrefix(a, "-"):
+			return 0, false, false, fmt.Errorf("unknown flag %s\n\n%s", a, walletUsageText)
+		default:
+			return 0, false, false, errors.New("usage: tessera wallet fund [--no-qr] [--qr=address]")
+		}
+	}
+	quiet = hasFlag(args, "--quiet") || hasFlag(args, "-q")
+	jsonOut = hasFlag(args, "--json")
+	return style, quiet, jsonOut, nil
 }
 
 // signX402Payment builds and signs an x402 v2 payment header for one challenge.

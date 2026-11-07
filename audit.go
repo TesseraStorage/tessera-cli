@@ -292,7 +292,7 @@ func printUsageStorage(idx *Index, total uint64, byFolder map[string]usageFolder
 		}
 	}
 	fmt.Println()
-	fmt.Println("  Note: Sia costs depend on your contracts and current host prices.")
+	fmt.Println("  Note: Billed at the published rates: tessera rates.")
 	fmt.Println("  Run 'tessera status' for account readiness.")
 }
 
@@ -344,6 +344,9 @@ func usageBillingJSON(acct map[string]any, cost bool) map[string]any {
 		"period_end":             acct["period_end"],
 		"days_left":              acct["days_left"],
 	}
+	if v, ok := acct["last_metered_at"]; ok && lastMeteredPresent(v) {
+		out["last_metered_at"] = v
+	}
 	out["size_note"] = strings.Join(sizeExplanation, " ")
 	if v := buildTrialView(acct); v != nil {
 		out["trial"] = v
@@ -380,15 +383,10 @@ func printUsageBilling(acct map[string]any, cost bool) {
 	}
 	field("balance", balance)
 	field("period ends", periodEndText(acct))
-	days := ""
-	if n, ok := accountUint64(acct, "days_left"); ok && n > 0 {
-		days = "about " + humanDays(n) + " (estimate at today's storage charge for what you store now)"
-	} else if alt := daysLeftEmptyText(acct); alt != "" {
-		days = alt
-	} else if n, ok := accountUint64(acct, "days_left"); ok {
-		days = "about " + humanDays(n) + " (estimate at today's storage charge for what you store now)"
+	field("days left", daysLeftField(acct))
+	if label, ok := lastMeteredLabel(acct); ok {
+		field("last metered", label)
 	}
-	field("days left", days)
 	if cost {
 		if egressMeasuredInBytes(acct) {
 			usedN, _ := accountUint64(acct, "egress_used_bytes")
