@@ -397,7 +397,7 @@ func cmdDownload(args []string) {
 			fatal("hash %s: %v", dest, err)
 		}
 		speed := float64(n) / elapsed.Seconds() / (1 << 20)
-		fmt.Printf("Downloaded %s (bytes %d-%d) in %.1fs (%.2f MB/s)\n", formatBytes(uint64(n)), rng.Offset, rng.end()-1, elapsed.Seconds(), speed)
+		fmt.Printf("Downloaded %s (bytes %d-%d) in %.1fs (%.2f MiB/s)\n", formatBytes(uint64(n)), rng.Offset, rng.end()-1, elapsed.Seconds(), speed)
 		fmt.Printf("SHA-256 of range: %s (partial read; the whole-file hash is checked only on a full download)\n", got)
 		fmt.Printf("Saved as: %s\n", dest)
 		if rem := secretsFileHint(); rem != "" {
@@ -415,7 +415,7 @@ func cmdDownload(args []string) {
 	}
 
 	speed := float64(n) / elapsed.Seconds() / (1 << 20)
-	fmt.Printf("Downloaded %s in %.1fs (%.2f MB/s)\n", formatBytes(uint64(n)), elapsed.Seconds(), speed)
+	fmt.Printf("Downloaded %s in %.1fs (%.2f MiB/s)\n", formatBytes(uint64(n)), elapsed.Seconds(), speed)
 	if entry.SHA256 != "" {
 		fmt.Printf("SHA-256 verified: %s\n", entry.SHA256)
 	} else {
@@ -651,7 +651,7 @@ func cmdFetch(sharedURL, outName string) {
 
 	elapsed := time.Since(start)
 	speed := float64(n) / elapsed.Seconds() / (1 << 20)
-	fmt.Printf("Downloaded %s in %.1fs (%.2f MB/s)\n", formatBytes(uint64(n)), elapsed.Seconds(), speed)
+	fmt.Printf("Downloaded %s in %.1fs (%.2f MiB/s)\n", formatBytes(uint64(n)), elapsed.Seconds(), speed)
 	fmt.Printf("SHA-256: %s\n", hex.EncodeToString(hasher.Sum(nil)))
 	fmt.Printf("Saved as: %s\n", outName)
 }

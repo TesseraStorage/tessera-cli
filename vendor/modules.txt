@@ -155,5 +155,10 @@ golang.org/x/tools/internal/versions
 # lukechampine.com/frand v1.5.1
 ## explicit; go 1.23.1
 lukechampine.com/frand
+# rsc.io/qr v0.2.0
+## explicit
+rsc.io/qr
+rsc.io/qr/coding
+rsc.io/qr/gf256
 # go.sia.tech/siastorage => /root/siastorage-fork
 # go.sia.tech/indexd => /root/tessera

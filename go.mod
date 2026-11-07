@@ -9,6 +9,7 @@ require (
 	go.sia.tech/siastorage v0.2.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/term v0.45.0
+	rsc.io/qr v0.2.0
 )
 
 // Local forks for development. CI builds from the committed vendor tree with

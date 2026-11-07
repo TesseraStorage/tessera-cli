@@ -26,7 +26,7 @@ func TestProgressLineHasBytesPercentSpeedETA(t *testing.T) {
 	p.Shards(9, 30)
 	p.SetDone(30 << 20)
 	line := p.lineLocked()
-	for _, want := range []string{"↑ f.bin", "uploading shards 9/30", "/ 100.00 MiB", "30%", "/s", "ETA 23s"} {
+	for _, want := range []string{"↑ f.bin", "uploading shards 9/30", "/ 100.00 MiB", "30%", "MiB/s", "ETA 23s"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("line %q lacks %q", line, want)
 		}
@@ -113,5 +113,39 @@ func TestUploadShardTotal(t *testing.T) {
 	}
 	if got := uploadShardTotal(40<<20 + 1); got != 60 {
 		t.Fatalf("40MiB+1: %d", got)
+	}
+}
+
+func TestUploadWireNote(t *testing.T) {
+	small := uploadWireNote(1)
+	if !strings.Contains(small, "1 slab of 40 MiB — 40 MiB stored, 120 MiB sent to hosts") || !strings.Contains(small, "pads each file") {
+		t.Fatalf("small file note:\n%s", small)
+	}
+	exact := uploadWireNote(40 << 20)
+	if strings.Contains(exact, "pads each file") || !strings.Contains(exact, "1 slab of 40 MiB — 40 MiB stored, 120 MiB sent to hosts") {
+		t.Fatalf("full slab should not explain padding:\n%s", exact)
+	}
+	// 95 MiB is three slabs: 120 MiB stored, 360 MiB sent. No fixed "120 MiB" padding sentence.
+	big := uploadWireNote(95 << 20)
+	if strings.Contains(big, "pads each file") || strings.Contains(big, "about 120 MiB") {
+		t.Fatalf("95 MiB still used the small-file sentence:\n%s", big)
+	}
+	if !strings.Contains(big, "3 slabs of 40 MiB — 120 MiB stored, 360 MiB sent to hosts") {
+		t.Fatalf("95 MiB note:\n%s", big)
+	}
+}
+
+func TestDaysLeftOverTenYears(t *testing.T) {
+	if daysLeftOverTenYears(tenYearsDays) {
+		t.Fatal("exactly 10 years is not over the cap")
+	}
+	if !strings.Contains(daysLeftDetail(tenYearsDays), "3650 days") {
+		t.Fatalf("boundary: %s", daysLeftDetail(tenYearsDays))
+	}
+	if daysLeftDetail(tenYearsDays+1) != daysLeftOverCap || daysLeftPhrase(95367) != daysLeftOverCap {
+		t.Fatalf("cap wording: %q / %q", daysLeftDetail(tenYearsDays+1), daysLeftPhrase(95367))
+	}
+	if strings.Contains(daysLeftDetail(100), "years") {
+		t.Fatalf("short estimate: %s", daysLeftDetail(100))
 	}
 }

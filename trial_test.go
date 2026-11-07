@@ -95,7 +95,7 @@ func TestTrialViewLegacyCredit(t *testing.T) {
 	a["readiness"].(map[string]any)["trial_credit_posted"] = true
 	v := buildTrialView(a)
 	if !v.CreditPosted || !strings.Contains(v.Summary, "Technical validation: $0.25 balance left") || strings.Contains(v.Summary, "one-time") ||
-		!strings.Contains(v.UploadsLine, "allowed now") || !strings.Contains(v.UploadsLine, "about 4472 days (~12 years)") {
+		!strings.Contains(v.UploadsLine, "allowed now") || !strings.Contains(v.UploadsLine, daysLeftOverCap) {
 		t.Fatalf("legacy active view: %+v", v)
 	}
 }
