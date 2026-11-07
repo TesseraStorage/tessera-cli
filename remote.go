@@ -265,10 +265,11 @@ func (r *Remote) Upload(ctx context.Context, req uploadRequest, onProgress func(
 	var shardMu sync.Mutex
 	shardsDone := 0
 	bar.Start("↑ "+req.Name, req.Size, "encoding")
-	// TT-nov5 K: explain padding / 30×4 MiB so a small trial file does not look stuck.
+	// Per file: how many 40 MiB slabs this upload uses, how much is stored,
+	// and how much is sent to hosts. The padding sentence is only for a file
+	// that does not fill its slab.
 	if !quietMode {
-		fmt.Fprintln(os.Stderr, "  Note: Tessera pads each file up to a 40 MiB slab, then splits it into 30 pieces of 4 MiB")
-		fmt.Fprintln(os.Stderr, "  (plus spares) across hosts — so a small upload still sends about 120 MiB on the wire.")
+		fmt.Fprintln(os.Stderr, uploadWireNote(req.Size))
 	}
 	defer bar.Finish()
 	opts := []siastorage.UploadOption{siastorage.WithRedundancy(dataShards, parityShards)}
@@ -310,6 +311,32 @@ func (r *Remote) Upload(ctx context.Context, req uploadRequest, onProgress func(
 		Machine:  machineName(),
 		Updated:  time.Now(),
 	}, nil
+}
+
+// slabBytes is one erasure-coded slab: 10 data shards × 4 MiB.
+const slabBytes = int64(40) << 20
+
+// uploadWireNote describes this file's slabs. Stored size is the whole slabs
+// (40 MiB each). Sent size is 30 shards × 4 MiB per slab, which is what the
+// hosts receive. The padding explanation is only for a file under one slab;
+// a larger file's slab count already shows how it was split.
+func uploadWireNote(size int64) string {
+	slabs := int64(1)
+	if size > 0 {
+		slabs = (size + slabBytes - 1) / slabBytes
+	}
+	word := "slabs"
+	if slabs == 1 {
+		word = "slab"
+	}
+	stored := slabs * 40
+	sent := slabs * 30 * 4
+	note := fmt.Sprintf("  Note: %d %s of 40 MiB — %d MiB stored, %d MiB sent to hosts (30 shards × 4 MiB per slab).", slabs, word, stored, sent)
+	if size < slabBytes {
+		note += "\n  Tessera pads each file up to a 40 MiB slab, then splits it into 30 pieces of 4 MiB"
+		note += "\n  (plus spares) across hosts."
+	}
+	return note
 }
 
 // PackedUploadOutcome is the result of uploading one file in a batch. Err is

@@ -241,8 +241,76 @@ func shortTrialBanner(v *trialView) string {
 
 // daysLeftPhrase labels days_left as what it is: an estimate at the current
 // storage charge for what is stored now.
+// tenYearsDays is where the days-left estimate stops printing a day count.
+// A large balance against a tiny storage charge would otherwise read as
+// tens of thousands of days.
+const tenYearsDays = 10 * 365
+
+// daysLeftOverCap is the owner-approved wording once the estimate exceeds
+// ten years. Transfers are not part of the storage-charge figure.
+const daysLeftOverCap = "more than 10 years at today's storage charge; transfers not included"
+
+func daysLeftOverTenYears(days uint64) bool {
+	return days > tenYearsDays
+}
+
 func daysLeftPhrase(days uint64) string {
+	if daysLeftOverTenYears(days) {
+		return daysLeftOverCap
+	}
 	return "about " + humanDays(days) + " at today's storage charge for what you store now; more uploads or downloads use it faster"
+}
+
+// daysLeftDetail is the account/usage wording for a positive days_left.
+func daysLeftDetail(days uint64) string {
+	if daysLeftOverTenYears(days) {
+		return daysLeftOverCap
+	}
+	return "about " + humanDays(days) + " (estimate at today's storage charge for what you store now)"
+}
+
+// daysLeftField is the human days-left cell shared by account and usage.
+func daysLeftField(acct map[string]any) string {
+	if n, ok := accountUint64(acct, "days_left"); ok && n > 0 {
+		return daysLeftDetail(n)
+	}
+	if alt := daysLeftEmptyText(acct); alt != "" {
+		return alt
+	}
+	if n, ok := accountUint64(acct, "days_left"); ok {
+		return daysLeftDetail(n)
+	}
+	return ""
+}
+
+// lastMeteredPresent reports whether a last_metered_at value is worth showing.
+// A missing field, JSON null, or empty string is absent; the command still
+// works on servers that have not added the field yet.
+func lastMeteredPresent(v any) bool {
+	if v == nil {
+		return false
+	}
+	if s, ok := v.(string); ok && strings.TrimSpace(s) == "" {
+		return false
+	}
+	return true
+}
+
+// lastMeteredLabel formats last_metered_at for the usage billing section.
+// The raw value is kept for --json; this is only the human line.
+func lastMeteredLabel(acct map[string]any) (string, bool) {
+	v, ok := acct["last_metered_at"]
+	if !ok || !lastMeteredPresent(v) {
+		return "", false
+	}
+	s, isStr := v.(string)
+	if !isStr {
+		s = fmt.Sprint(v)
+	}
+	if t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(s)); err == nil {
+		return t.In(time.Local).Format("2006-01-02 15:04 MST"), true
+	}
+	return s, true
 }
 
 func humanDays(days uint64) string {
@@ -275,7 +343,7 @@ func printTrialBlock(v *trialView, indent string, labelWidth int) {
 // egressNote replaces the old "egress used" byte count. The client-reported
 // egress feed is retired, so egress_used_bytes is always 0; downloads are
 // billed from measured host spend instead, as USD debits.
-const egressNote = "charged from measured host spend (checked about every 5 minutes) and taken from your balance; the technical-validation download reports actual bytes (not billed)"
+const egressNote = "charged from measured host spend (checked within about 15 minutes) and taken from your balance; the technical-validation download reports actual bytes (not billed)"
 
 // egressMeasuredInBytes reports whether the server still sends a meaningful
 // egress byte count (a server that does says so with egress_measurement).
@@ -311,7 +379,7 @@ func egressDisplay(acct map[string]any) string {
 		if usd := accountBalanceUSD(acct, "egress_billed_usd"); usd != "" {
 			s += ", $" + displayUSD(usd)
 		}
-		return s + ") this period; measured from host spend about every 5 minutes"
+		return s + ") this period; measured from host spend within about 15 minutes"
 	}
 	if usd := accountBalanceUSD(acct, "egress_billed_usd"); usd != "" {
 		return "$" + displayUSD(usd) + " this period — " + egressNote

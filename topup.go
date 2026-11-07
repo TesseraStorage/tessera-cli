@@ -109,6 +109,8 @@ type topupRequest struct {
 	noWait      bool
 	coins       bool
 	minimums    bool
+	quiet       bool
+	qr          qrStyle
 }
 
 // parseTopupArgs resolves the positional amount and the value flags. The
@@ -173,6 +175,12 @@ func parseTopupArgs(args []string) (topupRequest, error) {
 	req.json = hasFlag(args, "--json")
 	req.wait = hasFlag(args, "--wait")
 	req.noWait = hasFlag(args, "--no-wait")
+	req.quiet = hasFlag(args, "--quiet") || hasFlag(args, "-q")
+	style, err := parseQRStyle(args)
+	if err != nil {
+		return topupRequest{}, err
+	}
+	req.qr = style
 	switch {
 	case req.wallet && req.x402:
 		return topupRequest{}, errors.New("--wallet and --x402/--payment are different signers; use one")
@@ -308,7 +316,7 @@ func runTopupAddress(api billingAPI, req topupRequest) error {
 				emitJSON(out)
 			}
 		} else {
-			printTopupDirect(out)
+			printTopupDirect(out, req)
 		}
 		if wait {
 			return pollTopup(api, out, req)
@@ -559,7 +567,7 @@ func mergeTopup(initial, status map[string]any) map[string]any {
 // printTopupDirect renders the default direct-address response. The amount to
 // send is pay_amount (not amount_usd); the invoice URL remains a browser
 // fallback.
-func printTopupDirect(resp map[string]any) {
+func printTopupDirect(resp map[string]any, req topupRequest) {
 	fmt.Println("Top-up address created.")
 	fmt.Println()
 	fmt.Printf("  Payment intent:  %s\n", topupField(resp, "payment_intent_id"))
@@ -575,6 +583,35 @@ func printTopupDirect(resp map[string]any) {
 	fmt.Println("that, run the command again for a fresh quote, or open the invoice URL,")
 	fmt.Println("which stays open longer and lets you pick any accepted coin in a browser.")
 	fmt.Println("The balance is credited after the payment confirms.")
+	printDepositQR(os.Stdout, depositQR{
+		Address:  topupField(resp, "pay_address"),
+		Currency: topupField(resp, "pay_currency"),
+		Network:  topupField(resp, "network"),
+		Amount:   payAmountString(resp),
+		Expires:  topupField(resp, "address_expires_at"),
+		Style:    req.qr,
+		JSON:     req.json,
+		Quiet:    req.quiet,
+		Invoice:  req.invoice,
+		X402:     req.x402 || req.wallet,
+	})
+}
+
+// payAmountString reads the crypto amount to send. A JSON string is kept
+// exactly so the 6-decimal conversion does not pick up a float artifact.
+func payAmountString(m map[string]any) string {
+	v, ok := m["pay_amount"]
+	if !ok || v == nil {
+		return ""
+	}
+	switch n := v.(type) {
+	case string:
+		return n
+	case float64:
+		return strconv.FormatFloat(n, 'f', -1, 64)
+	default:
+		return fmt.Sprint(n)
+	}
 }
 
 // printTopupInvoice renders the 201 NOWPayments invoice fields.
@@ -973,6 +1010,13 @@ Options:
   --x402 / --payment <b64>   external x402 signer
   --json           one machine-readable JSON document
   --wait|--no-wait poll until paid (default on an interactive terminal)
+  --no-qr          do not print a QR code
+  --qr=address     QR of the plain deposit address (exchange apps). The default
+                   QR is an EIP-681 USDC-on-Base payment.
+
+On a terminal at least 60 columns wide, a USDC-on-Base deposit address is also
+shown as a QR code. It is omitted for other coins, --invoice, x402 (--wallet,
+--x402, --payment), --json, --quiet, and when output is not a terminal.
 
 Discover:
   tessera topup --coins                   # every accepted coin

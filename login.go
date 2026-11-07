@@ -1035,9 +1035,12 @@ func cmdStatus(args ...string) {
 		fmt.Printf("Balance:   $%s\n", v.BalanceUSD)
 		printTrialBlock(v, "", 10)
 	}
-	fmt.Printf("Host funding ready: %v\n", acct.Ready)
+	// "Host funding ready: true" read as "this upload will not wait", which is
+	// not what the flag means. Say whether the account is funded. The JSON
+	// key stays "ready".
+	fmt.Printf("Account funded: %s\n", accountFundedYesNo(acct.Ready, billingAcct))
 	if !acct.Ready {
-		fmt.Printf("           (%s)\n", readyNoteFor(acct.Ready, readinessState(billingAcct)))
+		fmt.Printf("                (%s)\n", readyNoteFor(acct.Ready, readinessState(billingAcct)))
 	}
 	if rem := secretsFileReminder(); rem != "" {
 		fmt.Println("Reminder:  " + rem)
@@ -1080,6 +1083,25 @@ func readyNoteFor(ready bool, state string) string {
 			"the hosts, which usually takes a few minutes. Uploads wait for it automatically"
 	}
 	return readyNote(ready)
+}
+
+// accountFundedYesNo is the human status line. The server Ready flag is true
+// once host funding has passed its repair threshold, which only happens after
+// a top-up, but an upload can still wait for host funding after that. A
+// funded account whose contracts are still being formed (Ready false, billing
+// state funded, or a positive balance) is "yes" as well.
+func accountFundedYesNo(ready bool, billing map[string]any) string {
+	if ready {
+		return "yes"
+	}
+	switch readinessState(billing) {
+	case "funded", "ready":
+		return "yes"
+	}
+	if bal := accountBalanceUSD(billing, "balance_usd"); bal != "" && !creditIsZero(bal) {
+		return "yes"
+	}
+	return "no"
 }
 
 func readyNote(ready bool) string {

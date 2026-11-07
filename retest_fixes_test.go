@@ -130,6 +130,9 @@ func TestCommandHelpCoversFileCommands(t *testing.T) {
 	if !strings.Contains(commandHelp["upload"], "--as") || !strings.Contains(commandHelp["upload"], "--quiet") {
 		t.Error("upload help must document --as and --quiet")
 	}
+	if !strings.Contains(commandHelp["upload"], "technical validation") || !strings.Contains(commandHelp["upload"], "40 MiB") || !strings.Contains(commandHelp["upload"], "any size") {
+		t.Error("upload help must describe the technical-validation size limit and paid uploads")
+	}
 	if !strings.Contains(usageText, "--as <remote-path>") {
 		t.Error("top-level help must document upload --as")
 	}

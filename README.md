@@ -14,8 +14,12 @@ version and verify everything you store — all from one static binary.
 ```bash
 curl -fsSL https://tessera.storage/install.sh | sh
 # same script: curl -fsSL https://raw.githubusercontent.com/TesseraStorage/tessera-cli/main/install.sh | sh
-# a specific version: ... | sh -s v1.12.0
+# a specific version: ... | sh -s v1.12.7
 ```
+
+Current release: **v1.12.7**. `tessera version` reports the git tag the release
+workflow stamps into the binary. The same release also publishes `install.sh`
+and `install.ps1` (`https://github.com/TesseraStorage/tessera-cli/releases/latest/download/install.sh`).
 
 The installer verifies the binary against the release's `SHA256SUMS`, never
 uses sudo and installs to `~/.local/bin`. If that directory is not on your
@@ -247,7 +251,7 @@ the Mac, add a second pair with a different prefix (for example
 | `topup <amount> [--x402] [--pay-currency <asset>] [--payment <b64>]` | Advanced x402: print the challenge to sign externally, or submit a signed authorization |
 | `topup --coins [--json]` | List the coins accepted for top-ups |
 | `wallet init\|show\|fund` | Optional local x402 wallet: create a key, show its address and balance, or print funding guidance |
-| `status` | Account ready state + file count + total storage (Ready tracks repair redundancy; transfers run their own readiness check) |
+| `status` | Account funded (yes/no) + file count + total storage. JSON key `ready` is unchanged. Transfers still run their own host-funding check |
 | `list [prefix]` | Files with real paths, sizes and dates (dates in your local time zone, labelled) |
 | `upload <path> [--as <remote>] [--quiet]` | Upload a file **or a whole folder** |
 | `download <path> [--out <file>] [--offset <bytes>] [--length <bytes>]` | Download + SHA-256 verification; with `--offset`/`--length` only that byte range (only the slabs covering it are fetched). Interrupted downloads restart from the beginning; resume by hand with `--offset` = bytes already on disk |
@@ -334,6 +338,13 @@ time is printed in your local time zone with the offset named, e.g.
 address's rate quote (about 20 minutes, set by NOWPayments); *Invoice open
 until* is the invoice link (24 hours). After the address window, run the
 command again or use the invoice link.
+
+On a terminal at least 60 columns wide, a USDC-on-Base deposit address is also
+printed as a QR code (an EIP-681 payment URI). `--no-qr` hides it;
+`--qr=address` encodes only the address, for exchange apps. There is no QR for
+other coins, `--invoice`, x402, `--json`, `--quiet`, or piped output.
+`tessera wallet fund` shows the same kind of QR for the local wallet, without
+an amount.
 
 **Top-ups default to a direct address.** A bare `topup <amount>` creates a
 payment intent and prints the payment intent id, amount, exact amount/asset/
@@ -508,8 +519,12 @@ It also shows downloads, balance and *days left*. During technical validation
 top up, *days left* is balance ÷ today's daily storage charge for what you
 store now. The technical-validation download shows the downloaded size as
 "(1 technical-validation download, not billed)" in `egress_used_bytes`; after top-up, download cost is charged from measured host
-spend (checked about every 5 minutes). `--cost` prints a byte-based estimate
-only when the server reports egress in bytes. Sizes use binary units
+spend (checked within about 15 minutes). When the account reports
+`last_metered_at`, `usage` prints that time (and `usage --json` includes the
+field); a server that omits it is unchanged. An estimate longer than 10 years
+reads "more than 10 years at today's storage charge; transfers not included".
+`--cost` prints a byte-based estimate only when the server reports egress in
+bytes. Sizes use binary units
 (KiB, MiB, GiB).
 `usage --json` gains additive `billing` keys (or `billing_error`) only when
 billing config exists; the old keys are unchanged. The `trial` object is the
