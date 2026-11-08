@@ -122,6 +122,19 @@ func cmdUploadPath(src string, args []string) {
 
 	asFlag, _ := flagValue(args, "--as")
 
+	// Size is known from the local stat. Refuse a technical-validation upload
+	// that cannot fit in one slab before any host or indexer call, so the one
+	// allowed upload is not started and then burned on the next slab.
+	if !fi.IsDir() {
+		if err := rejectTechnicalValidationOversize(cfg, fi.Size()); err != nil {
+			fatal("%v", err)
+		}
+	} else if rel, size, found := firstOversizeUpload(src); found {
+		if err := rejectTechnicalValidationOversizeNamed(cfg, size, rel); err != nil {
+			fatal("%v", err)
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
 	defer cancel()
 
@@ -164,6 +177,45 @@ func cmdUploadPath(src string, args []string) {
 	if rem := secretsFileHint(); rem != "" {
 		fmt.Println(rem)
 	}
+}
+
+// firstOversizeUpload returns the lexicographically first regular file under
+// root that uploadDir would send and that is larger than one 40 MiB slab.
+// Ignored paths are skipped the same way as the upload. A walk problem leaves
+// found false so the later upload reports it instead of blocking.
+func firstOversizeUpload(root string) (rel string, size int64, found bool) {
+	ig, err := newIgnore(root, nil)
+	if err != nil {
+		return "", 0, false
+	}
+	_ = filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info == nil {
+			return nil
+		}
+		relPath := p
+		if r, rerr := filepath.Rel(root, p); rerr == nil {
+			relPath = filepath.ToSlash(r)
+		}
+		if info.IsDir() {
+			if relPath != "." && ig.Match(relPath, true) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		if ig.Match(relPath, false) || strings.HasPrefix(filepath.Base(p), ".tessera-tmp-") {
+			return nil
+		}
+		if info.Size() > slabBytes && (!found || relPath < rel) {
+			rel = relPath
+			size = info.Size()
+			found = true
+		}
+		return nil
+	})
+	return rel, size, found
 }
 
 // prepareUpload hashes one file and builds its upload request. It returns
