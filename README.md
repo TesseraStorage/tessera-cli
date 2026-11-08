@@ -14,10 +14,10 @@ version and verify everything you store — all from one static binary.
 ```bash
 curl -fsSL https://tessera.storage/install.sh | sh
 # same script: curl -fsSL https://raw.githubusercontent.com/TesseraStorage/tessera-cli/main/install.sh | sh
-# a specific version: ... | sh -s v1.12.7
+# a specific version: ... | sh -s v1.12.8
 ```
 
-Current release: **v1.12.7**. `tessera version` reports the git tag the release
+Current release: **v1.12.8**. `tessera version` reports the git tag the release
 workflow stamps into the binary. The same release also publishes `install.sh`
 and `install.ps1` (`https://github.com/TesseraStorage/tessera-cli/releases/latest/download/install.sh`).
 
@@ -253,7 +253,7 @@ the Mac, add a second pair with a different prefix (for example
 | `wallet init\|show\|fund` | Optional local x402 wallet: create a key, show its address and balance, or print funding guidance |
 | `status` | Account funded (yes/no) + file count + total storage. JSON key `ready` is unchanged. Transfers still run their own host-funding check |
 | `list [prefix]` | Files with real paths, sizes and dates (dates in your local time zone, labelled) |
-| `upload <path> [--as <remote>] [--quiet]` | Upload a file **or a whole folder** |
+| `upload <path> [--as <remote>] [--quiet]` | Upload a file **or a whole folder**. During technical validation a file over 40 MiB is refused before upload; with a balance, any size |
 | `download <path> [--out <file>] [--offset <bytes>] [--length <bytes>]` | Download + SHA-256 verification; with `--offset`/`--length` only that byte range (only the slabs covering it are fetched). Interrupted downloads restart from the beginning; resume by hand with `--offset` = bytes already on disk |
 | `delete <path> [--purge]` | Move to trash (or purge permanently) |
 | `share <path>` | Create a 30-day share link |
@@ -409,9 +409,14 @@ headless, no browser, no password. A completed magic-link login with no storage
 identity yet finishes the same registration.
 
 **New accounts: technical validation.** Technical validation: one upload of
-up to 40 MiB and one download. Balance stays **$0.00**. Tessera covers the
-hosts. After that, top up to continue. A second upload, or a second download,
-answers *Insufficient balance — top up to continue* with the payment options.
+up to 40 MiB (41,943,040 bytes, one slab) and one download. Balance stays
+**$0.00**. Tessera covers the hosts. After that, top up to continue.
+`tessera upload` of a larger file — a single file, or any file in a folder —
+is refused before anything is sent to the hosts, so that one upload is not
+used up. The refusal is skipped when the account status cannot be read.
+Once the account has a balance, files of any size can be uploaded. A second
+upload, or a second download, answers *Insufficient balance — top up to
+continue* with the payment options.
 `signup`, `status`, `account` and `usage` all show the same lines: what
 technical validation still allows and whether uploads are allowed now.
 `--json` has the same facts in a `trial` object (`state`, `balance_usd`,

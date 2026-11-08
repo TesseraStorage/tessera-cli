@@ -815,6 +815,9 @@ func (e *SyncEngine) doUpload(ctx context.Context, p string, res *Result) error 
 		return fmt.Errorf("local file disappeared")
 	}
 
+	if err := rejectKnownSizeUpload(lf.Size); err != nil {
+		return err
+	}
 	info, err := e.rt.Upload(ctx, uploadRequest{
 		LocalPath: lf.AbsPath,
 		RelPath:   e.remotePath(p),
@@ -871,10 +874,17 @@ func (e *SyncEngine) recordUploadResult(ctx context.Context, p string, lf localF
 func (e *SyncEngine) applyUploadBatch(ctx context.Context, ops []Op, res *Result) {
 	reqs := make([]uploadRequest, 0, len(ops))
 	paths := make([]string, 0, len(ops))
+	blockLarge := batchBlocksTechnicalValidation(ops, e.local)
 	for _, op := range ops {
 		lf, ok := e.local[op.Path]
 		if !ok {
 			msg := fmt.Sprintf("%s: local file disappeared", op.Path)
+			res.Errors = append(res.Errors, msg)
+			e.log("  error: %s", msg)
+			continue
+		}
+		if blockLarge && lf.Size > slabBytes {
+			msg := fmt.Sprintf("%s: %s", op.Path, technicalValidationOversizeMessage(lf.Size, ""))
 			res.Errors = append(res.Errors, msg)
 			e.log("  error: %s", msg)
 			continue
@@ -910,6 +920,28 @@ func (e *SyncEngine) applyUploadBatch(ctx context.Context, ops []Op, res *Result
 	if err := e.state.save(); err != nil {
 		res.Errors = append(res.Errors, err.Error())
 	}
+}
+
+// batchBlocksTechnicalValidation is true when this batch contains a file
+// larger than one slab and the account is in the zero-balance allowance.
+// Unknown account status is false: the batch uploads as before.
+func batchBlocksTechnicalValidation(ops []Op, local map[string]localFile) bool {
+	oversized := false
+	for _, op := range ops {
+		if lf, ok := local[op.Path]; ok && lf.Size > slabBytes {
+			oversized = true
+			break
+		}
+	}
+	if !oversized {
+		return false
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		return false
+	}
+	in, known := lookupZeroBalanceTechnicalValidation(cfg)
+	return known && in
 }
 
 // clearConflictFor drops every conflict record that referenced the given
@@ -1074,6 +1106,9 @@ func (e *SyncEngine) doConflictLocal(ctx context.Context, p, conflictPath string
 	if err != nil {
 		return err
 	}
+	if err := rejectKnownSizeUpload(fi.Size()); err != nil {
+		return err
+	}
 	info, err := e.rt.Upload(ctx, uploadRequest{
 		LocalPath: dest,
 		RelPath:   e.remotePath(conflictPath),
@@ -1111,6 +1146,9 @@ func (e *SyncEngine) doConflictRemote(ctx context.Context, p, conflictPath strin
 	lf, ok := e.local[p]
 	if !ok {
 		return fmt.Errorf("local file disappeared")
+	}
+	if err := rejectKnownSizeUpload(lf.Size); err != nil {
+		return err
 	}
 	info, err := e.rt.Upload(ctx, uploadRequest{
 		LocalPath: lf.AbsPath,

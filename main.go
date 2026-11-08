@@ -39,7 +39,7 @@ import (
 var statusCommand = cmdStatus
 
 // version is the build version. The release workflow injects it from the git
-// tag (v1.12.7 is the release this tree is for; the tag is cut after a live
+// tag (v1.12.8 is the release this tree is for; the tag is cut after a live
 // server test, not by this change):
 //
 //	go build -ldflags "-X main.version=${GITHUB_REF_NAME}" .
@@ -198,7 +198,8 @@ Upload a file or a folder (folders are uploaded recursively).
   --quiet             Hide live progress (or set TESSERA_QUIET=1)
 
 During technical validation one upload of up to 40 MiB (one slab) is allowed.
-With a balance, files of any size can be uploaded.
+A larger file is refused before anything is uploaded. With a balance, files of
+any size can be uploaded.
 
 Env: TESSERA_SKIP_PREFLIGHT=1 skips the host readiness check.
 `,
@@ -403,8 +404,9 @@ Billing & account:
 Account readiness (shown by signup, login, status, account and usage):
   technical validation
                      one upload of up to 40 MiB and one download; the balance
-                     stays $0.00 and Tessera covers the hosts. After that, top
-                     up to continue
+                     stays $0.00 and Tessera covers the hosts. A larger file is
+                     refused before anything is uploaded. After that, top up to
+                     continue. With a balance, files of any size can be uploaded
   top up to continue
                      technical validation is used, or the balance is $0:
                      tessera topup 1
