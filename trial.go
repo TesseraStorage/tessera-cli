@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -179,6 +180,88 @@ func creditIsZero(s string) bool {
 // allowance (CLI wording pass, 2026-11-06). No timer, no "free trial".
 const technicalValidationSummary = "Technical validation: one upload of up to 40 MiB and one download. " +
 	"Balance stays $0.00. Tessera covers the hosts. After that, top up to continue: tessera topup 1"
+
+// zeroBalanceTechnicalValidation reports whether acct is the zero-balance
+// allowance: one upload of up to one 40 MiB slab and one download, balance
+// $0.00, never topped up.
+//
+// It uses the same readiness view as account, status and usage. buildTrialView
+// sets FreeTrial from readiness.free_trial, and also when state is free_trial
+// or free_trial_active. blockTrialLines is that view with no posted credit.
+// A positive balance_usd or a posted credit is not this allowance, and state
+// "funded" is not either. known is false when there is no readiness block:
+// the caller must not block the upload.
+func zeroBalanceTechnicalValidation(acct map[string]any) (in, known bool) {
+	if readinessMap(acct) == nil {
+		return false, false
+	}
+	v := buildTrialView(acct)
+	if v == nil {
+		return false, false
+	}
+	if !creditIsZero(v.BalanceUSD) || !creditIsZero(v.CreditUSD) || v.State == "funded" {
+		return false, true
+	}
+	if v.FreeTrial || v.State == "free_trial" || v.State == "free_trial_active" {
+		return true, true
+	}
+	return false, true
+}
+
+// lookupZeroBalanceTechnicalValidation reads GET /account. A missing
+// credential or any API error is unknown (known false): do not block.
+func lookupZeroBalanceTechnicalValidation(cfg *Config) (in, known bool) {
+	if cfg == nil || credentialLabel(cfg) == "" {
+		return false, false
+	}
+	acct, err := newBillingClient(cfg).Account()
+	if err != nil || acct == nil {
+		return false, false
+	}
+	return zeroBalanceTechnicalValidation(acct)
+}
+
+// technicalValidationOversizeMessage is the refusal for a file the zero-balance
+// allowance cannot hold. name is a relative path for a directory upload; a
+// single file leaves it empty so the sentence stays as specified.
+func technicalValidationOversizeMessage(size int64, name string) string {
+	shown := formatBytes(uint64(size))
+	if name != "" {
+		shown += " (" + name + ")"
+	}
+	return fmt.Sprintf("Technical validation allows one upload of up to 40 MiB. This file is %s. Top up to upload larger files: tessera topup 1", shown)
+}
+
+// rejectTechnicalValidationOversize refuses a file larger than one 40 MiB slab
+// when the account is in the zero-balance allowance. A file of exactly one
+// slab is allowed. Unknown account status does not refuse.
+func rejectTechnicalValidationOversize(cfg *Config, size int64) error {
+	return rejectTechnicalValidationOversizeNamed(cfg, size, "")
+}
+
+func rejectTechnicalValidationOversizeNamed(cfg *Config, size int64, name string) error {
+	if size <= slabBytes {
+		return nil
+	}
+	in, known := lookupZeroBalanceTechnicalValidation(cfg)
+	if !known || !in {
+		return nil
+	}
+	return errors.New(technicalValidationOversizeMessage(size, name))
+}
+
+// rejectKnownSizeUpload is the sync/conflict path: the local size is already
+// known, and a missing config or an unreadable account does not block.
+func rejectKnownSizeUpload(size int64) error {
+	if size <= slabBytes {
+		return nil
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		return nil
+	}
+	return rejectTechnicalValidationOversize(cfg, size)
+}
 
 // blockTrialLines renders technical validation: one upload of up to 40 MiB
 // and one download, balance $0.00, Tessera covers the hosts.
