@@ -406,8 +406,8 @@ identity yet finishes the same registration.
 
 **New accounts: technical validation.** Technical validation: one upload of
 up to 40 MiB (41,943,040 bytes, one slab) and one download. Balance stays
-**$0.00**. Tessera covers the hosts. The 72-hour window starts when you
-connect your first device, not when you first enter your email. Topping up
+**$0.00**. Tessera covers the hosts. The technical validation window starts
+when your first device or agent connects, not when the account is created. Topping up
 before using the technical validation ends it and the account works normally
 from then on — there is no separate validation step after a top-up. After
 the upload and download, top up to continue.
