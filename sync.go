@@ -38,13 +38,17 @@ const (
 	// OpAdopt records a path whose local bytes already match the network copy.
 	// It transfers nothing; it exists so planning stays free of side effects.
 	OpAdopt OpKind = "adopt"
+	// OpMove renames a local file that was moved remotely, so the same bytes
+	// are not downloaded again and the old path is not uploaded again.
+	OpMove OpKind = "move"
 )
 
 // Op is one planned action.
 type Op struct {
 	Kind OpKind `json:"kind"`
 	Path string `json:"path"`
-	// Extra carries the conflict copy's path when relevant.
+	// Extra carries a second path: a conflict copy, a move destination, or
+	// a local file to copy from when adopting by content hash.
 	Extra string `json:"extra,omitempty"`
 	// Reason is a human-readable explanation used by --dry-run.
 	Reason string `json:"reason,omitempty"`
@@ -68,6 +72,8 @@ func (o Op) String() string {
 		return fmt.Sprintf("⚑ conflict      %s (kept remote as %s)", o.Path, o.Extra)
 	case OpAdopt:
 		return fmt.Sprintf("= already synced %s", o.Path)
+	case OpMove:
+		return fmt.Sprintf("↪ move          %s → %s", o.Path, o.Extra)
 	}
 	return string(o.Kind) + " " + o.Path
 }
@@ -93,6 +99,7 @@ type Result struct {
 	Uploaded   int       `json:"uploaded"`
 	Downloaded int       `json:"downloaded"`
 	Deleted    int       `json:"deleted"`
+	Moved      int       `json:"moved,omitempty"`
 	Conflicts  int       `json:"conflicts"`
 	Skipped    int       `json:"skipped"`
 	BytesUp    int64     `json:"bytes_uploaded"`
@@ -254,15 +261,17 @@ func (e *SyncEngine) RefreshRemote(ctx context.Context) error {
 			}
 			// Objects outside this root's remote prefix are not ours to sync.
 			rel, ours := e.localPathForRemote(info.Path)
+			// A move (same object id, new path) must leave a tombstone at the
+			// old path. Without one, a later sync treats the old path as
+			// "missing remotely" and uploads the local file again.
+			if evPath != "" && (!ours || evPath != rel) {
+				e.verbose("  remote move → %s (was %s)", info.Path, evPath)
+				e.tombstoneRemotePath(evPath, ev.UpdatedAt)
+			}
 			if !ours {
 				continue
 			}
 			info.Path = rel
-			// An object that moved to a new path leaves the old one behind.
-			if evPath != "" && evPath != rel {
-				e.verbose("  remote move → %s (was %s)", rel, evPath)
-				delete(e.state.Remote, evPath)
-			}
 			e.state.applyRemoteEvent(rel, info)
 		}
 		last := evs[len(evs)-1]
@@ -564,6 +573,15 @@ func (e *SyncEngine) plan() []Op {
 			continue
 
 		case localExists && !remoteLive:
+			// Same bytes (or the same object) now live at another path: this
+			// is a move, not a new file and not a disappearance. Sync should
+			// drop the old path locally instead of uploading it again.
+			if dest := e.remoteDestForLocal(p, lf, st); dest != "" {
+				if !(re != nil && re.Deleted && localChanged && e.strictlyNewerLocal(lf, re)) {
+					ops = append(ops, Op{Kind: OpDeleteLocal, Path: p, Extra: dest, Reason: "moved remotely to " + dest})
+					continue
+				}
+			}
 			// A remote tombstone takes precedence over every other
 			// interpretation, including "the local file is newer". A delete is
 			// a deliberate act and resurrecting the file is the surprising
@@ -687,7 +705,7 @@ func (e *SyncEngine) plan() []Op {
 			continue
 		}
 	}
-	return ops
+	return e.refineMoveOps(ops)
 }
 
 func remoteSize(re *RemoteEntry) int64 {
@@ -748,6 +766,8 @@ func (e *SyncEngine) Apply(ctx context.Context, ops []Op) (*Result, error) {
 				res.Downloaded++
 			case OpDeleteLocal, OpDeleteRemote:
 				res.Deleted++
+			case OpMove:
+				res.Moved++
 			case OpAdopt:
 				res.Adopted++
 			}
@@ -801,7 +821,9 @@ func (e *SyncEngine) applyOp(ctx context.Context, op Op, res *Result) error {
 	case OpConflictRemote:
 		return e.doConflictRemote(ctx, op.Path, op.Extra, res)
 	case OpAdopt:
-		return e.doAdopt(op.Path, res)
+		return e.doAdopt(op.Path, op.Extra, res)
+	case OpMove:
+		return e.doMove(op.Path, op.Extra, res)
 	}
 	return fmt.Errorf("unknown operation %q", op.Kind)
 }
@@ -953,8 +975,33 @@ func (e *SyncEngine) clearConflictFor(conflictPath string) {
 // doAdopt records that a path is already in sync, without transferring data.
 // This happens when the object id changed (a deduplicated re-attach, or an
 // upload from another machine) but the bytes on disk are identical.
-func (e *SyncEngine) doAdopt(p string, res *Result) error {
+func (e *SyncEngine) doAdopt(p, from string, res *Result) error {
 	lf, ok := e.local[p]
+	if !ok && from != "" {
+		srcAbs := filepath.Join(e.cfg.LocalPath, filepath.FromSlash(from))
+		dstAbs := filepath.Join(e.cfg.LocalPath, filepath.FromSlash(p))
+		in, err := os.Open(srcAbs)
+		if err != nil {
+			return err
+		}
+		if _, err := copyFileAtomic(dstAbs, in, 0644); err != nil {
+			in.Close()
+			return err
+		}
+		in.Close()
+		src := e.local[from]
+		if re := e.state.Remote[p]; re != nil && !re.ModTime.IsZero() {
+			_ = os.Chtimes(dstAbs, re.ModTime, re.ModTime)
+		}
+		lf = localFile{RelPath: p, AbsPath: dstAbs, Size: src.Size, Hash: src.Hash, ModTime: src.ModTime, Mode: src.Mode}
+		if lf.Hash == "" {
+			if h, err := hashFile(dstAbs); err == nil {
+				lf.Hash = h
+			}
+		}
+		e.local[p] = lf
+		ok = true
+	}
 	if !ok {
 		return fmt.Errorf("local file disappeared")
 	}
@@ -1400,4 +1447,221 @@ func versionRetention() int {
 		return 0
 	}
 	return cfg.VersionRetention
+}
+
+// tombstoneRemotePath records that p is no longer live, keeping the last
+// known hash and size so a later plan can match the same bytes at a new path.
+func (e *SyncEngine) tombstoneRemotePath(p string, updated time.Time) {
+	if p == "" {
+		return
+	}
+	old := e.state.Remote[p]
+	tomb := &RemoteEntry{Deleted: true, Updated: updated}
+	if old != nil {
+		tomb.SHA256 = old.SHA256
+		tomb.Size = old.Size
+	}
+	e.state.Remote[p] = tomb
+}
+
+// remoteDestForLocal reports the live remote path that this local file was
+// moved to, matching first by object id and then by content hash.
+func (e *SyncEngine) remoteDestForLocal(p string, lf localFile, st *EntryState) string {
+	if st != nil && st.ObjectID != "" {
+		if dest := e.pathForObjectID(st.ObjectID); dest != "" && dest != p {
+			if re := e.state.Remote[dest]; re != nil && !re.Deleted {
+				return dest
+			}
+		}
+	}
+	hash := lf.Hash
+	if hash == "" && st != nil {
+		hash = st.BaseSHA256
+	}
+	if hash == "" {
+		return ""
+	}
+	var dests []string
+	for rp, re := range e.state.Remote {
+		if re != nil && !re.Deleted && re.SHA256 == hash && rp != p {
+			dests = append(dests, rp)
+		}
+	}
+	if len(dests) == 0 {
+		return ""
+	}
+	sort.Strings(dests)
+	base := path.Base(p)
+	for _, d := range dests {
+		if path.Base(d) == base {
+			return d
+		}
+	}
+	return dests[0]
+}
+
+// refineMoveOps turns a delete-at-old-path plus download-at-new-path into a
+// local rename when the bytes already exist, and adopts a download from any
+// other local file that already holds the same content.
+func (e *SyncEngine) refineMoveOps(ops []Op) []Op {
+	ops = e.coalesceMoves(ops)
+	return e.adoptLocalCopies(ops)
+}
+
+func (e *SyncEngine) coalesceMoves(ops []Op) []Op {
+	downloads := map[string]int{}
+	hashToDest := map[string][]string{}
+	for i, op := range ops {
+		if op.Kind != OpDownload {
+			continue
+		}
+		downloads[op.Path] = i
+		if re := e.state.Remote[op.Path]; re != nil && re.SHA256 != "" {
+			hashToDest[re.SHA256] = append(hashToDest[re.SHA256], op.Path)
+		}
+	}
+	used := map[int]bool{}
+	var moves []Op
+	for i, op := range ops {
+		if op.Kind != OpDeleteLocal {
+			continue
+		}
+		if _, ok := e.local[op.Path]; !ok {
+			continue
+		}
+		dest := op.Extra
+		hash := e.local[op.Path].Hash
+		if dest == "" && hash != "" {
+			for _, d := range hashToDest[hash] {
+				if _, taken := used[downloads[d]]; !taken {
+					dest = d
+					break
+				}
+			}
+		}
+		if dest == "" {
+			continue
+		}
+		di, ok := downloads[dest]
+		if !ok || used[di] {
+			continue
+		}
+		used[i] = true
+		used[di] = true
+		moves = append(moves, Op{
+			Kind:   OpMove,
+			Path:   op.Path,
+			Extra:  dest,
+			Size:   e.local[op.Path].Size,
+			Reason: "moved remotely to " + dest,
+		})
+	}
+	if len(moves) == 0 {
+		return ops
+	}
+	out := make([]Op, 0, len(ops))
+	for i, op := range ops {
+		if used[i] {
+			continue
+		}
+		out = append(out, op)
+	}
+	out = append(out, moves...)
+	return out
+}
+
+func (e *SyncEngine) adoptLocalCopies(ops []Op) []Op {
+	out := make([]Op, len(ops))
+	copy(out, ops)
+	for i, op := range out {
+		if op.Kind != OpDownload {
+			continue
+		}
+		re := e.state.Remote[op.Path]
+		if re == nil || re.SHA256 == "" {
+			continue
+		}
+		var src string
+		for lp, lf := range e.local {
+			if lp == op.Path || lf.Hash == "" || lf.Hash != re.SHA256 {
+				continue
+			}
+			// Prefer a source that is still live remotely so we copy rather
+			// than relying on a path that may itself be deleted this run.
+			src = lp
+			if sre := e.state.Remote[lp]; sre != nil && !sre.Deleted {
+				break
+			}
+		}
+		if src == "" {
+			continue
+		}
+		out[i] = Op{
+			Kind:   OpAdopt,
+			Path:   op.Path,
+			Extra:  src,
+			Size:   op.Size,
+			Reason: "content already present locally at " + src,
+		}
+	}
+	return out
+}
+
+func (e *SyncEngine) doMove(src, dst string, res *Result) error {
+	if dst == "" {
+		return fmt.Errorf("move %s: missing destination", src)
+	}
+	srcAbs := filepath.Join(e.cfg.LocalPath, filepath.FromSlash(src))
+	dstAbs := filepath.Join(e.cfg.LocalPath, filepath.FromSlash(dst))
+	if err := os.MkdirAll(filepath.Dir(dstAbs), 0755); err != nil {
+		return err
+	}
+	if err := os.Rename(srcAbs, dstAbs); err != nil {
+		return err
+	}
+	e.pruneEmptyDirs(filepath.Dir(srcAbs))
+
+	lf := e.local[src]
+	re := e.state.Remote[dst]
+	ent := e.state.entry(dst)
+	ent.BaseSHA256 = lf.Hash
+	if ent.BaseSHA256 == "" && re != nil {
+		ent.BaseSHA256 = re.SHA256
+	}
+	ent.Size = lf.Size
+	ent.ModTime = lf.ModTime
+	if re != nil {
+		ent.ObjectID = re.ObjectID
+		if !re.ModTime.IsZero() {
+			ent.ModTime = re.ModTime
+			_ = os.Chtimes(dstAbs, re.ModTime, re.ModTime)
+		}
+	}
+	ent.RemotePath = e.remotePath(dst)
+	ent.DeletedLocal = false
+	ent.DeletedRemote = false
+
+	e.clearConflictFor(src)
+	st := e.state.entry(src)
+	st.BaseSHA256 = ""
+	st.ObjectID = ""
+	st.RemotePath = ""
+	st.DeletedLocal = true
+	st.DeletedRemote = true
+	if sre := e.state.Remote[src]; sre != nil {
+		sre.Deleted = true
+		sre.ObjectID = ""
+	} else {
+		e.state.Remote[src] = &RemoteEntry{Deleted: true, Updated: time.Now(), SHA256: lf.Hash, Size: lf.Size}
+	}
+
+	delete(e.local, src)
+	e.local[dst] = localFile{
+		RelPath: dst, AbsPath: dstAbs, Size: lf.Size, Hash: lf.Hash,
+		ModTime: lf.ModTime, Mode: lf.Mode,
+	}
+
+	res.Moved++
+	e.log("  ↪ %s → %s", src, dst)
+	return e.state.save()
 }

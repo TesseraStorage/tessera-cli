@@ -120,6 +120,9 @@ func accountWithCredential(acct map[string]any, credential string) map[string]an
 		out["readiness"] = publicReadinessJSON(r, buildTrialView(acct))
 	}
 	honestEgressJSON(out, acct)
+	if h, ok := optimizeHintFromAccount(acct); ok {
+		out["optimize_hint"] = h
+	}
 	return out
 }
 
@@ -212,6 +215,9 @@ func printAccountTable(acct map[string]any, credential string) {
 		if v.UploadsLine != "" && !strings.Contains(v.Summary, "blocked until you top up") {
 			fmt.Printf("  %-14s %s\n", "", v.UploadsLine)
 		}
+	}
+	if h, ok := optimizeHintFromAccount(acct); ok {
+		field("Optimize", h.Message)
 	}
 }
 

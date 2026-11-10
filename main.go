@@ -13,6 +13,8 @@
 //	tessera upload      Upload a file or folder
 //	tessera download    Download a file
 //	tessera delete      Delete a file
+//	tessera mv          Rename or move a stored file or folder
+//	tessera optimize    Repack under-filled 40 MiB blocks
 //	tessera share       Create a share link for a file
 //	tessera fetch       Download a shared file
 //	tessera sync        Sync a local folder with the network
@@ -39,7 +41,7 @@ import (
 var statusCommand = cmdStatus
 
 // version is the build version. The release workflow injects it from the git
-// tag (v1.14.2 is the release this tree is for; the tag is cut after a live
+// tag (v1.15.0 is the release this tree is for; the tag is cut after a live
 // server test, not by this change):
 //
 //	go build -ldflags "-X main.version=${GITHUB_REF_NAME}" .
@@ -73,7 +75,7 @@ func main() {
 	// command; its result is printed (at most) once the command finishes.
 	notices := startBackgroundNotices(cmd, args)
 	switch cmd {
-	case "upload", "put", "download", "get", "fetch":
+	case "upload", "put", "download", "get", "fetch", "optimize":
 		configureProgress(args)
 	}
 
@@ -134,6 +136,13 @@ func main() {
 			usageError("delete <path> [--purge] [--yes]")
 		}
 		cmdDelete(args)
+	case "mv", "move", "rename":
+		if len(positional(args)) < 2 {
+			usageError("mv <src> <dst> [--force] [--json]")
+		}
+		cmdMv(args)
+	case "optimize":
+		cmdOptimize(args)
 	case "share":
 		if len(positional(args)) < 1 {
 			usageError("share <path>")
@@ -231,6 +240,46 @@ Move a file to the trash (restore with 'tessera trash restore').
   --purge     Delete permanently (with its retained versions) instead of trashing
   --yes, -y   Do not ask for confirmation
 `,
+	"mv": `Usage: {exe} mv <src> <dst> [--force] [--json]
+
+Rename or move a stored file or folder without transferring its data.
+
+  {exe} mv tessera/test/textfile.txt textfile.txt
+  {exe} mv textfile.txt tessera/test/
+  {exe} mv photos/ archive/
+
+A destination ending in / or an existing remote folder keeps the file name.
+A source that names a remote folder (prefix) moves every file under it.
+
+The object id, size, SHA-256 and modification time stay the same. The old
+path is marked deleted so tessera sync on every machine removes the local
+copy there instead of uploading it again. If the new path is inside a
+synced folder on this machine, the local file is renamed when possible.
+
+  --force   Replace an existing destination (it is moved to the trash)
+  --json    Print a machine-readable result
+`,
+	"optimize": `Usage: {exe} optimize [prefix] [--dry-run] [--yes] [--json]
+
+Repack files that sit in under-filled 40 MiB blocks into as few blocks as
+possible. Separate uploads each start a new block, so ten 1 MB files
+uploaded on different days occupy 10 blocks (400 MiB stored) instead of 1.
+
+Shows a plan first: the files involved, blocks and stored size now and
+after, savings, the one-off cost (download of the real data plus upload of
+the new blocks, from live prices), monthly storage savings, estimated
+payback, and estimated time to run. Then asks "Proceed? [y/N]".
+
+Downloads only each file's real data, uploads them together with the same
+paths, dates and hashes, verifies the new copies, and only then unpins the
+old ones, so a failure never loses data. Paths and folders look as they did
+before. An optional prefix limits the plan to that remote folder (files
+that share a block with it are included so the shared block can be freed).
+
+  --dry-run   Show the plan only
+  --yes, -y   Run without asking
+  --json      Machine-readable plan; apply only with --yes
+`,
 	"share": `Usage: {exe} share <path>
 
 Create a share link for a stored file. Anyone with the link can download it
@@ -298,6 +347,8 @@ func init() {
 	commandHelp["ls"] = commandHelp["list"]
 	commandHelp["du"] = commandHelp["usage"]
 	commandHelp["search"] = commandHelp["find"]
+	commandHelp["move"] = commandHelp["mv"]
+	commandHelp["rename"] = commandHelp["mv"]
 }
 
 // printCommandHelp prints cmd's help when it has an entry in commandHelp.
@@ -347,6 +398,8 @@ Files:
                              plain lines every 10s when stderr is not a terminal;
                              --quiet / TESSERA_QUIET=1 hides it)
   {exe} delete <path>           Delete a file (see also: trash)
+  {exe} mv <src> <dst>          Rename or move a stored file or folder
+  {exe} optimize [prefix]       Repack under-filled 40 MiB blocks
   {exe} share <path>            Create a share link for a file
   {exe} fetch <url> [name]      Download a shared file
 
