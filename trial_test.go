@@ -75,10 +75,17 @@ func TestTechnicalValidationNoRetiredWording(t *testing.T) {
 		v := buildTrialView(a)
 		text := strings.ToLower(v.Summary + " " + v.UploadsLine + " " + v.ShortBanner + " " + readinessLabel(st) + " " + daysLeftEmptyText(a))
 		for _, b := range bad {
+			if st == "suspended" && b == "deleted" {
+				continue
+			}
 			if strings.Contains(text, b) {
 				t.Fatalf("%s: %q contains %q", st, text, b)
 			}
 		}
+	}
+	label := readinessLabel("suspended")
+	if !strings.Contains(label, "files deleted") || !strings.Contains(label, "top up to continue") {
+		t.Fatalf("suspended label should say files deleted and top up to continue: %q", label)
 	}
 	h := strings.ToLower(usageText)
 	for _, b := range []string{"free trial", "72 hours", "promo", "subscription"} {

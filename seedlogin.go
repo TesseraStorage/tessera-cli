@@ -230,7 +230,7 @@ func readinessLabel(state string) string {
 	case "paused":
 		return "paused by support"
 	case "suspended":
-		return "suspended — top up to continue"
+		return "suspended — files deleted; top up to continue"
 	case "closed":
 		return "closed"
 	}
