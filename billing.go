@@ -365,6 +365,37 @@ func (b *httpBilling) Logout(session string) error {
 	return err
 }
 
+// DashboardLink mints a one-time browser login URL (10 minutes).
+func (b *httpBilling) DashboardLink() (string, error) {
+	req, err := b.request(http.MethodPost, "/auth/dashboard-link", nil)
+	if err != nil {
+		return "", err
+	}
+	_, data, err := b.do(req, authAuto, "")
+	if err != nil {
+		return "", err
+	}
+	obj, err := decodeBillingObject(data)
+	if err != nil {
+		return "", err
+	}
+	url, _ := obj["url"].(string)
+	if url == "" {
+		return "", fmt.Errorf("dashboard-link response is missing url")
+	}
+	return url, nil
+}
+
+// LogoutAll revokes every browser session for the authenticated account.
+func (b *httpBilling) LogoutAll() error {
+	req, err := b.request(http.MethodPost, "/auth/logout-all", nil)
+	if err != nil {
+		return err
+	}
+	_, _, err = b.do(req, authAuto, "")
+	return err
+}
+
 // CreateAgent opens a pending agent account and returns the account id and the
 // one-time API key. Public endpoint.
 func (b *httpBilling) CreateAgent(name, contactEmail string) (string, string, error) {

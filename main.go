@@ -91,6 +91,8 @@ func main() {
 		cmdSignup(args)
 	case "account":
 		cmdAccount(args)
+	case "dashboard":
+		cmdDashboard(args)
 	case "secrets":
 		cmdSecrets(args)
 	case "topup":
@@ -382,6 +384,8 @@ Billing & account:
   {exe} account [--json]        Show account, balance, readiness and usage
   {exe} account delete [--yes]  Permanently delete your account and all files
                              (remaining balance is forfeited, no refunds)
+  {exe} dashboard               Print a one-time browser login link (10 minutes)
+  {exe} dashboard --logout-all  Sign out every browser session for this account
   {exe} topup <amount> [--asset <code>] [--invoice] [--wallet]
                              Add funds: x402 wallet (any amount from $0.01),
                              deposit address in a chosen coin (USDC on Base by
