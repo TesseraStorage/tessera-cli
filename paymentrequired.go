@@ -33,8 +33,8 @@ func (e *paymentRequiredError) Error() string {
 	if d := publicPaymentDetail(e.Detail); d != "" {
 		b.WriteString("\n  " + d)
 	}
-	b.WriteString("\n  Pay from this CLI's wallet (USDC on Base): tessera wallet init && tessera topup 1 --wallet")
-	b.WriteString("\n  Pay in XMR, BTC, ETH, USDT or another coin:  tessera topup 10 --asset xmr  (minimums: tessera topup --minimums)")
+	b.WriteString("\n  Pay from this CLI's wallet (USDC on Base): tessera wallet init && tessera topup 5 --wallet")
+	b.WriteString("\n  Pay in XMR, BTC, ETH, USDT or another coin:  tessera topup 10 --asset xmr")
 	b.WriteString("\n  Or top up at https://tessera.storage/account")
 	return b.String()
 }

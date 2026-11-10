@@ -27,7 +27,7 @@ func TestTrialViewStates(t *testing.T) {
 	if v.CreditPosted || !v.CanUpload || (v.CreditUSD != "" && v.CreditUSD != "0") || !v.CreditDeprecated ||
 		!strings.Contains(v.Summary, "one upload of up to 40 MiB") ||
 		!strings.Contains(v.Summary, "Balance stays $0.00") || !strings.HasPrefix(v.UploadsLine, "Uploads: allowed now") ||
-		!strings.Contains(v.Summary, "tessera topup 1") {
+		!strings.Contains(v.Summary, "tessera topup 5") {
 		t.Fatalf("free_trial view: %+v", v)
 	}
 	if v.DaysLeft != nil {
@@ -36,7 +36,7 @@ func TestTrialViewStates(t *testing.T) {
 	if v.Summary != technicalValidationSummary {
 		t.Fatalf("Summary must be the locked technical-validation wording: %q", v.Summary)
 	}
-	if v.ShortBanner != "Technical validation available (1 upload + 1 download). Top up any time: tessera topup 1" {
+	if v.ShortBanner != "Technical validation available (1 upload + 1 download). Top up any time: tessera topup 5" {
 		t.Fatalf("free_trial short banner: %+v", v)
 	}
 	if strings.Contains(v.Summary+v.UploadsLine, "credit") {
@@ -47,7 +47,7 @@ func TestTrialViewStates(t *testing.T) {
 		!strings.HasPrefix(v.UploadsLine, "Uploads: blocked until you top up") {
 		t.Fatalf("active view: %+v", v)
 	}
-	if v.ShortBanner != "Technical validation: upload used; 1 download left. Top up to upload again: tessera topup 1" {
+	if v.ShortBanner != "Technical validation: upload used; 1 download left. Top up to upload again: tessera topup 5" {
 		t.Fatalf("active short banner: %q", v.ShortBanner)
 	}
 	v = buildTrialView(trialAcct("top_up_required", "0", false, nil))
@@ -58,8 +58,8 @@ func TestTrialViewStates(t *testing.T) {
 	a := trialAcct("top_up_required", "0", false, nil)
 	a["readiness"].(map[string]any)["message"] = "Free trial used or ended. Files are deleted 72 hours after signup."
 	v = buildTrialView(a)
-	if v.Summary != "Technical validation used (one upload and one download). Top up to continue: tessera topup 1" ||
-		v.ShortBanner != "Technical validation used — top up to continue: tessera topup 1" {
+	if v.Summary != "Technical validation used (one upload and one download). Top up to continue: tessera topup 5" ||
+		v.ShortBanner != "Technical validation used — top up to continue: tessera topup 5" {
 		t.Fatalf("retired server wording leaked: %+v", v)
 	}
 }

@@ -98,16 +98,13 @@ func TestTopupValueFlagsRegistered(t *testing.T) {
 	}
 }
 
-// TestValidateTopupAmountLocalShapeOnly: the CLI checks presence and a positive
-// numeric shape only — moneyd owns the real range (from the $0.01 floor), so small
-// values must pass the local check untouched.
-func TestValidateTopupAmountLocalShapeOnly(t *testing.T) {
-	for _, ok := range []string{"5", "12.50", "0.01", "10000", "1e3", ".5", "5."} {
+func TestValidateTopupAmountRange(t *testing.T) {
+	for _, ok := range []string{"5", "12.50", "10000", "1e3", "5.", "5.009"} {
 		if err := validateTopupAmount(ok); err != nil {
-			t.Errorf("validateTopupAmount(%q) = %v, want nil (the server owns the range)", ok, err)
+			t.Errorf("validateTopupAmount(%q) = %v, want nil", ok, err)
 		}
 	}
-	for _, bad := range []string{"", " ", "0", "-1", "abc", "5usd", "NaN", "Inf", "+Inf", "-Inf"} {
+	for _, bad := range []string{"", " ", "0", "-1", "abc", "5usd", "NaN", "Inf", "+Inf", "-Inf", "0.01", ".5", "4.99", "4.999", "10000.01"} {
 		if err := validateTopupAmount(bad); err == nil {
 			t.Errorf("validateTopupAmount(%q) = nil, want an error", bad)
 		}
@@ -376,14 +373,14 @@ func TestRunTopupErrorOutcomes(t *testing.T) {
 		want []string
 	}{
 		{
-			name: "409 below_asset_minimum keeps the minimum and points at the x402 floor",
+			name: "409 below_asset_minimum keeps the minimum",
 			err:  parseBillingError(http.StatusConflict, []byte(`{"error":"below_asset_minimum","minimum_usd":"10.00"}`)),
-			want: []string{"below_asset_minimum", "$10.00", "--wallet", "$0.01"},
+			want: []string{"below_asset_minimum", "$10.00", "another coin", "--invoice"},
 		},
 		{
-			name: "422 amount_out_of_range does not invent a range",
+			name: "422 amount_out_of_range names the $5 to $10,000 range",
 			err:  parseBillingError(http.StatusUnprocessableEntity, []byte(`{"detail":{"error":"amount_out_of_range"}}`)),
-			want: []string{"amount_out_of_range", "outside its accepted range"},
+			want: []string{"amount_out_of_range", "between $5 and $10,000"},
 		},
 		{
 			name: "422 unknown_rail",

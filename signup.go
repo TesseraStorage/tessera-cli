@@ -375,7 +375,7 @@ func printSignupResultTo(result signupResult, mode signupOutput) {
 	if secretsPath == "" && !stdoutIsTerminal() {
 		fmt.Fprintln(os.Stderr, "Note: the recovery phrase and API key above were written to a non-terminal output (a log or pipe). Keep that output private, or delete it after saving both secrets.")
 	}
-	fmt.Println("Next: tessera upload <file>. Add funds any time: tessera topup 1 (crypto minimum ~$0.38 in USDC on Base, more for other coins; live list: tessera topup --minimums).")
+	fmt.Println("Next: tessera upload <file>. Add funds any time: tessera topup 5")
 	if secretsPath != "" {
 		fmt.Println("When the phrase and API key are safe in your password manager, delete the secrets file:")
 		fmt.Println("  tessera secrets done")

@@ -209,15 +209,30 @@ func topupValueFlag(args []string, name string) (string, error) {
 	return v, nil
 }
 
-// validateTopupAmount checks presence and a positive numeric shape only; the
-// server owns the accepted range, so no bound is hardcoded here.
+// Top-up range in USD, the same on every method (x402, deposit address,
+// browser invoice). moneyd enforces it too (422 amount_out_of_range).
+const (
+	topupMinUSD = 5
+	topupMaxUSD = 10000
+)
+
+// topupRangeText is the one wording of the range used in help and errors.
+const topupRangeText = "between $5 and $10,000"
+
+// validateTopupAmount checks the amount locally before any request: a number
+// between $5 and $10,000 after rounding down to whole cents (as the server
+// does, so 4.999 is $4.99 and refused).
 func validateTopupAmount(amount string) error {
 	if strings.TrimSpace(amount) == "" {
-		return errors.New("topup amount is required (USD) — usage: tessera topup <amount>")
+		return errors.New("topup amount is required (USD) — usage: tessera topup <amount>  (" + topupRangeText + ")")
 	}
 	v, err := strconv.ParseFloat(amount, 64)
 	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
-		return fmt.Errorf("topup amount %q is not a positive number (USD)", amount)
+		return fmt.Errorf("topup amount %q is not a number (USD); top-ups are %s", amount, topupRangeText)
+	}
+	cents := math.Floor(math.Round(v*1e6) / 1e4)
+	if cents < topupMinUSD*100 || cents > topupMaxUSD*100 {
+		return fmt.Errorf("topup amount $%s is out of range: top-ups are %s", strconv.FormatFloat(cents/100, 'f', 2, 64), topupRangeText)
 	}
 	return nil
 }
@@ -740,7 +755,7 @@ func describeTopupError(err error) string {
 	case be.Status == http.StatusUnprocessableEntity && be.Code == "unknown_currency":
 		return "unknown_currency — that coin is not accepted; list coins with 'tessera topup --coins'"
 	case be.Status == http.StatusUnprocessableEntity && be.Code == "amount_out_of_range":
-		return "amount_out_of_range — the server rejected this amount as outside its accepted range"
+		return "amount_out_of_range — top-ups are " + topupRangeText
 	case be.Status == http.StatusUnprocessableEntity && be.Code == "unknown_rail":
 		return "unknown_rail — the server does not support that payment rail"
 	case be.Status == http.StatusServiceUnavailable && be.Code == "payments_unconfigured":
@@ -764,19 +779,20 @@ type topupMinimumsAPI interface {
 	TopupMinimums(payCurrency string) (map[string]any, error)
 }
 
-// checkTopupMinimum warns and refuses BEFORE an invoice or address is
-// created when the amount is below the processor's live minimum for the coin
-// (an invoice is checked against the default, cheapest coin). Any failure to
-// read the minimum is ignored: the server enforces the same rule.
+// checkTopupMinimum refuses BEFORE a deposit address is created when the
+// amount is below a coin's processor minimum (a few coins sit above $5). A
+// browser invoice is not pre-checked: the $5–$10,000 range applies and the
+// payer picks the coin on the page. Any failure to read the minimum is
+// ignored: the server enforces the same rule.
 func checkTopupMinimum(api billingAPI, req topupRequest) error {
+	if req.invoice {
+		return nil
+	}
 	m, ok := api.(topupMinimumsAPI)
 	if !ok {
 		return nil
 	}
 	coin := req.payCurrency
-	if req.invoice {
-		coin = ""
-	}
 	doc, err := m.TopupMinimums(coin)
 	if err != nil {
 		return nil
@@ -830,37 +846,34 @@ func runTopupMinimums(req topupRequest) error {
 	rails, _ := doc["rails"].(map[string]any)
 	np, _ := rails["nowpayments"].(map[string]any)
 	x, _ := rails["x402"].(map[string]any)
-	fmt.Printf("Top-up minimums (live):\n")
+	floor := fmt.Sprint(x["minimum_usd"])
+	if x["minimum_usd"] == nil {
+		floor = fmt.Sprint(doc["floor_usd"])
+	}
 	npMin := fmt.Sprint(np["minimum_usd"])
 	if np["minimum_usd"] == nil {
 		npMin = "unavailable right now"
 	} else {
 		npMin = "$" + npMin
 	}
-	fmt.Printf("  1. x402 wallet, USDC on Base (--wallet, --x402, --payment): $%s — any amount from the floor\n", fmt.Sprint(x["minimum_usd"]))
+	fmt.Printf("Top-ups: %s on every method.\n", topupRangeText)
+	fmt.Printf("  1. x402 wallet, USDC on Base (--wallet, --x402, --payment): $%s\n", floor)
 	hint := "(default; other coins: --asset <code>)"
 	if req.payCurrency != "" {
 		hint = "(--asset " + req.payCurrency + ")"
 	}
 	fmt.Printf("  2. Deposit address in %s %s: %s\n", assetLabel(fmt.Sprint(np["pay_currency"]), ""), hint, npMin)
-	invMin := "the cheapest coin's minimum"
-	if req.payCurrency == "" {
-		invMin = npMin
-	}
-	fmt.Printf("  3. Browser invoice (--invoice, pay in any accepted coin): from %s; each coin shows its own minimum\n", invMin)
-	fmt.Printf("Tessera floor (all rails): $%s. Crypto minimums are set by the payment processor (NOWPayments) and move with fees.\n", fmt.Sprint(doc["floor_usd"]))
-	fmt.Printf("Other coins: tessera topup --minimums --asset <code>  (list coins: tessera topup --coins)\n")
+	fmt.Printf("  3. Browser invoice (--invoice, pay in any accepted coin): $%s\n", floor)
+	fmt.Printf("A few coins have a higher processor minimum for a deposit address: tessera topup --minimums --asset <code>\n")
 	return nil
 }
 
-// smallTopupGuidance is the one accurate answer to "how do I pay less than
-// the processor minimum": only x402 has no processor minimum.
-const smallTopupGuidance = `Amounts under the processor minimum (down to $0.01) work only with x402 (USDC on Base):
-  - built-in wallet:  tessera wallet init   (fund it with USDC on Base)
-                      tessera topup <usd> --wallet
-  - your own signer:  tessera topup <usd> --x402    (prints what to sign)
-                      tessera topup <usd> --payment <base64 X-PAYMENT>
-Live minimums per coin: tessera topup --minimums [--asset <code>]`
+// smallTopupGuidance is what to do when a coin's processor minimum is above
+// the amount: send more, or pay another way (every method starts at $5).
+const smallTopupGuidance = `Enter at least that amount, or pay another way (top-ups are between $5 and $10,000):
+  - another coin:     tessera topup <usd> --asset <code>   (list: tessera topup --coins)
+  - browser invoice:  tessera topup <usd> --invoice
+  - x402 wallet:      tessera wallet init, then tessera topup <usd> --wallet`
 
 // assetLabels names common coins in plain words. Unknown codes fall back to
 // the ticker plus network.
@@ -984,23 +997,25 @@ const topupHelp = `Usage: tessera topup <usd> [options]
 
 Three ways to pay:
 
-  1. Built-in x402 wallet: USDC on Base. Best for agents; any amount from $0.01.
+Top-ups are between $5 and $10,000 on every method.
+
+  1. Built-in x402 wallet: USDC on Base. Best for agents.
        tessera wallet init                 # creates a local key (~/.tessera/wallet.json)
        tessera wallet fund                 # how to send USDC on Base to it
-       tessera topup 0.50 --wallet
+       tessera topup 5 --wallet
      Own signer instead: tessera topup <usd> --x402 (prints what to sign), then
        tessera topup <usd> --payment <base64 X-PAYMENT>
 
   2. Deposit address in a coin you choose (default: USDC on Base).
-       tessera topup 1                     # USDC on Base
+       tessera topup 5                     # USDC on Base
        tessera topup 10 --asset xmr        # Monero; also btc, eth, sol, ltc,
        tessera topup 15 --asset usdttrc20  # usdtbsc, usdcsol, ... (358 coins)
-     Each coin has a minimum set by the payment processor (NOWPayments),
-     fetched live: about $0.38 for USDC on Base, more for most other coins.
+     A few coins have a processor minimum above $5 for a deposit address;
+     the command prints it instead of creating the address.
 
   3. Browser invoice: open a link and pay in any accepted coin
      (USDC, USDT, BTC, ETH, XMR, SOL, LTC and hundreds more).
-       tessera topup 1 --invoice
+       tessera topup 5 --invoice
 
 Options:
   --asset <code>   coin for a deposit address (alias: --coin, --pay-currency);
@@ -1020,9 +1035,9 @@ shown as a QR code. It is omitted for other coins, --invoice, x402 (--wallet,
 
 Discover:
   tessera topup --coins                   # every accepted coin
-  tessera topup --minimums [--asset <c>]  # live minimum per method / coin
+  tessera topup --minimums [--asset <c>]  # the range, and a coin's minimum
 
-Amounts below a coin's processor minimum are refused before anything is
-created; under that minimum (down to $0.01) only x402 (method 1) works.
+Amounts outside $5–$10,000, or below a coin's processor minimum for a deposit
+address, are refused before anything is created.
 Times are shown in your local time zone.
 `

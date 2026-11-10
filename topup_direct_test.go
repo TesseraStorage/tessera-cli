@@ -698,7 +698,7 @@ func TestBelowMinimumGuidanceMentionsAmountAndX402(t *testing.T) {
 		Extra:  map[string]any{"minimum_usd": "8.64"},
 	}
 	msg := describeTopupError(err)
-	for _, want := range []string{"below_asset_minimum", "$8.64", "nothing was created", "tessera wallet init", "--wallet", "--payment <base64 X-PAYMENT>", "$0.01"} {
+	for _, want := range []string{"below_asset_minimum", "$8.64", "nothing was created", "another coin", "--invoice", "--wallet"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("describeTopupError = %q, missing %q", msg, want)
 		}

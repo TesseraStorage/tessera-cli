@@ -20,7 +20,7 @@ func TestAsPaymentRequiredWrappedHTTPError(t *testing.T) {
 		t.Fatalf("got %+v %v", pe, ok)
 	}
 	s := explainTransferError(nil, err, true).Error()
-	for _, want := range []string{"Insufficient balance — top up to continue", "tessera topup 1 --wallet", "--asset xmr", "tessera.storage/account"} {
+	for _, want := range []string{"Insufficient balance — top up to continue", "tessera topup 5 --wallet", "--asset xmr", "tessera.storage/account"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("missing %q in %q", want, s)
 		}
@@ -40,7 +40,7 @@ func TestAsPaymentRequiredStringOnlyAndOthers(t *testing.T) {
 	if _, ok := asPaymentRequired(errors.New("no more hosts available")); ok {
 		t.Fatal("shortage is not a 402")
 	}
-	if got := explainFatalHostShortage("HTTP 402: " + sample402); !strings.Contains(got, "tessera topup 1") {
+	if got := explainFatalHostShortage("HTTP 402: " + sample402); !strings.Contains(got, "tessera topup 5") {
 		t.Fatalf("fatal path: %q", got)
 	}
 }
@@ -57,7 +57,7 @@ func TestShortageAfterRecorded402(t *testing.T) {
 		t.Fatal("body must be preserved")
 	}
 	msg := explainFatalHostShortage("download failed: no more hosts available")
-	for _, want := range []string{"Insufficient balance — top up to continue", "Technical validation (one upload of up to 40 MiB and one download) has been used", "tessera topup 1 --wallet", "tessera.storage/account"} {
+	for _, want := range []string{"Insufficient balance — top up to continue", "Technical validation (one upload of up to 40 MiB and one download) has been used", "tessera topup 5 --wallet", "tessera.storage/account"} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("missing %q in %q", want, msg)
 		}
@@ -71,7 +71,7 @@ func TestBalanceRefusalMatchesServerWording(t *testing.T) {
 	seenPaymentRequired.Store(nil)
 	defer seenPaymentRequired.Store(nil)
 	s := balanceRefusal(3, 10).Error()
-	for _, want := range []string{"Insufficient balance — top up to continue", "only 3 of the 10 hosts", "tessera topup 1 --wallet", "--asset xmr", "tessera.storage/account"} {
+	for _, want := range []string{"Insufficient balance — top up to continue", "only 3 of the 10 hosts", "tessera topup 5 --wallet", "--asset xmr", "tessera.storage/account"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("missing %q in %q", want, s)
 		}

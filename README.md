@@ -14,10 +14,10 @@ version and verify everything you store — all from one static binary.
 ```bash
 curl -fsSL https://tessera.storage/install.sh | sh
 # same script: curl -fsSL https://raw.githubusercontent.com/TesseraStorage/tessera-cli/main/install.sh | sh
-# a specific version: ... | sh -s v1.13.1
+# a specific version: ... | sh -s v1.14.0
 ```
 
-Current release: **v1.13.1**. `tessera version` reports the git tag the release
+Current release: **v1.14.0**. `tessera version` reports the git tag the release
 workflow stamps into the binary. The same release also publishes `install.sh`
 and `install.ps1` (`https://github.com/TesseraStorage/tessera-cli/releases/latest/download/install.sh`).
 
@@ -245,10 +245,10 @@ the Mac, add a second pair with a different prefix (for example
 | `account delete [--yes]` | Permanently delete the account: keys revoked, files deleted, billing stopped. **No refund** of any balance. Type the account ID to confirm; `--yes` for scripts |
 | `update [--check] [--version vX.Y.Z]` | Install the latest release after verifying it against `SHA256SUMS` |
 | `whoami` | Show current account identity: account ID, App ID and the *public* key (the private `app_key` is never printed) |
-| `account [--json]` | Billing account dashboard (status, balance, allowance, active credential) |
+| `account [--json]` | Billing account dashboard (status, balance, usage, active credential) |
 | `dashboard` | Print a one-time browser login link (10 minutes) |
 | `dashboard --logout-all` | Sign out every browser session for this account |
-| `topup <amount> [--asset <code>] [--invoice] [--wallet] [--json] [--wait\|--no-wait]` | Add funds: x402 wallet (`--wallet`, any amount from $0.01), deposit address in a chosen coin (USDC on Base by default; `--asset xmr`, `btc`, `eth`, `usdttrc20`…), or browser invoice in any accepted coin (`--invoice`). `tessera topup --help` explains all three |
+| `topup <amount> [--asset <code>] [--invoice] [--wallet] [--json] [--wait\|--no-wait]` | Add funds: x402 wallet (`--wallet`, $5 to $10,000), deposit address in a chosen coin (USDC on Base by default; `--asset xmr`, `btc`, `eth`, `usdttrc20`…), or browser invoice in any accepted coin (`--invoice`). `tessera topup --help` explains all three |
 | `topup --minimums [--asset <code>] [--json]` | Show the live per-rail minimums |
 | `topup <amount> [--x402] [--pay-currency <asset>] [--payment <b64>]` | Advanced x402: print the challenge to sign externally, or submit a signed authorization |
 | `topup --coins [--json]` | List the coins accepted for top-ups |
@@ -300,7 +300,7 @@ tessera login --email you@example.com --token <token>   # completes the sign-in
 tessera login --billing-logout      # ends the session; an agent key is untouched
 
 # Dashboard and top-ups
-tessera account                     # billing id, status, balance, allowance, credential
+tessera account                     # billing id, status, balance, usage, credential
 tessera account --json
 tessera topup 25                    # direct payment address (USDC on Base by default)
 tessera topup 25 --asset xmr        # deposit address in another coin (Monero, BTC, ETH, USDT…)
@@ -322,17 +322,17 @@ tessera wallet fund                 # how to fund it
 
 **Three ways to pay.**
 
-1. **Built-in x402 wallet** (USDC on Base) — best for agents, any amount from
-   $0.01: `tessera wallet init`, fund it (`tessera wallet fund`), then
+1. **Built-in x402 wallet** (USDC on Base) — best for agents, from
+   $5: `tessera wallet init`, fund it (`tessera wallet fund`), then
    `tessera topup <usd> --wallet`. With your own signer: `topup <usd> --x402`
    prints the challenge, `topup <usd> --payment <base64 X-PAYMENT>` submits it.
 2. **Deposit address in a coin you choose** — `tessera topup <usd>` (USDC on
    Base) or `--asset <code>` (`xmr`, `btc`, `eth`, `sol`, `ltc`, `usdttrc20`,
    `usdtbsc`, … — 300+ coins; a bare ticker such as `usdt` lists its networks).
-   The coin's minimum is fetched live before anything is created.
+   A few coins have a processor minimum above $5 for a deposit address.
 3. **Browser invoice** — `tessera topup <usd> --invoice` opens a NOWPayments
    page where you pick any accepted coin (USDC, USDT, BTC, ETH, XMR, SOL, LTC
-   and hundreds more); each coin shows its own minimum there.
+   and hundreds more).
 
 Assets are shown in plain words ("USDC on Base", "Monero (XMR)"), and every
 time is printed in your local time zone with the offset named, e.g.
@@ -355,23 +355,15 @@ interactive terminal it polls until the intent is completed, expired or failed;
 `--wait` and `--no-wait` override that. `--json` emits one document and does not
 wait unless `--wait` is also given. A server that only returns an invoice URL
 falls back to the previous invoice output, and `--invoice` asks for that path
-explicitly. Before creating anything the CLI reads the live minimum and, if the
-amount is below it, refuses with the real number and creates no invoice.
+explicitly. Before creating a deposit address the CLI reads that coin's processor minimum and, if the
+amount is below it, refuses with the real number and creates nothing.
 
-**Top-up minimums.** Tessera's own floor is $0.01 on every rail, but crypto
-payments through NOWPayments also have a per-coin minimum set by the processor:
-
-| Rail | Minimum (2026-10-30, live values: `tessera topup --minimums`) |
-|---|---|
-| NOWPayments, USDC on Base (default coin, address or `--invoice`) | about $0.38 |
-| NOWPayments, other coins (`--asset`) | varies: about $0.40–$1.60 for most (LTC, TRX, SOL, ETH, BTC, USDC-ERC20), up to about $12 for USDT-TRC20 |
-| x402 USDC on Base (`--wallet`, `--x402`) | $0.01 (Tessera floor; no processor minimum) |
-
-The server enforces the same minimums (`409 below_asset_minimum` with
-`minimum_usd`), so a hosted invoice below the minimum is never created. Clients
-pre-fill $1. Below a coin's minimum the error gives that minimum and points to
-x402 (`tessera wallet init`, then `topup <usd> --wallet`, or `--payment`), the
-only way to pay less, down to $0.01.
+**Top-up range.** Top-ups are between $5 and $10,000 on every method (x402
+wallet, deposit address, browser invoice). A few coins have a higher processor
+minimum for a deposit address; the CLI and server refuse those amounts before
+creating anything (`409 below_asset_minimum` with `minimum_usd`).
+`tessera topup --minimums [--asset <code>]` prints the range and that coin's
+minimum.
 
 **Coins.** `topup --coins` lists the accepted coins; `--asset <code>` selects one
 for the default address path. `--asset`, `--coin` and `--pay-currency` are
@@ -449,7 +441,7 @@ cause:
   VPN, proxy or sandbox is blocking direct outbound TCP to the hosts. The
   indexer lists every host by IP as well as by name, so DNS-only sandboxes
   (fake-IP DNS) work; a network that allows only HTTP(S) does not.
-- *insufficient balance*: run `tessera topup 1` (see *Top-up minimums*).
+- *insufficient balance*: run `tessera topup 5`.
 - *account not ready yet*: funding has not landed after the wait. Retry in a
   minute.
 
