@@ -246,7 +246,7 @@ the Mac, add a second pair with a different prefix (for example
 | `account delete [--yes]` | Permanently delete the account: keys revoked, files deleted, billing stopped. **No refund** of any balance. Type the account ID to confirm; `--yes` for scripts |
 | `update [--check] [--version vX.Y.Z]` | Install the latest release after verifying it against `SHA256SUMS` |
 | `whoami` | Show current account identity: account ID, App ID and the *public* key (the private `app_key` is never printed) |
-| `account [--json]` | Billing account dashboard (status, balance, usage, active credential) |
+| `account [--json]` | Billing account dashboard (status, balance, usage, active credential). When packing would free stored blocks, a hint points at `tessera optimize` |
 | `dashboard` | Print a one-time browser login link (10 minutes) |
 | `dashboard --logout-all` | Sign out every browser session for this account |
 | `topup <amount> [--asset <code>] [--invoice] [--wallet] [--json] [--wait\|--no-wait]` | Add funds: x402 wallet (`--wallet`, $5 to $10,000), deposit address in a chosen coin (USDC on Base by default; `--asset xmr`, `btc`, `eth`, `usdttrc20`…), or browser invoice in any accepted coin (`--invoice`). `tessera topup --help` explains all three |
@@ -259,6 +259,8 @@ the Mac, add a second pair with a different prefix (for example
 | `upload <path> [--as <remote>] [--quiet]` | Upload a file **or a whole folder**. During technical validation a file over 40 MiB is refused before upload; with a balance, any size |
 | `download <path> [--out <file>] [--offset <bytes>] [--length <bytes>]` | Download + SHA-256 verification; with `--offset`/`--length` only that byte range (only the slabs covering it are fetched). Interrupted downloads restart from the beginning; resume by hand with `--offset` = bytes already on disk |
 | `delete <path> [--purge]` | Move to trash (or purge permanently) |
+| `mv <src> <dst> [--force] [--json]` | Rename or move a stored file or folder without transferring data. A destination ending in `/` (or an existing remote folder) keeps the file name. A source that names a folder moves every file under it. The old path is marked deleted so `tessera sync` removes the local copy instead of uploading it again. `--force` replaces an existing destination (moved to the trash). |
+| `optimize [prefix] [--dry-run] [--yes] [--json]` | Repack files in under-filled 40 MiB blocks into as few blocks as possible. Shows the plan (files, stored size now and after, one-off download+upload cost from live prices, monthly savings, payback, estimated time) and asks before running. `--dry-run` prints the plan only; `--yes` skips the prompt. |
 | `share <path>` | Create a 30-day share link |
 | `fetch <url> [name]` | Download a shared file |
 | `sync add\|list\|status\|conflicts\|remove` | Manage folder sync |
@@ -276,7 +278,7 @@ the Mac, add a second pair with a different prefix (for example
 | `help` | Show help |
 
 Add `--json` to `list`, `status`, `find`, `sync`, `usage`, `config`, `index`,
-`audit`, `topup`, and `account` for scripting. `topup --json` works on the
+`audit`, `topup`, `account`, `mv`, and `optimize` for scripting. `topup --json` works on the
 default address, `--coins`, and `--wallet` paths; the legacy `--x402` challenge
 output remains text. `signup --json` prints the account id and its one-time API
 key and recovery phrase (or, with `--secrets-file <path>`, only the file path).
