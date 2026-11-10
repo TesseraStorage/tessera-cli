@@ -291,9 +291,12 @@ func blockTrialLines(v *trialView, serverMsg string) (summary, uploads string) {
 // publicServerMessage drops a server readiness message that still uses the
 // retired wording (free trial, foray, a timer, subscriptions), so the CLI's own
 // technical-validation lines are shown instead. Other messages pass through.
+// "deleted" is allowed: a suspended account must be able to say that files
+// were deleted after the unpaid-balance window. Timer and trial words still
+// drop any message that would say how long the validation upload is kept.
 func publicServerMessage(m string) string {
 	l := strings.ToLower(m)
-	for _, bad := range []string{"trial", "foray", "72 hour", "72h", "subscription", "starter", "renew", "kept until", "deleted"} {
+	for _, bad := range []string{"trial", "foray", "72 hour", "72h", "subscription", "starter", "renew", "kept until"} {
 		if strings.Contains(l, bad) {
 			return ""
 		}
