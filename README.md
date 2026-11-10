@@ -14,10 +14,10 @@ version and verify everything you store — all from one static binary.
 ```bash
 curl -fsSL https://tessera.storage/install.sh | sh
 # same script: curl -fsSL https://raw.githubusercontent.com/TesseraStorage/tessera-cli/main/install.sh | sh
-# a specific version: ... | sh -s v1.12.8
+# a specific version: ... | sh -s v1.13.0
 ```
 
-Current release: **v1.12.8**. `tessera version` reports the git tag the release
+Current release: **v1.13.0**. `tessera version` reports the git tag the release
 workflow stamps into the binary. The same release also publishes `install.sh`
 and `install.ps1` (`https://github.com/TesseraStorage/tessera-cli/releases/latest/download/install.sh`).
 
