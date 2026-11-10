@@ -697,7 +697,7 @@ func TestSessionExpiryClearsConfig(t *testing.T) {
 	if !errors.Is(err, errSessionExpired) {
 		t.Fatalf("Account() error = %v (%T), want errSessionExpired", err, err)
 	}
-	if !strings.Contains(err.Error(), "tessera login --email") {
+	if !strings.Contains(err.Error(), "tessera login --code") {
 		t.Fatalf("expiry guidance = %q, want the login guidance", err.Error())
 	}
 	reloaded, lerr := loadConfig()

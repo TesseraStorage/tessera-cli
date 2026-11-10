@@ -29,7 +29,7 @@ var errNoBillingCredentials = errors.New("no billing credentials — run 'tesser
 // errSessionExpired is returned when the server rejects the saved
 // tessera_session cookie. Callers print its message; the client has already
 // cleared the dead session from the config.
-var errSessionExpired = errors.New("session expired — run `tessera login --email …`")
+var errSessionExpired = errors.New("session expired — run `tessera login --code <code>` from /account, or `tessera login \"<12-word phrase>\"`")
 
 // billingError is a typed error from the moneyd billing API. moneyd returns
 // most errors nested ({"detail":{"error":"code", …}}) and a few flat
@@ -136,6 +136,10 @@ type billingAPI interface {
 // Optional billing capabilities. They are separate interfaces so the existing
 // fakes and any older client keep satisfying billingAPI; callers type-assert
 // and fall back to the original behaviour when a capability is absent.
+type connectCodeAPI interface {
+	ExchangeConnectCode(code string) (accountID, apiKey string, hasIdentity bool, err error)
+}
+
 type topupModeAPI interface {
 	TopupWithMode(amount, rail, payCurrency, paymentHeader, mode string) (map[string]any, error)
 }
@@ -352,6 +356,32 @@ func (b *httpBilling) Verify(token string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("verify succeeded but no %s cookie was returned", sessionCookieName)
+}
+
+// ExchangeConnectCode spends a dashboard `ABCD-1234` code and returns a
+// long-lived agent API key for that billing account. Public endpoint: the
+// code itself is the credential. The server does not set a browser session
+// cookie; this is the same class of key `POST /agents` issues.
+func (b *httpBilling) ExchangeConnectCode(code string) (string, string, bool, error) {
+	req, err := b.request(http.MethodPost, "/auth/connect-code", map[string]any{"code": code})
+	if err != nil {
+		return "", "", false, err
+	}
+	_, data, err := b.do(req, authNone, "")
+	if err != nil {
+		return "", "", false, err
+	}
+	obj, err := decodeBillingObject(data)
+	if err != nil {
+		return "", "", false, err
+	}
+	accountID, _ := obj["account_id"].(string)
+	apiKey, _ := obj["api_key"].(string)
+	hasIdentity, _ := obj["has_storage_identity"].(bool)
+	if accountID == "" || apiKey == "" {
+		return "", "", false, fmt.Errorf("connect-code response is missing account_id or api_key")
+	}
+	return accountID, apiKey, hasIdentity, nil
 }
 
 // Logout revokes session server-side. The explicit session wins over the one

@@ -238,7 +238,8 @@ the Mac, add a second pair with a different prefix (for example
 |---|---|
 | `login "<12 words>"` | Restore your account on this machine from the recovery phrase: same account ID and App ID, no browser |
 | `login --api-key <tsk_…> ["<12 words>"]` | Log in with your API key (adding the phrase restores the storage identity too) |
-| `login --email <e> [--token <t>]` | Billing sign-in with a magic link: request it, then complete with the emailed token |
+| `login --code <ABCD-1234> ["<12 words>"]` | Connect this machine with a one-time code from `/account`. A new account shows a recovery phrase once; an account that already has a storage identity asks for the phrase from the first device |
+| `login --email <e> [--token <t>]` | Request or finish an emailed magic link (still works) |
 | `login --billing-logout` | End the billing session (an agent key, if any, is untouched) |
 | `signup [--name <n>] [--contact-email <e>] [--json] [--force] [--secrets-file <path>] [--show-secrets]` | Create an account and log this machine in; the recovery phrase and API key are shown once — keep both. When stdout is not a terminal they go to a `0600` file instead (see below) |
 | `logout [--yes]` | Remove local credentials from `~/.tessera/` (account and files stay) |
@@ -283,8 +284,8 @@ key and recovery phrase (or, with `--secrets-file <path>`, only the file path).
 ## Billing and agent accounts
 
 The CLI can create and manage an account on its own. `signup` opens an account
-and logs this machine in in one step, without a browser; `login --email` signs a
-human in with a magic link. Credentials are stored locally and never printed
+and logs this machine in in one step, without a browser; `login --code` connects
+this machine with a one-time code shown on `/account`. Credentials are stored locally and never printed
 again.
 
 ```bash
@@ -294,10 +295,11 @@ tessera signup --json               # {"account_id": "…", "api_key": "…", �
 tessera signup --secrets-file ./tessera-secrets.txt   # secrets to a 0600 file, never stdout
 tessera signup --force              # replace an existing agent key with a new account
 
-# Human sign-in with a magic link (stores a session cookie, not a key)
-tessera login --email you@example.com
-tessera login --email you@example.com --token <token>   # completes the sign-in
-tessera login --billing-logout      # ends the session; an agent key is untouched
+# Connect this machine with a code from /account (stores a long-lived API key)
+tessera login --code ABCD-1234
+
+# Recovery phrase on any machine (same account and App ID)
+tessera login "word1 word2 ... word12"
 
 # Dashboard and top-ups
 tessera account                     # billing id, status, balance, usage, credential

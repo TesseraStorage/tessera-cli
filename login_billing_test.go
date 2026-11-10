@@ -49,6 +49,13 @@ type fakeLoginAPI struct {
 	recoveryPublic string
 	recoveryKey    string
 	recoveryErr    error
+
+	exchangeCalls    int
+	exchangeCode     string
+	exchangeAccount  string
+	exchangeKey      string
+	exchangeIdentity bool
+	exchangeErr      error
 }
 
 func (f *fakeLoginAPI) MagicLink(email string) error {
@@ -108,7 +115,7 @@ func publicKeyString(key types.PrivateKey) string {
 // out: --email and --token take separate values, so takesValue must know them.
 // --billing-logout is a boolean and must not consume the next argument.
 func TestLoginValueFlagsRegistered(t *testing.T) {
-	for _, flag := range []string{"--email", "--token"} {
+	for _, flag := range []string{"--email", "--token", "--code"} {
 		if !takesValue(flag) {
 			t.Errorf("takesValue(%q) = false; positional() would swallow its value", flag)
 		}
@@ -329,7 +336,7 @@ func TestBillingLoginSessionExpiryClearsAndGuides(t *testing.T) {
 	if !errors.Is(err, errSessionExpired) {
 		t.Fatalf("billingLogin error = %v (%T), want errSessionExpired", err, err)
 	}
-	if !strings.Contains(err.Error(), "tessera login --email") {
+	if !strings.Contains(err.Error(), "tessera login --code") {
 		t.Fatalf("error = %q, want the re-login guidance", err)
 	}
 	saved, lerr := loadConfig()
@@ -940,7 +947,7 @@ func TestBillingLoginIdentityExistsGuides(t *testing.T) {
 	if !errors.Is(loginErr, errIdentityExists) {
 		t.Fatalf("error = %v (%T), want errIdentityExists", loginErr, loginErr)
 	}
-	for _, want := range []string{"identity_exists", "already", "recovery phrase", "--token"} {
+	for _, want := range []string{"identity_exists", "already", "recovery phrase", "--code"} {
 		if !strings.Contains(loginErr.Error(), want) {
 			t.Errorf("guidance %q missing from error: %v", want, loginErr)
 		}
@@ -1858,5 +1865,92 @@ func TestPhrasePrintHelpers(t *testing.T) {
 		"from it, so this account is reproducible on any machine.\n\n"
 	if out != want {
 		t.Errorf("printSuppliedPhraseNote output:\n%q\nwant:\n%q", out, want)
+	}
+}
+
+func (f *fakeLoginAPI) ExchangeConnectCode(code string) (string, string, bool, error) {
+	f.exchangeCalls++
+	f.exchangeCode = code
+	return f.exchangeAccount, f.exchangeKey, f.exchangeIdentity, f.exchangeErr
+}
+
+func TestCmdLoginConnectCodeMintsIdentity(t *testing.T) {
+	home := testConfigHome(t)
+	_ = home
+	fake := &fakeLoginAPI{
+		exchangeAccount: "acct-connect",
+		exchangeKey:     "tsk_deadbeef_examplekeyvalue________________",
+		connectKey:      "ck_test",
+		account:         map[string]any{"billing_id": "acct-connect"},
+	}
+	builder, rec := stubHeadlessRegistration(t, fake)
+
+	out := captureStdout(t, func() {
+		if err := runLogin([]string{"--code", "ABCD-1234"}); err != nil {
+			t.Fatalf("runLogin: %v", err)
+		}
+	})
+	if fake.exchangeCalls != 1 || fake.exchangeCode != "ABCD-1234" {
+		t.Fatalf("ExchangeConnectCode calls=%d code=%q", fake.exchangeCalls, fake.exchangeCode)
+	}
+	if fake.verifyCalls != 0 {
+		t.Fatalf("Verify calls = %d, want 0 (connect-code must not open a browser session)", fake.verifyCalls)
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BillingAgentKey != fake.exchangeKey {
+		t.Fatalf("BillingAgentKey = %q, want the issued API key", cfg.BillingAgentKey)
+	}
+	if cfg.BillingSession != "" {
+		t.Fatalf("BillingSession = %q, want empty (agent key, not a cookie)", cfg.BillingSession)
+	}
+	if cfg.AppID == "" || cfg.AppKey == "" {
+		t.Fatal("expected a storage identity to be registered")
+	}
+	if len(rec.calls) != 1 || rec.calls[0].connectKey != "ck_test" {
+		t.Fatalf("approve calls = %#v", rec.calls)
+	}
+	_ = builder
+	if !strings.Contains(out, "RECOVERY PHRASE") {
+		t.Errorf("first-device connect should print a recovery phrase:\n%s", out)
+	}
+}
+
+func TestCmdLoginConnectCodeRequiresPhraseWhenLinked(t *testing.T) {
+	_ = testConfigHome(t)
+	fake := &fakeLoginAPI{
+		exchangeAccount:  "acct-linked",
+		exchangeKey:      "tsk_deadbeef_examplekeyvalue________________",
+		exchangeIdentity: true,
+		recoveryAppID:    strings.Repeat("ab", 32),
+		recoveryPublic:   "ed25519:" + strings.Repeat("cd", 32),
+		recoveryKey:      "ck_existing",
+		account:          map[string]any{"billing_id": "acct-linked"},
+	}
+	stubHeadlessRegistration(t, fake)
+	err := runLogin([]string{"--code", "WXYZ-9876"})
+	if !errors.Is(err, errRecoveryPhraseRequired) {
+		t.Fatalf("runLogin = %v, want errRecoveryPhraseRequired", err)
+	}
+}
+
+func TestCmdLoginConnectCodeReuseError(t *testing.T) {
+	_ = testConfigHome(t)
+	fake := &fakeLoginAPI{
+		exchangeErr: &billingError{Status: http.StatusUnauthorized, Code: "invalid_code"},
+	}
+	stubBillingClient(t, fake)
+	err := runLogin([]string{"--code", "ABCD-1234"})
+	if err == nil || !strings.Contains(err.Error(), "invalid, expired or already used") {
+		t.Fatalf("runLogin = %v, want reused-code hint", err)
+	}
+}
+
+func TestCmdLoginConnectCodeMissingValue(t *testing.T) {
+	err := runLogin([]string{"--code"})
+	if err == nil || !strings.Contains(err.Error(), "--code requires a connect code") {
+		t.Fatalf("runLogin = %v, want missing-value error", err)
 	}
 }

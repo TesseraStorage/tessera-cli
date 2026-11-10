@@ -449,7 +449,7 @@ func TestAccountSessionExpiryGuidance(t *testing.T) {
 	if !errors.Is(err, errSessionExpired) {
 		t.Fatalf("fetchAccountSummary error = %v (%T), want errSessionExpired", err, err)
 	}
-	if !strings.Contains(err.Error(), "tessera login --email") {
+	if !strings.Contains(err.Error(), "tessera login --code") {
 		t.Errorf("expiry guidance = %q, want the login command", err)
 	}
 	if cookies[0] != "dead-session" || auths[0] != "" {
