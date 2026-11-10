@@ -246,6 +246,8 @@ the Mac, add a second pair with a different prefix (for example
 | `update [--check] [--version vX.Y.Z]` | Install the latest release after verifying it against `SHA256SUMS` |
 | `whoami` | Show current account identity: account ID, App ID and the *public* key (the private `app_key` is never printed) |
 | `account [--json]` | Billing account dashboard (status, balance, allowance, active credential) |
+| `dashboard` | Print a one-time browser login link (10 minutes). Chat previews do not use it up |
+| `dashboard --logout-all` | Sign out every browser session for this account |
 | `topup <amount> [--asset <code>] [--invoice] [--wallet] [--json] [--wait\|--no-wait]` | Add funds: x402 wallet (`--wallet`, any amount from $0.01), deposit address in a chosen coin (USDC on Base by default; `--asset xmr`, `btc`, `eth`, `usdttrc20`…), or browser invoice in any accepted coin (`--invoice`). `tessera topup --help` explains all three |
 | `topup --minimums [--asset <code>] [--json]` | Show the live per-rail minimums |
 | `topup <amount> [--x402] [--pay-currency <asset>] [--payment <b64>]` | Advanced x402: print the challenge to sign externally, or submit a signed authorization |

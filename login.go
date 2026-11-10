@@ -250,10 +250,7 @@ func printBillingAccountSummary(acct map[string]any) {
 	fmt.Println("Signed in.")
 	fmt.Println()
 
-	id, kind := accountString(acct, "billing_id"), accountString(acct, "kind")
-	if id != "" && kind != "" {
-		id += " (" + kind + ")"
-	}
+	id := accountString(acct, "billing_id")
 	field := func(label, value string) {
 		if value != "" {
 			fmt.Printf("  %-10s %s\n", label+":", value)
