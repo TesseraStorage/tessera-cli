@@ -15,14 +15,9 @@ import (
 	"golang.org/x/crypto/blake2b"
 )
 
-// Seed-only login (v1.11.0).
+// Seed-only login.
 //
-// Before v1.11.0 a machine without ~/.tessera could only get back into an
-// account with the API key or an email session. `tessera login "<phrase>"`
-// fell through to the old browser connect-key ("app password") flow, which
-// minted a NEW random App ID — a different, empty storage identity.
-//
-// Now the 12-word recovery phrase alone is enough. A second ed25519 key — the
+// The 12-word recovery phrase alone is enough. A second ed25519 key — the
 // recovery key — is derived from the phrase (never from anything else) and its
 // PUBLIC half is registered with the billing server whenever this CLI has the
 // phrase and a working credential (signup, login). On a fresh machine the CLI
@@ -146,11 +141,8 @@ func enableSeedLogin(cfg *Config, phrase, billingID string) {
 // account for it.
 var errSeedNotRegistered = errors.New(`no account is registered for this recovery phrase.
   - Check the 12 words (order matters).
-  - Accounts created before tessera v1.11.0 need seed login enabled once:
-      tessera login --api-key <your tsk_ API key> "<12 words>"
-    or sign in by email:
-      tessera login --email <you@example.com>
-  After that, 'tessera login "<12 words>"' works on any machine`)
+  - Or sign in another way (email):
+      tessera login --email <you@example.com>`)
 
 // seedLogin restores an account from the phrase alone (no browser, no API key).
 func seedLogin(cfg *Config, phrase string) error {

@@ -46,14 +46,10 @@ var signupRegister = registerStorageIdentity
 //
 //	tessera signup [--name <name>] [--contact-email <email>] [--force] [--json]
 //
-// v1.11.0: signup used to stop after creating the billing account, so users
-// had to run 'tessera login' next. Worse, a stale email session left in the
-// config won over the new API key, so the follow-up login could bind the new
-// App ID to a different (old) account. Signup now always starts from a clean
-// config, creates the storage identity in the same step and registers the
-// seed-login key, then prints the two things to keep: the recovery phrase
-// and the API key. This is the one command that deliberately prints secrets,
-// exactly once.
+// Signup always starts from a clean config, creates the storage identity in
+// the same step and registers the seed-login key, then prints the two things
+// to keep: the recovery phrase and the API key. This is the one command that
+// deliberately prints secrets, exactly once.
 func cmdSignup(args []string) {
 	if hasFlag(args, "--help") || hasFlag(args, "-h") {
 		fmt.Println("Usage: tessera signup [--name <name>] [--contact-email <email>] [--force]")

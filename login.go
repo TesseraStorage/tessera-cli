@@ -483,10 +483,9 @@ func registerStorageIdentity(cfg *Config, phraseArg, billingID string) error {
 	}
 
 	// RECOVERY FIRST: ask the server whether this account already has a
-	// storage identity. Since v1.11.0 this works with a session OR the
-	// account's API key, so a headless machine restores the ORIGINAL App ID
-	// instead of minting a second identity. A 404 means no identity exists
-	// yet -- mint one.
+	// storage identity. This works with a session OR the account's API key,
+	// so a headless machine restores the ORIGINAL App ID instead of minting
+	// a second identity. A 404 means no identity exists yet -- mint one.
 	appID := siastorage.GenerateAppID()
 	var connectKey, expectedPublicKey string
 	linked := false
@@ -747,10 +746,9 @@ Env:
 This command does not run, link an identity, or print a recovery phrase
 when only --help/-h is given.`
 
-// cmdLogin connects this machine to Tessera. Every form is headless; the old
-// browser connect-key ("app password") flow was removed in v1.11.0 because it
-// silently created a NEW, empty storage identity (random App ID) for people
-// trying to restore an existing account.
+// cmdLogin connects this machine to Tessera. Every form is headless. The
+// phrase, API key, and email paths restore the existing storage identity
+// rather than minting a new one.
 //
 // The billing paths use moneyd's /api/v1/auth endpoints. Production fronts
 // them with Cloudflare (spec §6.1/§10); /api/v1/auth/* must stay reachable by

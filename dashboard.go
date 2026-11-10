@@ -43,9 +43,8 @@ func cmdDashboard(args []string) {
 	}
 	fmt.Println(url)
 	fmt.Println()
-	fmt.Println("This link works once and expires in 10 minutes.")
+	fmt.Println("This link expires in 10 minutes.")
 	fmt.Println("Open it in a browser and click Continue to dashboard.")
-	fmt.Println("Previewing the link in Slack or Messages will not use it up.")
 }
 
 func cmdDashboardLogoutAll() {
@@ -76,8 +75,8 @@ func printDashboardHelp() {
 	fmt.Println("       tessera dashboard logout-all")
 	fmt.Println()
 	fmt.Println("Print a one-time browser login link (valid 10 minutes).")
-	fmt.Println("The link opens a confirmation page; only Continue to dashboard")
-	fmt.Println("uses it up, so chat previews are safe.")
+	fmt.Println("The link opens a confirmation page; click Continue to dashboard")
+	fmt.Println("to sign in.")
 	fmt.Println()
 	fmt.Println("  --logout-all   end every browser session for this account")
 	fmt.Println("                 (same as: tessera dashboard logout-all)")
