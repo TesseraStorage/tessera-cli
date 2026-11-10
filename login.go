@@ -282,7 +282,7 @@ func billingLogout() error {
 	if err := saveConfig(cfg); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
-	fmt.Println("Signed out. The local billing session was cleared; an agent key, if any, is untouched.")
+	fmt.Println("Signed out. The local billing session was cleared; an API key, if any, is untouched.")
 	return nil
 }
 

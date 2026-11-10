@@ -202,7 +202,7 @@ func describeBillingSignIn(cfg *Config) string {
 	case cfg.BillingSession != "":
 		return "session (cookie)"
 	case cfg.BillingAgentKey != "":
-		return "agent key (bearer)"
+		return "API key (bearer)"
 	default:
 		return "not signed in"
 	}

@@ -129,16 +129,18 @@ func TestPrintAccountTableNulls(t *testing.T) {
 	if line := lineWithPrefix(out, "Period"); line != "" {
 		t.Errorf("period line should be gone, got %q", line)
 	}
+	if line := lineWithPrefix(out, "Kind"); line != "" {
+		t.Errorf("kind line should be gone, got %q", line)
+	}
 	if line := lineWithPrefix(out, "Days left"); !strings.HasSuffix(strings.TrimSpace(line), "—") {
 		t.Errorf("days_left null rendered %q, want an em dash", line)
 	}
 	for _, want := range []string{
 		"TESS-1",
-		"agent",
 		"pending",
 		"$0",
 		"measured host spend", // retired egress byte counter is not shown as 0 B
-		"agent key",
+		"API key",
 		"https://tessera.storage/account",
 	} {
 		if !strings.Contains(out, want) {
@@ -214,7 +216,6 @@ func TestCmdAccountHumanTable(t *testing.T) {
 	}
 	for _, want := range []string{
 		"TESS-000000000042",
-		"human",
 		"active",
 		"$7.50",
 		"measured host spend", // downloads row replaces the retired byte counter
@@ -228,6 +229,9 @@ func TestCmdAccountHumanTable(t *testing.T) {
 	}
 	if strings.Contains(out, "Plan:") {
 		t.Errorf("human table still shows a plan line:\n%s", out)
+	}
+	if line := lineWithPrefix(out, "Kind"); line != "" {
+		t.Errorf("kind line should be gone, got %q", line)
 	}
 	if line := lineWithPrefix(out, "Credential"); !strings.Contains(line, "session") {
 		t.Errorf("credential line = %q, want the session", line)
@@ -257,8 +261,8 @@ func TestCmdAccountShowsAgentCredential(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() { cmdAccount(nil) })
-	if line := lineWithPrefix(out, "Credential"); !strings.Contains(line, "agent key") {
-		t.Fatalf("credential line = %q, want the agent key", line)
+	if line := lineWithPrefix(out, "Credential"); !strings.Contains(line, "API key") {
+		t.Fatalf("credential line = %q, want API key", line)
 	}
 }
 

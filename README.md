@@ -14,10 +14,10 @@ version and verify everything you store — all from one static binary.
 ```bash
 curl -fsSL https://tessera.storage/install.sh | sh
 # same script: curl -fsSL https://raw.githubusercontent.com/TesseraStorage/tessera-cli/main/install.sh | sh
-# a specific version: ... | sh -s v1.14.0
+# a specific version: ... | sh -s v1.14.1
 ```
 
-Current release: **v1.14.0**. `tessera version` reports the git tag the release
+Current release: **v1.14.1**. `tessera version` reports the git tag the release
 workflow stamps into the binary. The same release also publishes `install.sh`
 and `install.ps1` (`https://github.com/TesseraStorage/tessera-cli/releases/latest/download/install.sh`).
 
@@ -240,7 +240,7 @@ the Mac, add a second pair with a different prefix (for example
 | `login --api-key <tsk_…> ["<12 words>"]` | Log in with your API key (adding the phrase restores the storage identity too) |
 | `login --code <ABCD-1234> ["<12 words>"]` | Connect this machine with a one-time code from `/account`. A new account shows a recovery phrase once; an account that already has a storage identity asks for the phrase from the first device |
 | `login --email <e> [--token <t>]` | Request or finish an emailed magic link (still works) |
-| `login --billing-logout` | End the billing session (an agent key, if any, is untouched) |
+| `login --billing-logout` | End the billing session (an API key, if any, is untouched) |
 | `signup [--name <n>] [--contact-email <e>] [--json] [--force] [--secrets-file <path>] [--show-secrets]` | Create an account and log this machine in; the recovery phrase and API key are shown once — keep both. When stdout is not a terminal they go to a `0600` file instead (see below) |
 | `logout [--yes]` | Remove local credentials from `~/.tessera/` (account and files stay) |
 | `account delete [--yes]` | Permanently delete the account: keys revoked, files deleted, billing stopped. **No refund** of any balance. Type the account ID to confirm; `--yes` for scripts |
@@ -293,7 +293,7 @@ again.
 tessera signup --name build-box --contact-email ops@example.com
 tessera signup --json               # {"account_id": "…", "api_key": "…", …} for scripts
 tessera signup --secrets-file ./tessera-secrets.txt   # secrets to a 0600 file, never stdout
-tessera signup --force              # replace an existing agent key with a new account
+tessera signup --force              # replace an existing API key with a new account
 
 # Connect this machine with a code from /account (stores a long-lived API key)
 tessera login --code ABCD-1234
@@ -375,7 +375,7 @@ aliases, but do not name different assets in one command.
 wins over a `billing_agent_key`; `tessera account` prints which credential is
 active. If the server rejects the session with a 401, the CLI clears it locally
 and says *session expired — run `tessera login --email …`*; the next command
-falls back to the stored agent key, if there is one.
+falls back to the stored API key, if there is one.
 
 **Signup logs you in.** `signup` creates the billing account and this
 machine's storage identity in the same step: it generates a recovery phrase,
@@ -406,7 +406,11 @@ identity yet finishes the same registration.
 
 **New accounts: technical validation.** Technical validation: one upload of
 up to 40 MiB (41,943,040 bytes, one slab) and one download. Balance stays
-**$0.00**. Tessera covers the hosts. After that, top up to continue.
+**$0.00**. Tessera covers the hosts. The 72-hour window starts when you
+connect your first device, not when you first enter your email. Topping up
+before using the technical validation ends it and the account works normally
+from then on — there is no separate validation step after a top-up. After
+the upload and download, top up to continue.
 `tessera upload` of a larger file — a single file, or any file in a folder —
 is refused before anything is sent to the hosts, so that one upload is not
 used up. The refusal is skipped when the account status cannot be read.

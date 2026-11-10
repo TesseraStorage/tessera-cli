@@ -456,10 +456,14 @@ func egressDisplay(acct map[string]any) string {
 		return accountBytes(acct, "egress_used_bytes")
 	}
 	if blocks, ok := accountUint64(acct, "egress_billed_blocks"); ok {
+		usd := accountBalanceUSD(acct, "egress_billed_usd")
+		if blocks == 0 && (usd == "" || creditIsZero(usd)) {
+			return "none yet"
+		}
 		// Money-10 servers: egress_used_bytes is exactly the billed 40 MiB
 		// blocks, so show bytes, blocks and dollars together.
 		s := accountBytes(acct, "egress_used_bytes") + " billed (" + strconv.FormatUint(blocks, 10) + " blocks of 40 MiB"
-		if usd := accountBalanceUSD(acct, "egress_billed_usd"); usd != "" {
+		if usd != "" {
 			s += ", $" + displayUSD(usd)
 		}
 		return s + "); measured from host spend within about 15 minutes"
@@ -603,7 +607,7 @@ func daysLeftEmptyText(acct map[string]any) string {
 		return ""
 	}
 	if n, ok := accountUint64(acct, "stored_bytes"); ok && n == 0 {
-		return "no estimate yet (nothing stored; storage is the daily charge it is based on)"
+		return "no estimate yet (nothing stored)"
 	}
 	return ""
 }
