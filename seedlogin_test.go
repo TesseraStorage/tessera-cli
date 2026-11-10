@@ -132,8 +132,11 @@ func TestSeedLoginNotRegisteredGivesGuidance(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("TESSERA_BILLING_URL", srv.URL)
 	err := runLogin([]string{seedTestPhrase})
-	if err == nil || !strings.Contains(err.Error(), "--api-key") {
-		t.Fatalf("err = %v, want --api-key guidance", err)
+	if err == nil || !strings.Contains(err.Error(), "order matters") || !strings.Contains(err.Error(), "--email") {
+		t.Fatalf("err = %v, want phrase check and email sign-in guidance", err)
+	}
+	if strings.Contains(err.Error(), "v1.11.0") || strings.Contains(err.Error(), "--api-key") {
+		t.Fatalf("err still mentions legacy enable path: %v", err)
 	}
 }
 

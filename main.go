@@ -39,7 +39,7 @@ import (
 var statusCommand = cmdStatus
 
 // version is the build version. The release workflow injects it from the git
-// tag (v1.13.0 is the release this tree is for; the tag is cut after a live
+// tag (v1.13.1 is the release this tree is for; the tag is cut after a live
 // server test, not by this change):
 //
 //	go build -ldflags "-X main.version=${GITHUB_REF_NAME}" .

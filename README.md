@@ -14,10 +14,10 @@ version and verify everything you store — all from one static binary.
 ```bash
 curl -fsSL https://tessera.storage/install.sh | sh
 # same script: curl -fsSL https://raw.githubusercontent.com/TesseraStorage/tessera-cli/main/install.sh | sh
-# a specific version: ... | sh -s v1.13.0
+# a specific version: ... | sh -s v1.13.1
 ```
 
-Current release: **v1.13.0**. `tessera version` reports the git tag the release
+Current release: **v1.13.1**. `tessera version` reports the git tag the release
 workflow stamps into the binary. The same release also publishes `install.sh`
 and `install.ps1` (`https://github.com/TesseraStorage/tessera-cli/releases/latest/download/install.sh`).
 
@@ -246,7 +246,7 @@ the Mac, add a second pair with a different prefix (for example
 | `update [--check] [--version vX.Y.Z]` | Install the latest release after verifying it against `SHA256SUMS` |
 | `whoami` | Show current account identity: account ID, App ID and the *public* key (the private `app_key` is never printed) |
 | `account [--json]` | Billing account dashboard (status, balance, allowance, active credential) |
-| `dashboard` | Print a one-time browser login link (10 minutes). Chat previews do not use it up |
+| `dashboard` | Print a one-time browser login link (10 minutes) |
 | `dashboard --logout-all` | Sign out every browser session for this account |
 | `topup <amount> [--asset <code>] [--invoice] [--wallet] [--json] [--wait\|--no-wait]` | Add funds: x402 wallet (`--wallet`, any amount from $0.01), deposit address in a chosen coin (USDC on Base by default; `--asset xmr`, `btc`, `eth`, `usdttrc20`…), or browser invoice in any accepted coin (`--invoice`). `tessera topup --help` explains all three |
 | `topup --minimums [--asset <code>] [--json]` | Show the live per-rail minimums |
