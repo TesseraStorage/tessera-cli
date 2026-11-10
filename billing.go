@@ -77,7 +77,7 @@ func describeBillingError(err error) string {
 		}
 	}
 	if errors.As(err, &be) && be.Status == http.StatusUnauthorized {
-		return fmt.Sprintf("authentication failed — run 'tessera signup' or 'tessera login' to sign in; if an agent key was revoked, run 'tessera signup --force' for a new agent account (%s)", be)
+		return fmt.Sprintf("authentication failed — run 'tessera signup' or 'tessera login' to sign in; if an API key was revoked, run 'tessera signup --force' for a new agent account (%s)", be)
 	}
 	return err.Error()
 }

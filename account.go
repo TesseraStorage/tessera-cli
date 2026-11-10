@@ -75,7 +75,7 @@ func credentialLabel(cfg *Config) string {
 // credentialText is the human-readable form of a credentialLabel value.
 func credentialText(credential string) string {
 	if credential == "agent" {
-		return "agent key"
+		return "API key"
 	}
 	return credential
 }
@@ -199,7 +199,6 @@ func printAccountTable(acct map[string]any, credential string) {
 		balance = "$" + balance
 	}
 	field("Billing ID", accountString(acct, "billing_id"))
-	field("Kind", accountString(acct, "kind"))
 	field("Status", accountString(acct, "status"))
 	field("Balance", balance)
 	field("Downloads", egressDisplay(acct))
@@ -210,7 +209,9 @@ func printAccountTable(acct map[string]any, credential string) {
 	if v := buildTrialView(acct); v != nil {
 		field("Readiness", readinessLabel(v.State))
 		fmt.Printf("  %-14s %s\n", "", v.Summary)
-		fmt.Printf("  %-14s %s\n", "", v.UploadsLine)
+		if v.UploadsLine != "" && !strings.Contains(v.Summary, "blocked until you top up") {
+			fmt.Printf("  %-14s %s\n", "", v.UploadsLine)
+		}
 	}
 }
 
