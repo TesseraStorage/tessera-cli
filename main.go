@@ -39,7 +39,7 @@ import (
 var statusCommand = cmdStatus
 
 // version is the build version. The release workflow injects it from the git
-// tag (v1.13.1 is the release this tree is for; the tag is cut after a live
+// tag (v1.14.0 is the release this tree is for; the tag is cut after a live
 // server test, not by this change):
 //
 //	go build -ldflags "-X main.version=${GITHUB_REF_NAME}" .
@@ -387,8 +387,8 @@ Billing & account:
   {exe} dashboard               Print a one-time browser login link (10 minutes)
   {exe} dashboard --logout-all  Sign out every browser session for this account
   {exe} topup <amount> [--asset <code>] [--invoice] [--wallet]
-                             Add funds: x402 wallet (any amount from $0.01),
-                             deposit address in a chosen coin (USDC on Base by
+                             Add funds, $5 to $10,000: x402 wallet, deposit
+                             address in a chosen coin (USDC on Base by
                              default; XMR, BTC, ETH, USDT...), or browser invoice.
                              A terminal also shows a USDC-on-Base QR
                              (--no-qr to hide; --qr=address for the address only).
@@ -399,9 +399,8 @@ Billing & account:
                              Submit a signed x402 authorization to settle
   {exe} topup --coins           List coins accepted for top-ups
   {exe} topup --minimums [--asset <code>]
-                             Live minimums: crypto via NOWPayments has a per-coin
-                             processor minimum (~$0.38 USDC on Base, more for
-                             other coins); x402 (--wallet) from the $0.01 floor
+                             The $5 to $10,000 range, and a coin's processor
+                             minimum for a deposit address when it is higher
   {exe} wallet init|show|fund   Local x402 wallet (opt-in)
   {exe} login --billing-logout  End the email session (API key untouched)
 
@@ -413,7 +412,7 @@ Account readiness (shown by signup, login, status, account and usage):
                      continue. With a balance, files of any size can be uploaded
   top up to continue
                      technical validation is used, or the balance is $0:
-                     tessera topup 1
+                     tessera topup 5
   ready              funded; uploads and downloads run normally
 Other commands mention readiness only when an upload cannot run.
 status prints "Account funded: yes/no". The low-level host-funding flag

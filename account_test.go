@@ -126,11 +126,11 @@ func TestPrintAccountTableNulls(t *testing.T) {
 	if strings.Contains(out, "%!") || strings.Contains(out, "<nil>") || strings.Contains(out, "nil") {
 		t.Fatalf("null field rendered as a formatting artifact:\n%s", out)
 	}
-	if line := lineWithPrefix(out, "Period"); !strings.HasSuffix(strings.TrimSpace(line), "—") && !strings.Contains(line, "pay as you go") {
-		t.Errorf("period_end null rendered %q, want an em dash or the pay-as-you-go note", line)
+	if line := lineWithPrefix(out, "Period"); line != "" {
+		t.Errorf("period line should be gone, got %q", line)
 	}
 	if line := lineWithPrefix(out, "Days left"); !strings.HasSuffix(strings.TrimSpace(line), "—") {
-		t.Errorf("days_left null rendered %q, want an em dash or the pay-as-you-go note", line)
+		t.Errorf("days_left null rendered %q, want an em dash", line)
 	}
 	for _, want := range []string{
 		"TESS-1",
@@ -217,7 +217,6 @@ func TestCmdAccountHumanTable(t *testing.T) {
 		"human",
 		"active",
 		"$7.50",
-		"4.77 MiB",            // allowance_egress_bytes = 5,000,000
 		"measured host spend", // downloads row replaces the retired byte counter
 		"29",
 		"session", // the stored session wins over the agent key
@@ -233,8 +232,8 @@ func TestCmdAccountHumanTable(t *testing.T) {
 	if line := lineWithPrefix(out, "Credential"); !strings.Contains(line, "session") {
 		t.Errorf("credential line = %q, want the session", line)
 	}
-	if line := lineWithPrefix(out, "Period"); !strings.HasSuffix(strings.TrimSpace(line), "—") && !strings.Contains(line, "pay as you go") {
-		t.Errorf("null period_end rendered %q, want an em dash or the pay-as-you-go note", line)
+	if line := lineWithPrefix(out, "Period"); line != "" {
+		t.Errorf("period line should be gone, got %q", line)
 	}
 	for _, secret := range []string{"sess-live", "tsk_secret"} {
 		if strings.Contains(out, secret) {

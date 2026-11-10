@@ -76,7 +76,7 @@ func runPromo(api billingAPI, code string) error {
 }
 
 // printPromoResult renders the redemption summary (kind and value). Billing
-// periods are not shown: Tessera is pay-as-you-go only.
+// periods are not shown: there are no billing periods.
 func printPromoResult(resp map[string]any) {
 	fmt.Println("Promo code redeemed.")
 	fmt.Println()

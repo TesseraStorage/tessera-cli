@@ -28,7 +28,10 @@ func TestPrintRates(t *testing.T) {
 			t.Errorf("rates output missing %q:\n%s", want, out)
 		}
 	}
-	for _, bad := range []string{"$8", "$5", "$20", "ingress free", "free ingress"} {
+	if !strings.Contains(out, "Top up $5 to $10,000: tessera topup 5") {
+		t.Errorf("rates output missing the top-up range:\n%s", out)
+	}
+	for _, bad := range []string{"$8", "$20", "ingress free", "free ingress"} {
 		if strings.Contains(out, bad) {
 			t.Errorf("rates output contains stale %q:\n%s", bad, out)
 		}

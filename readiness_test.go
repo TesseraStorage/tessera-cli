@@ -160,7 +160,7 @@ func TestIsHostShortageError(t *testing.T) {
 func TestSignupHintStatesRealMinimums(t *testing.T) {
 	// guard for the old 'tessera topup 10' hint
 	out := captureStdout(t, func() { printSignupResult(signupResult{AccountID: "AGNT-test", APIKey: "test-key"}, false) })
-	if strings.Contains(out, "topup 10") || strings.Contains(out, "minimum $0.01") || !strings.Contains(out, "$0.38") || !strings.Contains(out, "topup --minimums") {
+	if strings.Contains(out, "$0.38") || strings.Contains(out, "minimum $0.01") || !strings.Contains(out, "tessera topup 5") {
 		t.Fatalf("signup hint: %q", out)
 	}
 }

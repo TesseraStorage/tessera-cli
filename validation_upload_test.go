@@ -52,12 +52,12 @@ func TestZeroBalanceTechnicalValidation(t *testing.T) {
 
 func TestTechnicalValidationOversizeMessage(t *testing.T) {
 	got := technicalValidationOversizeMessage(50<<20, "")
-	want := "Technical validation allows one upload of up to 40 MiB. This file is 50.00 MiB. Top up to upload larger files: tessera topup 1"
+	want := "Technical validation allows one upload of up to 40 MiB. This file is 50.00 MiB. Top up to upload larger files: tessera topup 5"
 	if got != want {
 		t.Fatalf("message =\n%q\nwant\n%q", got, want)
 	}
 	named := technicalValidationOversizeMessage(50<<20, "clips/a.mp4")
-	if !strings.Contains(named, "50.00 MiB (clips/a.mp4)") || !strings.Contains(named, "tessera topup 1") {
+	if !strings.Contains(named, "50.00 MiB (clips/a.mp4)") || !strings.Contains(named, "tessera topup 5") {
 		t.Fatalf("named message = %q", named)
 	}
 	low := strings.ToLower(got)

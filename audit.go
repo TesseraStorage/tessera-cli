@@ -305,7 +305,7 @@ const (
 	// card prices in — not 2^40.
 	decimalTBBytes = 1e12
 	// egressEstimateLabel is the mandatory --cost disclaimer.
-	egressEstimateLabel = "estimate only; allowance netted; excludes plan fees/credits ($10/TB downloads; live rates: tessera rates)"
+	egressEstimateLabel = "estimate only ($10/TB downloads; live rates: tessera rates)"
 )
 
 // egressEstimateUSD returns the PAYG egress overage estimate formatted to
@@ -382,7 +382,6 @@ func printUsageBilling(acct map[string]any, cost bool) {
 		balance = "$" + balance
 	}
 	field("balance", balance)
-	field("period ends", periodEndText(acct))
 	field("days left", daysLeftField(acct))
 	if label, ok := lastMeteredLabel(acct); ok {
 		field("last metered", label)

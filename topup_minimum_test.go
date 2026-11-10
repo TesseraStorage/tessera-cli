@@ -24,37 +24,41 @@ func minimumsDoc(min, coin string) map[string]any {
 	return map[string]any{"rails": map[string]any{"nowpayments": map[string]any{"minimum_usd": min, "pay_currency": coin}}}
 }
 
-func TestCheckTopupMinimumRefusesBeforeInvoice(t *testing.T) {
-	api := &fakeMinimumsAPI{doc: minimumsDoc("0.38", "usdcbase")}
-	err := checkTopupMinimum(api, topupRequest{amount: "0.01", invoice: true, payCurrency: "btc"})
+func TestCheckTopupMinimumSkipsInvoice(t *testing.T) {
+	api := &fakeMinimumsAPI{doc: minimumsDoc("8.64", "usdcbase")}
+	if err := checkTopupMinimum(api, topupRequest{amount: "5", invoice: true, payCurrency: "btc"}); err != nil {
+		t.Fatalf("invoice should not pre-check a coin minimum: %v", err)
+	}
+	if len(api.askedCoin) != 0 {
+		t.Fatalf("invoice should not ask minimums, asked %v", api.askedCoin)
+	}
+}
+
+func TestCheckTopupMinimumRefusesDirectBelowProcessor(t *testing.T) {
+	api := &fakeMinimumsAPI{doc: minimumsDoc("8.64", "xmr")}
+	err := checkTopupMinimum(api, topupRequest{amount: "5", payCurrency: "xmr"})
 	var be *billingError
 	if !errors.As(err, &be) || be.Status != http.StatusConflict || be.Code != "below_asset_minimum" {
 		t.Fatalf("err = %v, want 409 below_asset_minimum", err)
 	}
-	if api.askedCoin[0] != "" {
-		t.Fatalf("invoice should check the default coin, asked %q", api.askedCoin[0])
-	}
 	msg := describeTopupError(err)
-	for _, want := range []string{"USDC on Base", "browser invoice", "$0.38", "nothing was created", "--wallet"} {
+	for _, want := range []string{"Monero (XMR)", "$8.64", "nothing was created", "another coin"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("message %q missing %q", msg, want)
 		}
 	}
-	if api.topupCalls != 0 {
-		t.Fatal("no invoice may be created")
-	}
 }
 
 func TestCheckTopupMinimumAllowsAtOrAbove(t *testing.T) {
-	api := &fakeMinimumsAPI{doc: minimumsDoc("0.38", "usdcbase")}
-	for _, amt := range []string{"0.38", "5"} {
+	api := &fakeMinimumsAPI{doc: minimumsDoc("5.00", "usdcbase")}
+	for _, amt := range []string{"5", "12.50"} {
 		if err := checkTopupMinimum(api, topupRequest{amount: amt}); err != nil {
 			t.Fatalf("%s: %v", amt, err)
 		}
 	}
-	api2 := &fakeMinimumsAPI{doc: minimumsDoc("1.62", "btc")}
-	if err := checkTopupMinimum(api2, topupRequest{amount: "1", payCurrency: "btc"}); err == nil {
-		t.Fatal("btc $1 should be below $1.62")
+	api2 := &fakeMinimumsAPI{doc: minimumsDoc("8.64", "btc")}
+	if err := checkTopupMinimum(api2, topupRequest{amount: "5", payCurrency: "btc"}); err == nil {
+		t.Fatal("btc $5 should be below $8.64")
 	}
 	if api2.askedCoin[0] != "btc" {
 		t.Fatalf("direct should ask for the named coin, got %q", api2.askedCoin[0])
@@ -114,7 +118,7 @@ func TestResolveAssetTickerListsNetworks(t *testing.T) {
 }
 
 func TestTopupHelpExplainsThreeWays(t *testing.T) {
-	for _, want := range []string{"x402 wallet", "any amount from $0.01", "--asset xmr", "Browser invoice", "XMR", "BTC", "ETH", "USDT"} {
+	for _, want := range []string{"x402 wallet", "between $5 and $10,000", "--asset xmr", "Browser invoice", "XMR", "BTC", "ETH", "USDT"} {
 		if !strings.Contains(topupHelp, want) {
 			t.Errorf("topup help missing %q", want)
 		}

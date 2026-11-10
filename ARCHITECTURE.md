@@ -235,13 +235,13 @@ is the single, documented exception that prints the one-time key.
 `--coin <code>` selects the asset on the default direct-address path;
 `topup --coins` lists accepted coins without needing an amount. `--json` emits
 one document on the default, coin-list and wallet paths; the legacy x402
-challenge output remains text. Before a NOWPayments address or invoice is
+challenge output remains text. Before a NOWPayments deposit address is
 created, the CLI reads `GET /billing/topup/minimums` (public, cached 10 min
-server-side) and refuses an amount below the coin's processor minimum (an
-invoice is checked against the default, cheapest coin) with the real number;
-the server enforces the same rule as `409 below_asset_minimum` with
-`minimum_usd`. x402 has no processor minimum: only the $0.01 server floor
-applies. `topup --minimums` prints the live values. A failure to read the
+server-side) and refuses an amount below that coin's processor minimum
+with the real number; a browser invoice is not pre-checked. The server
+enforces the same rule as `409 below_asset_minimum` with
+`minimum_usd`. Every method starts at $5 (and stops at $10,000).
+`topup --minimums` prints the range and any higher per-coin minimum. A failure to read the
 minimums never blocks a top-up — the server still validates. Before a direct top-up,
 `--asset <ticker>` is resolved against `GET /billing/currencies`: an exact code
 passes, a bare ticker on several networks (`usdt`) lists the choices, an

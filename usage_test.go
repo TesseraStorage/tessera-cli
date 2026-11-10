@@ -258,8 +258,8 @@ func TestUsageBillingSectionHuman(t *testing.T) {
 			t.Errorf("billing section missing %q:\n%s", want, stdout)
 		}
 	}
-	if line := lineWithPrefix(stdout, "period ends"); !strings.HasSuffix(strings.TrimSpace(line), "\u2014") && !strings.Contains(line, "pay as you go") {
-		t.Errorf("null period_end rendered %q, want an em dash or the pay-as-you-go note", line)
+	if line := lineWithPrefix(stdout, "period ends"); line != "" {
+		t.Errorf("period line should be gone, got %q", line)
 	}
 	if strings.Contains(stdout, egressEstimateLabel) {
 		t.Errorf("the --cost label printed without --cost:\n%s", stdout)
@@ -402,7 +402,7 @@ func TestUsageNullBillingFields(t *testing.T) {
 			t.Fatalf("null field rendered as %q:\n%s", artifact, stdout)
 		}
 	}
-	for _, prefix := range []string{"logical size", "stored", "network size", "balance", "period ends", "days left"} {
+	for _, prefix := range []string{"logical size", "stored", "network size", "balance", "days left"} {
 		line := lineWithPrefix(stdout, prefix)
 		if line == "" {
 			t.Errorf("null field line %q missing:\n%s", prefix, stdout)
