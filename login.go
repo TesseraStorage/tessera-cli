@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/hex"
@@ -105,6 +106,75 @@ func loadOrInitConfig() (*Config, error) {
 // `tessera login` then takes the unchanged legacy path. --billing-logout wins
 // when both are given. Malformed pairs are rejected here rather than silently
 // falling through to the interactive legacy prompt.
+
+func connectCodeFlags(args []string) (code string, ok bool, err error) {
+	if !hasFlag(args, "--code") {
+		return "", false, nil
+	}
+	code, found := flagValue(args, "--code")
+	if !found || strings.TrimSpace(code) == "" {
+		return "", true, errors.New("--code requires a connect code — usage: tessera login --code ABCD-1234")
+	}
+	return strings.TrimSpace(code), true, nil
+}
+
+func connectCodeError(err error) error {
+	var be *billingError
+	if errors.As(err, &be) && be.Code == "invalid_code" {
+		return fmt.Errorf("that connect code is invalid, expired or already used — generate a new one from /account (%w)", err)
+	}
+	if errors.As(err, &be) && (be.Status == http.StatusTooManyRequests || be.Code == "rate_limited") {
+		return fmt.Errorf("too many attempts — wait a few minutes and try again (%w)", err)
+	}
+	if errors.As(err, &be) && be.Code == "account_closed" {
+		return errAccountClosed
+	}
+	return err
+}
+
+// connectCodeLogin exchanges a dashboard connect code for a long-lived agent
+// API key (the same class of key POST /agents issues), stores it, then runs
+// the existing registerStorageIdentity / recovery flow. A browser session
+// cookie is not used: the agent should stay logged in after the code expires.
+func connectCodeLogin(code, phrase string, force bool) error {
+	cfg, err := loadOrInitConfig()
+	if err != nil {
+		return err
+	}
+	loggedIn := cfg.AppID != "" && cfg.AppKey != ""
+	if loggedIn && !force {
+		return errAlreadyLoggedIn
+	}
+	api, ok := newBillingClient(cfg).(connectCodeAPI)
+	if !ok {
+		return errors.New("this build cannot exchange a connect code")
+	}
+	accountID, apiKey, _, err := api.ExchangeConnectCode(code)
+	if err != nil {
+		return connectCodeError(err)
+	}
+	if !strings.HasPrefix(apiKey, "tsk_") {
+		return errors.New("connect code response is missing an API key")
+	}
+	next := freshConfig(cfg)
+	next.BillingAgentKey = apiKey
+	next.BillingSession = ""
+	if err := saveConfig(next); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+	return registerStorageIdentity(next, phrase, accountID)
+}
+
+func promptRecoveryPhrase() string {
+	fmt.Println("This account already has a storage identity.")
+	fmt.Print("Enter the 12-word recovery phrase from the first device: ")
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil {
+		return ""
+	}
+	return normalizePhrase(strings.TrimSpace(line))
+}
+
 func billingLoginFlags(args []string) (email, token string, logout, billing bool, err error) {
 	if hasFlag(args, "--billing-logout") {
 		return "", "", true, true, nil
@@ -221,12 +291,12 @@ func billingLogout() error {
 func printMagicLinkSent(email string) {
 	fmt.Println("Magic link requested.")
 	fmt.Println()
-	fmt.Printf("If %s has a billing account, a sign-in link is on its way.\n", email)
+	fmt.Printf("A link is on its way to %s. If that address is new, this creates an account.\n", email)
 	fmt.Println("Check your inbox, then run:")
 	fmt.Println()
 	fmt.Printf("  tessera login --email %s --token <token>\n", email)
 	fmt.Println()
-	fmt.Println("(<token> is the token value in the sign-in link moneyd emailed you.)")
+	fmt.Println("(<token> is the token value in the link we emailed you.)")
 }
 
 // accountString extracts a displayable value from a GET /account map. Missing
@@ -390,7 +460,7 @@ func retryableRegistrationError(err error) bool {
 // fetches the existing identity first, so this is only reachable in a race
 // (another device linked the account between the recovery lookup and the
 // mint); the guidance points at the recovery-phrase restore.
-var errIdentityExists = errors.New("identity_exists: this billing account already has a storage identity — restore it with your 12-word recovery phrase: tessera login --email <email> --token <token> \"<words>\"")
+var errIdentityExists = errors.New("identity_exists: this billing account already has a storage identity — restore it with your 12-word recovery phrase: tessera login --code <code> \"<words>\" (or tessera login \"<words>\")")
 
 // errRecoveryPhraseRequired stops the flow when the account already has a
 // storage identity but no phrase was supplied: minting a fresh phrase there
@@ -539,7 +609,12 @@ func registerStorageIdentity(cfg *Config, phraseArg, billingID string) error {
 	if linked && phrase == "" {
 		// Minting a fresh phrase here would create a second, empty identity
 		// under the same account; the caller must supply the one they saved.
-		return errRecoveryPhraseRequired
+		if stdinIsTerminal() {
+			phrase = promptRecoveryPhrase()
+		}
+		if phrase == "" {
+			return errRecoveryPhraseRequired
+		}
 	}
 	phraseResolved := false
 	resolvePhrase := func() {
@@ -727,11 +802,13 @@ func promptProtectPhrase(cfg *Config, phrase string) {
 
 // loginUsage is the one place the login forms are documented.
 const loginUsage = `Usage:
+  tessera login --code <ABCD-1234> ["<12-word phrase>"]
+                                                  connect this machine with a code from /account
   tessera login "<12-word recovery phrase>"       restore your account on this machine
   tessera login --api-key <tsk_...> ["<phrase>"]  log in with your API key (+ phrase)
-  tessera login --email <e>                       request a magic-link sign-in email
+  tessera login --email <e>                       request a magic-link email
   tessera login --email <e> --token <t> ["<phrase>"]
-                                                  finish the magic-link sign-in
+                                                  finish a magic-link email
   tessera login --billing-logout                  end the email session
   tessera login --force ...                       replace an existing login on this machine
 
@@ -778,6 +855,14 @@ func runLogin(args []string) error {
 		phraseArg = os.Getenv("TESSERA_PHRASE")
 	}
 	force := hasFlag(args, "--force")
+
+	code, wantCode, err := connectCodeFlags(args)
+	if err != nil {
+		return err
+	}
+	if wantCode {
+		return connectCodeLogin(code, phraseArg, force)
+	}
 
 	email, token, logout, billing, err := billingLoginFlags(args)
 	if err != nil {

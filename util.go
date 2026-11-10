@@ -81,7 +81,7 @@ func positional(args []string) []string {
 // --dry-run, --json) must NOT be listed.
 func takesValue(flag string) bool {
 	switch flag {
-	case "--as", "--root", "--interval", "--policy", "--jobs", "--max-rate", "--name", "--out", "--at", "--profile", "--retain", "--resolve", "--billing-url", "--contact-email", "--email", "--token", "--pay-currency", "--coin", "--asset", "--payment", "--adopt", "--limit", "--api-key", "--offset", "--length", "--qr":
+	case "--as", "--root", "--interval", "--policy", "--jobs", "--max-rate", "--name", "--out", "--at", "--profile", "--retain", "--resolve", "--billing-url", "--contact-email", "--email", "--token", "--code", "--pay-currency", "--coin", "--asset", "--payment", "--adopt", "--limit", "--api-key", "--offset", "--length", "--qr":
 		return true
 	}
 	return false

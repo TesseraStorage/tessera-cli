@@ -415,7 +415,7 @@ func TestRunTopupErrorOutcomes(t *testing.T) {
 		{
 			name: "expired session keeps the client's guidance",
 			err:  errSessionExpired,
-			want: []string{"session expired", "tessera login --email"},
+			want: []string{"session expired", "tessera login --code"},
 		},
 		{
 			name: "no credentials keeps the client's guidance",

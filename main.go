@@ -328,11 +328,10 @@ Get started:
                              (shows your recovery phrase + API key once: keep both;
                              when output is not a terminal they go to a private
                              0600 file instead, see 'tessera signup --help')
+  {exe} login --code <ABCD-1234>   Connect this machine with a code from /account
   {exe} login "<12 words>"      Restore your account on any machine (same account + App ID)
   {exe} login --api-key <key> ["<12 words>"]
                              Log in with your API key
-  {exe} login --email <email> [--token <token>]
-                             Sign in by email (magic link)
   {exe} logout [--yes]          Remove local credentials (account and files stay)
 
 Files:

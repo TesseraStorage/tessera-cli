@@ -190,6 +190,9 @@ storage SDK: the two use different credentials and different failure modes.
 | field | credential | how it is sent |
 |---|---|---|
 | `billing_session` | human magic-link login | `Cookie: tessera_session=…` |
+
+A dashboard connect code (`POST /account/connect-code`, then `POST /auth/connect-code`) issues the same long-lived `tsk_…` agent API key as `POST /agents`, not a 30-day browser session: the CLI stores it as `billing_agent_key` so the agent stays logged in after the code expires.
+
 | `billing_agent_key` | agent `signup` (`tsk_…`) | `Authorization: Bearer …` |
 
 For authenticated calls a stored session **wins** over an agent key: an explicit
@@ -209,7 +212,7 @@ actionable guidance instead of dumping JSON.
 
 **Sessions.** A 401 on a cookie-authenticated request is the expiry signal: the
 client clears `billing_session` locally and returns `errSessionExpired`, whose
-message tells the user to run `tessera login --email …`. When an agent key is
+message tells the user to run `tessera login --code <code>` from /account or `tessera login "<12-word phrase>"`. When an agent key is
 also stored, the next call transparently falls back to it. Agent-key 401s are
 plain errors — there is nothing to clear. Credentials are never logged; `signup`
 is the single, documented exception that prints the one-time key.
