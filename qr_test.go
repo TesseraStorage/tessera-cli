@@ -62,10 +62,10 @@ func TestDepositQRPayload(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(noAmt, "uint256") {
-		t.Fatalf("wallet-fund payload included uint256: %s", noAmt)
+		t.Fatalf("deposit-address payload included uint256: %s", noAmt)
 	}
 	if !strings.HasPrefix(noAmt, "ethereum:"+contract+"@8453/transfer?address=") {
-		t.Fatalf("wallet-fund payload = %s", noAmt)
+		t.Fatalf("deposit-address payload = %s", noAmt)
 	}
 	if _, err := depositQRPayload("not-an-address", "1", qrEIP681); err == nil {
 		t.Fatal("non-address accepted")
@@ -80,7 +80,7 @@ func TestDepositQRCaption(t *testing.T) {
 		t.Fatalf("caption without clock = %q", got)
 	}
 	if got, want := depositQRCaption(false, ""), "USDC on Base only"; got != want {
-		t.Fatalf("wallet caption = %q", got)
+		t.Fatalf("deposit caption = %q", got)
 	}
 	old := qrClockLocation
 	qrClockLocation = func() *time.Location { return time.UTC }
@@ -132,11 +132,6 @@ func TestDepositQRGating(t *testing.T) {
 	off.Invoice = true
 	if depositQRAllowed(off, true, 80) {
 		t.Fatal("invoice mode must not show the QR")
-	}
-	off = base
-	off.X402 = true
-	if depositQRAllowed(off, true, 80) {
-		t.Fatal("x402 must not show the QR")
 	}
 	off = base
 	off.Currency = "btc"
@@ -261,54 +256,6 @@ func TestTopupPrintsDecodableQR(t *testing.T) {
 	})
 	if strings.ContainsAny(out, "▀▄█") {
 		t.Fatalf("QR printed for btc:\n%s", out)
-	}
-}
-
-func TestWalletFundQR(t *testing.T) {
-	testConfigHome(t)
-	w, err := newWalletKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := saveWallet(w); err != nil {
-		t.Fatal(err)
-	}
-	stubQRTerminal(t, true, 100)
-	out := captureStdout(t, func() {
-		if err := runWalletFund(nil); err != nil {
-			t.Fatal(err)
-		}
-	})
-	if !strings.Contains(out, "USDC on Base only") || strings.Contains(out, "exact amount") || strings.Contains(out, "before ") {
-		t.Fatalf("wallet caption:\n%s", out)
-	}
-	payload, err := decodeHalfBlockQR(qrBlock(out))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, err := depositQRPayload(w.Address, "", qrEIP681)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if payload != want || strings.Contains(payload, "uint256") {
-		t.Fatalf("wallet QR = %q, want %q", payload, want)
-	}
-	out = captureStdout(t, func() {
-		if err := runWalletFund([]string{"--no-qr"}); err != nil {
-			t.Fatal(err)
-		}
-	})
-	if strings.ContainsAny(out, "▀▄█") {
-		t.Fatal("wallet --no-qr still printed a QR")
-	}
-	stubQRTerminal(t, false, 100)
-	out = captureStdout(t, func() {
-		if err := runWalletFund(nil); err != nil {
-			t.Fatal(err)
-		}
-	})
-	if strings.ContainsAny(out, "▀▄█") {
-		t.Fatal("piped wallet fund printed a QR")
 	}
 }
 

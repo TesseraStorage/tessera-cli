@@ -21,19 +21,16 @@ var (
 
 // cmdTopup adds funds to the billing account.
 //
-//	tessera topup <amount>                  # default: pay by address
+//	tessera topup <amount>                  # default: NOWPayments deposit address
 //	tessera topup <amount> --coin <code>    # another coin
 //	tessera topup <amount> --invoice        # hosted invoice link only
-//	tessera topup <amount> --wallet         # x402 with the local wallet
 //	tessera topup <amount> --json           # machine-readable
 //	tessera topup <amount> --wait|--no-wait # control polling
 //	tessera topup --coins                   # list accepted coins
 //
-// The default path asks for a payment address (USDC on Base) and, on an
-// interactive terminal, polls until the intent reaches a terminal state. The
-// legacy --x402/--payment flags keep their old meaning: request a challenge or
-// submit an externally signed authorization. --wallet signs locally with the
-// opt-in wallet key; the key never leaves the machine.
+// The default path asks for a NOWPayments deposit address (USDC on Base) and,
+// on an interactive terminal, polls until the intent reaches a terminal state.
+// --invoice asks for a hosted invoice page instead.
 func cmdTopup(args []string) {
 	if hasFlag(args, "--help") || hasFlag(args, "-h") {
 		fmt.Print(topupHelp)
@@ -100,10 +97,7 @@ func emitTopupErrorJSON(err error) {
 type topupRequest struct {
 	amount      string
 	payCurrency string
-	payment     string
-	x402        bool
 	invoice     bool
-	wallet      bool
 	json        bool
 	wait        bool
 	noWait      bool
@@ -115,9 +109,8 @@ type topupRequest struct {
 
 // parseTopupArgs resolves the positional amount and the value flags. The
 // amount is validated for presence and a positive numeric shape only: the
-// server owns the accepted range and the per-asset minimum. --payment implies
-// the x402 rail, so the printed re-run instruction works without restating
-// --x402. --coins is a standalone listing and needs no amount.
+// server owns the accepted range and the per-asset minimum. --coins is a
+// standalone listing and needs no amount.
 func parseTopupArgs(args []string) (topupRequest, error) {
 	if hasFlag(args, "--coins") {
 		return topupRequest{coins: true, json: hasFlag(args, "--json")}, nil
@@ -131,8 +124,14 @@ func parseTopupArgs(args []string) (topupRequest, error) {
 		return topupRequest{minimums: true, payCurrency: coin, json: hasFlag(args, "--json")}, nil
 	}
 	pos := positional(args)
+	if hasFlag(args, "--wallet") {
+		return topupRequest{}, errors.New("--wallet is not a tessera topup flag; create a deposit address with: tessera topup <amount>")
+	}
+	if hasFlag(args, "--x402") || hasFlag(args, "--payment") {
+		return topupRequest{}, errors.New("--x402 and --payment are not tessera topup flags; create a deposit address with: tessera topup <amount>")
+	}
 	if len(pos) != 1 {
-		return topupRequest{}, errors.New("usage: tessera topup <amount> [--asset <code>] [--invoice] [--wallet] [--json] [--wait|--no-wait]")
+		return topupRequest{}, errors.New("usage: tessera topup <amount> [--asset <code>] [--invoice] [--json] [--wait|--no-wait]")
 	}
 	req := topupRequest{amount: pos[0]}
 	if err := validateTopupAmount(req.amount); err != nil {
@@ -163,15 +162,8 @@ func parseTopupArgs(args []string) (topupRequest, error) {
 		}
 		payCurrency = coin
 	}
-	payment, err := topupValueFlag(args, "--payment")
-	if err != nil {
-		return topupRequest{}, err
-	}
 	req.payCurrency = payCurrency
-	req.payment = payment
-	req.x402 = hasFlag(args, "--x402") || payment != ""
 	req.invoice = hasFlag(args, "--invoice")
-	req.wallet = hasFlag(args, "--wallet")
 	req.json = hasFlag(args, "--json")
 	req.wait = hasFlag(args, "--wait")
 	req.noWait = hasFlag(args, "--no-wait")
@@ -181,17 +173,8 @@ func parseTopupArgs(args []string) (topupRequest, error) {
 		return topupRequest{}, err
 	}
 	req.qr = style
-	switch {
-	case req.wallet && req.x402:
-		return topupRequest{}, errors.New("--wallet and --x402/--payment are different signers; use one")
-	case req.wallet && req.invoice:
-		return topupRequest{}, errors.New("--wallet and --invoice are different payment paths; use one")
-	case req.invoice && req.x402:
-		return topupRequest{}, errors.New("--invoice and --x402/--payment are different payment paths; use one")
-	case req.wait && req.noWait:
+	if req.wait && req.noWait {
 		return topupRequest{}, errors.New("--wait and --no-wait conflict")
-	case req.x402 && req.payCurrency != "":
-		return topupRequest{}, errors.New("x402 always pays USDC on Base; --coin applies to the default address path")
 	}
 	return req, nil
 }
@@ -204,13 +187,14 @@ func topupValueFlag(args []string, name string) (string, error) {
 	}
 	v, ok := flagValue(args, name)
 	if !ok || v == "" {
-		return "", fmt.Errorf("%s requires a value — usage: tessera topup <amount> [--asset <code>] [--invoice] [--wallet] [--json] [--wait|--no-wait]", name)
+		return "", fmt.Errorf("%s requires a value — usage: tessera topup <amount> [--asset <code>] [--invoice] [--json] [--wait|--no-wait]", name)
 	}
 	return v, nil
 }
 
-// Top-up range in USD, the same on every method (x402, deposit address,
-// browser invoice). moneyd enforces it too (422 amount_out_of_range).
+// Top-up range in USD, the same on every CLI method (deposit address,
+// browser invoice). The CLI enforces this floor even if the server floor
+// is lower. moneyd also enforces its own range (422 amount_out_of_range).
 const (
 	topupMinUSD = 5
 	topupMaxUSD = 10000
@@ -255,41 +239,11 @@ func topupClient() (billingAPI, error) {
 }
 
 // runTopup performs the request and prints the outcome. It returns nil when
-// the step completed — an address created, an invoice created, a challenge
-// issued, a settlement confirmed — and an error otherwise; describeTopupError
-// turns that error into the printed guidance.
+// the step completed — an address created or an invoice created — and an
+// error otherwise; describeTopupError turns that error into the printed
+// guidance.
 func runTopup(api billingAPI, req topupRequest) error {
-	switch {
-	case req.wallet:
-		return runWalletTopup(api, req)
-	case req.x402:
-		return runTopupX402(api, req)
-	default:
-		return runTopupAddress(api, req)
-	}
-}
-
-// runTopupX402 is the original externally-signed x402 path. It is kept
-// unchanged for back-compatibility: without --payment it prints the challenge
-// an external signer needs; with --payment it submits the signed payload.
-func runTopupX402(api billingAPI, req topupRequest) error {
-	resp, err := api.Topup(req.amount, "x402", req.payCurrency, req.payment)
-	if err != nil {
-		var be *billingError
-		if errors.As(err, &be) && be.Status == http.StatusPaymentRequired && be.Code == "" {
-			// A 402 without an error code is moneyd's x402 challenge
-			// (PaymentRequired), not a refusal: print what to sign and stop
-			// one step short of the externally signed settlement.
-			return printX402Challenge(req, be)
-		}
-		return err
-	}
-	if req.payment != "" {
-		printX402Settled(resp)
-		return nil
-	}
-	printTopupInvoice(resp)
-	return nil
+	return runTopupAddress(api, req)
 }
 
 // runTopupAddress is the default path: create a NOWPayments intent that
@@ -343,59 +297,6 @@ func runTopupAddress(api billingAPI, req topupRequest) error {
 		return nil
 	}
 	printTopupInvoice(resp)
-	return nil
-}
-
-// runWalletTopup signs an x402 authorization with the local wallet and submits
-// it. The wallet key never leaves the machine; only the signature is sent.
-func runWalletTopup(api billingAPI, req topupRequest) error {
-	acct, err := api.Account()
-	if err != nil {
-		return err
-	}
-	if !topupRailsOpen(acct, "x402") {
-		return errors.New("x402 is closed on this account; use 'tessera topup <amount>' for the default address top-up")
-	}
-	wallet, err := loadWallet()
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return errors.New("no local wallet; run 'tessera wallet init' first")
-		}
-		return err
-	}
-	key, err := walletPrivateKey(wallet)
-	if err != nil {
-		return err
-	}
-	challengeAPI, ok := api.(x402ChallengeAPI)
-	if !ok {
-		return errors.New("this server cannot issue x402 challenges")
-	}
-	challenge, err := challengeAPI.X402Challenge(req.amount)
-	if err != nil {
-		return err
-	}
-	if len(challenge) == 0 {
-		return errors.New("x402 challenge response was empty")
-	}
-	header, err := signX402Payment(challenge, key, time.Now())
-	if err != nil {
-		return fmt.Errorf("sign x402 payment: %w", err)
-	}
-	var resp map[string]any
-	if m, ok := api.(topupModeAPI); ok {
-		resp, err = m.TopupWithMode(req.amount, "x402", "", header, "")
-	} else {
-		resp, err = api.Topup(req.amount, "x402", "", header)
-	}
-	if err != nil {
-		return err
-	}
-	if req.json {
-		emitJSON(resp)
-		return nil
-	}
-	printX402Settled(resp)
 	return nil
 }
 
@@ -608,7 +509,6 @@ func printTopupDirect(resp map[string]any, req topupRequest) {
 		JSON:     req.json,
 		Quiet:    req.quiet,
 		Invoice:  req.invoice,
-		X402:     req.x402 || req.wallet,
 	})
 }
 
@@ -642,79 +542,6 @@ func printTopupInvoice(resp map[string]any) {
 	fmt.Println("The balance is credited after the processor confirms the payment.")
 }
 
-// printX402Challenge renders moneyd's PaymentRequired document. Only the
-// fields an EIP-3009 signer needs are shown: the challenge nonce comes from
-// accepts[0].extra.x402ChallengeNonce, and validBefore is deliberately absent
-// (it is not in the response).
-func printX402Challenge(req topupRequest, be *billingError) error {
-	accept, ok := firstX402Accept(be.Extra)
-	if !ok {
-		return fmt.Errorf("x402 challenge is missing accepts: %v", be)
-	}
-	nonce, err := topupChallengeNonce(accept)
-	if err != nil {
-		return fmt.Errorf("x402 challenge is missing the payment nonce: %w (%v)", err, be)
-	}
-	fmt.Println("x402 payment required — sign an EIP-3009 TransferWithAuthorization.")
-	fmt.Println()
-	fmt.Printf("  Network:          %s\n", topupField(accept, "network"))
-	fmt.Printf("  Asset:            %s\n", topupField(accept, "asset"))
-	fmt.Printf("  Pay to:           %s\n", topupField(accept, "payTo"))
-	fmt.Printf("  Amount (atomic):  %s\n", topupField(accept, "amount"))
-	fmt.Printf("  Challenge nonce:  %s\n", nonce)
-	fmt.Printf("  Max timeout:      %s seconds\n", topupField(accept, "maxTimeoutSeconds"))
-	fmt.Println()
-	fmt.Println("Build and sign the authorization externally (your signing key never")
-	fmt.Println("touches the CLI), base64-encode the x402 payment JSON, then re-run:")
-	fmt.Println()
-	fmt.Printf("  tessera topup %s --x402 --payment <base64 X-PAYMENT>\n", req.amount)
-	fmt.Println()
-	fmt.Println("The server verifies the signature, settles on-chain, and credits your")
-	fmt.Println("balance.")
-	return nil
-}
-
-// printX402Settled renders the 200 settlement result and notes the
-// PAYMENT-RESPONSE receipt header; the header's contents are not printed.
-func printX402Settled(resp map[string]any) {
-	balance := topupField(resp, "balance_usd")
-	if balance != "—" {
-		balance = "$" + balance
-	}
-	fmt.Println("x402 payment settled.")
-	fmt.Println()
-	fmt.Printf("  Transaction: %s\n", topupField(resp, "transaction"))
-	fmt.Printf("  Network:     %s\n", topupField(resp, "network"))
-	fmt.Printf("  Balance:     %s\n", balance)
-	fmt.Println()
-	fmt.Println("The server returned a PAYMENT-RESPONSE header with the settlement")
-	fmt.Println("receipt; run 'tessera account' to see the updated balance.")
-}
-
-// topupChallengeNonce reads the server-issued challenge nonce from
-// accepts[0].extra.x402ChallengeNonce. A missing or empty nonce is an error:
-// without it there is nothing the external signer can bind, and printing a
-// half-valid challenge invites signing a document the server will reject.
-func topupChallengeNonce(accept map[string]any) (string, error) {
-	extra, _ := accept["extra"].(map[string]any)
-	nonce, _ := extra["x402ChallengeNonce"].(string)
-	if nonce == "" {
-		return "", errors.New("accepts[0].extra.x402ChallengeNonce is missing or empty")
-	}
-	return nonce, nil
-}
-
-// firstX402Accept returns accepts[0] from a PaymentRequired document preserved
-// in billingError.Extra.
-func firstX402Accept(extra map[string]any) (map[string]any, bool) {
-	accepts, ok := extra["accepts"].([]any)
-	if !ok || len(accepts) == 0 {
-		return nil, false
-	}
-	accept, ok := accepts[0].(map[string]any)
-	return accept, ok
-}
-
 // topupField renders one decoded JSON field for display. Missing, null and
 // empty values render as an em dash.
 func topupField(m map[string]any, key string) string {
@@ -730,8 +557,8 @@ func topupField(m map[string]any, key string) string {
 
 // describeTopupError maps a failed topup to the guidance printed before the
 // command exits non-zero. The API's codes become the action to take; anything
-// unexpected passes through as the client rendered it. The X-PAYMENT contents
-// and stored credentials are never part of err.
+// unexpected passes through as the client rendered it. Stored credentials
+// are never part of err.
 func describeTopupError(err error) string {
 	var be *billingError
 	if !errors.As(err, &be) {
@@ -765,7 +592,7 @@ func describeTopupError(err error) string {
 	case be.Status == http.StatusBadGateway && be.Code == "processor_error":
 		return "processor_error — the payment processor failed and nothing was charged; try again shortly"
 	case be.Status == http.StatusPaymentRequired:
-		return fmt.Sprintf("x402 refused the payment: %s", dashIfEmpty(be.Code))
+		return fmt.Sprintf("payment was refused: %s", dashIfEmpty(be.Code))
 	case be.Status == http.StatusUnauthorized,
 		be.Status == http.StatusForbidden && be.Code == "account_closed":
 		return describeBillingError(err)
@@ -845,25 +672,20 @@ func runTopupMinimums(req topupRequest) error {
 	}
 	rails, _ := doc["rails"].(map[string]any)
 	np, _ := rails["nowpayments"].(map[string]any)
-	x, _ := rails["x402"].(map[string]any)
-	floor := fmt.Sprint(x["minimum_usd"])
-	if x["minimum_usd"] == nil {
-		floor = fmt.Sprint(doc["floor_usd"])
-	}
 	npMin := fmt.Sprint(np["minimum_usd"])
-	if np["minimum_usd"] == nil {
-		npMin = "unavailable right now"
-	} else {
-		npMin = "$" + npMin
+	deposit := fmt.Sprintf("$%.2f", float64(topupMinUSD))
+	if parsed, err := strconv.ParseFloat(npMin, 64); err == nil && parsed > topupMinUSD {
+		deposit = "$" + npMin
+	} else if np["minimum_usd"] == nil {
+		deposit = "unavailable right now"
 	}
 	fmt.Printf("Top-ups: %s on every method.\n", topupRangeText)
-	fmt.Printf("  1. x402 wallet, USDC on Base (--wallet, --x402, --payment): $%s\n", floor)
 	hint := "(default; other coins: --asset <code>)"
 	if req.payCurrency != "" {
 		hint = "(--asset " + req.payCurrency + ")"
 	}
-	fmt.Printf("  2. Deposit address in %s %s: %s\n", assetLabel(fmt.Sprint(np["pay_currency"]), ""), hint, npMin)
-	fmt.Printf("  3. Browser invoice (--invoice, pay in any accepted coin): $%s\n", floor)
+	fmt.Printf("  1. Deposit address in %s %s: %s\n", assetLabel(fmt.Sprint(np["pay_currency"]), ""), hint, deposit)
+	fmt.Printf("  2. Browser invoice (--invoice, pay in any accepted coin): $%.2f\n", float64(topupMinUSD))
 	fmt.Printf("A few coins have a higher processor minimum for a deposit address: tessera topup --minimums --asset <code>\n")
 	return nil
 }
@@ -872,8 +694,7 @@ func runTopupMinimums(req topupRequest) error {
 // the amount: send more, or pay another way (every method starts at $5).
 const smallTopupGuidance = `Enter at least that amount, or pay another way (top-ups are between $5 and $10,000):
   - another coin:     tessera topup <usd> --asset <code>   (list: tessera topup --coins)
-  - browser invoice:  tessera topup <usd> --invoice
-  - x402 wallet:      tessera wallet init, then tessera topup <usd> --wallet`
+  - browser invoice:  tessera topup <usd> --invoice`
 
 // assetLabels names common coins in plain words. Unknown codes fall back to
 // the ticker plus network.
@@ -995,25 +816,18 @@ func resolveAssetCode(api billingAPI, code string) (string, error) {
 
 const topupHelp = `Usage: tessera topup <usd> [options]
 
-Three ways to pay:
+Add funds through NOWPayments. Top-ups are between $5 and $10,000.
 
-Top-ups are between $5 and $10,000 on every method.
-
-  1. Built-in x402 wallet: USDC on Base. Best for agents.
-       tessera wallet init                 # creates a local key (~/.tessera/wallet.json)
-       tessera wallet fund                 # how to send USDC on Base to it
-       tessera topup 5 --wallet
-     Own signer instead: tessera topup <usd> --x402 (prints what to sign), then
-       tessera topup <usd> --payment <base64 X-PAYMENT>
-
-  2. Deposit address in a coin you choose (default: USDC on Base).
+  1. Deposit address in a coin you choose (default: USDC on Base).
        tessera topup 5                     # USDC on Base
        tessera topup 10 --asset xmr        # Monero; also btc, eth, sol, ltc,
-       tessera topup 15 --asset usdttrc20  # usdtbsc, usdcsol, ... (358 coins)
+       tessera topup 15 --asset usdttrc20  # usdtbsc, usdcsol, ... (many coins)
      A few coins have a processor minimum above $5 for a deposit address;
      the command prints it instead of creating the address.
+     Pay the quoted amount to the address from any wallet or exchange that
+     supports that asset.
 
-  3. Browser invoice: open a link and pay in any accepted coin
+  2. Browser invoice: open a link and pay in any accepted coin
      (USDC, USDT, BTC, ETH, XMR, SOL, LTC and hundreds more).
        tessera topup 5 --invoice
 
@@ -1021,8 +835,6 @@ Options:
   --asset <code>   coin for a deposit address (alias: --coin, --pay-currency);
                    a bare ticker like 'usdt' lists its networks
   --invoice        hosted browser invoice instead of an address
-  --wallet         pay from the built-in x402 wallet
-  --x402 / --payment <b64>   external x402 signer
   --json           one machine-readable JSON document
   --wait|--no-wait poll until paid (default on an interactive terminal)
   --no-qr          do not print a QR code
@@ -1030,14 +842,14 @@ Options:
                    QR is an EIP-681 USDC-on-Base payment.
 
 On a terminal at least 60 columns wide, a USDC-on-Base deposit address is also
-shown as a QR code. It is omitted for other coins, --invoice, x402 (--wallet,
---x402, --payment), --json, --quiet, and when output is not a terminal.
+shown as a QR code. It is omitted for other coins, --invoice, --json, --quiet,
+and when output is not a terminal.
 
 Discover:
   tessera topup --coins                   # every accepted coin
   tessera topup --minimums [--asset <c>]  # the range, and a coin's minimum
 
-Amounts outside $5–$10,000, or below a coin's processor minimum for a deposit
+Amounts outside $5-$10,000, or below a coin's processor minimum for a deposit
 address, are refused before anything is created.
 Times are shown in your local time zone.
 `

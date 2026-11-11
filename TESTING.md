@@ -58,7 +58,7 @@ cover them:
   `httptest` loopback server and assert the exact method, path, JSON body, and
   the `Authorization` header or `tessera_session` cookie. Fakes must answer
   errors in moneyd's real shapes: nested `{"detail":{"error":"…"}}` for most
-  routes, flat `{"error":"…"}` for `/auth/verify`'s 401 and the x402
+  routes, flat `{"error":"…"}` for `/auth/verify`'s 401 and the billing
   `502 settlement_pending`.
 
 No test may dial `tessera.storage` or any non-loopback host — CI has no network.

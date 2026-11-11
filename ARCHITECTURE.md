@@ -204,7 +204,7 @@ development; the default is `https://tessera.storage/api/v1`.
 
 **Error shape.** The billing API serializes most failures as
 `{"detail":{"error":"code", …}}`, but two paths are flat: `/auth/verify`'s 401
-`{"error":"invalid_token"}` and the x402 `502 {"error":"settlement_pending", …}`.
+`{"error":"invalid_token"}` and the billing `502 {"error":"settlement_pending", …}`.
 The client parses the code from either shape into a typed
 `billingError{Status, Code, Extra}` and preserves sibling fields (`minimum_usd`,
 `transaction`, `accepts`, …) in `Extra`, so commands can turn codes into
@@ -217,7 +217,7 @@ also stored, the next call transparently falls back to it. Agent-key 401s are
 plain errors — there is nothing to clear. Credentials are never logged; `signup`
 is the single, documented exception that prints the one-time key.
 
-**Payments.** `topup <amount>` has four paths:
+**Payments.** `topup <amount>` has two paths, both through NOWPayments:
 
 - **Direct address (default).** Creates a payment intent and prints the intent
   id, amount, exact amount/asset/network to send, payment address, address
@@ -228,17 +228,10 @@ is the single, documented exception that prints the one-time key.
   output.
 - **Hosted invoice (`--invoice`).** Requests the invoice link explicitly; this
   preserves the older invoice-only flow.
-- **External x402 (`--x402` or `--payment`).** Fetches the payment challenge and
-  submits a base64 `X-PAYMENT` the user signed with external wallet tooling. The
-  CLI holds no key on this path.
-- **Local wallet (`--wallet`).** Signs the EIP-3009 authorization on the machine
-  and submits only the signature. It requires the x402 rail to be open for the
-  account and cannot be combined with `--invoice`, `--x402` or `--payment`.
 
 `--coin <code>` selects the asset on the default direct-address path;
 `topup --coins` lists accepted coins without needing an amount. `--json` emits
-one document on the default, coin-list and wallet paths; the legacy x402
-challenge output remains text. Before a NOWPayments deposit address is
+one document on the default, invoice, coin-list and minimums paths. Before a NOWPayments deposit address is
 created, the CLI reads `GET /billing/topup/minimums` (public, cached 10 min
 server-side) and refuses an amount below that coin's processor minimum
 with the real number; a browser invoice is not pre-checked. The server
@@ -251,16 +244,6 @@ passes, a bare ticker on several networks (`usdt`) lists the choices, an
 unknown one is refused. `assetLabel` renders codes in plain words and
 `localTimeLabel` renders `address_expires_at` / `expires_at` (UTC from the
 server) in the local zone with the offset and a relative hint.
-
-**Optional local wallet.** The CLI can hold a wallet key, but only as an
-explicit opt-in. `wallet init` generates a secp256k1 key and writes
-`~/.tessera/wallet.json` with `0600` permissions in the `0700` config directory;
-it never prints the key. `wallet show` reads the address and on-chain USDC
-balance; `wallet fund` prints funding guidance. The key is used for payment
-signing only when `topup --wallet` is requested. No other `topup` path reads or
-writes the file. The key never leaves the machine; only the EIP-3009 signature
-is sent. `wallet init` refuses to overwrite an existing wallet because replacing
-the key can strand funds.
 
 ## 10. The background watcher
 

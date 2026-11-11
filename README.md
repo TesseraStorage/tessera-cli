@@ -249,11 +249,9 @@ the Mac, add a second pair with a different prefix (for example
 | `account [--json]` | Billing account dashboard (status, balance, usage, active credential). When packing would free stored blocks, a hint points at `tessera optimize` |
 | `dashboard` | Print a one-time browser login link (10 minutes) |
 | `dashboard --logout-all` | Sign out every browser session for this account |
-| `topup <amount> [--asset <code>] [--invoice] [--wallet] [--json] [--wait\|--no-wait]` | Add funds: x402 wallet (`--wallet`, $5 to $10,000), deposit address in a chosen coin (USDC on Base by default; `--asset xmr`, `btc`, `eth`, `usdttrc20`…), or browser invoice in any accepted coin (`--invoice`). `tessera topup --help` explains all three |
-| `topup --minimums [--asset <code>] [--json]` | Show the live per-rail minimums |
-| `topup <amount> [--x402] [--pay-currency <asset>] [--payment <b64>]` | Advanced x402: print the challenge to sign externally, or submit a signed authorization |
+| `topup <amount> [--asset <code>] [--invoice] [--json] [--wait\|--no-wait]` | Add funds through NOWPayments, $5 to $10,000: a deposit address in a chosen coin (USDC on Base by default; `--asset xmr`, `btc`, `eth`, `usdttrc20`…), or a browser invoice in any accepted coin (`--invoice`). `tessera topup --help` explains both |
+| `topup --minimums [--asset <code>] [--json]` | Show the $5 to $10,000 range and a coin's processor minimum for a deposit address |
 | `topup --coins [--json]` | List the coins accepted for top-ups |
-| `wallet init\|show\|fund` | Optional local x402 wallet: create a key, show its address and balance, or print funding guidance |
 | `status` | Account funded (yes/no) + file count + total storage. JSON key `ready` is unchanged. Transfers still run their own host-funding check |
 | `list [prefix]` | Files with real paths, sizes and dates (dates in your local time zone, labelled) |
 | `upload <path> [--as <remote>] [--quiet]` | Upload a file **or a whole folder**. During technical validation a file over 40 MiB is refused before upload; with a balance, any size |
@@ -279,8 +277,7 @@ the Mac, add a second pair with a different prefix (for example
 
 Add `--json` to `list`, `status`, `find`, `sync`, `usage`, `config`, `index`,
 `audit`, `topup`, `account`, `mv`, and `optimize` for scripting. `topup --json` works on the
-default address, `--coins`, and `--wallet` paths; the legacy `--x402` challenge
-output remains text. `signup --json` prints the account id and its one-time API
+default address, invoice, `--coins`, and `--minimums` paths. `signup --json` prints the account id and its one-time API
 key and recovery phrase (or, with `--secrets-file <path>`, only the file path).
 
 ## Billing and agent accounts
@@ -306,35 +303,25 @@ tessera login "word1 word2 ... word12"
 # Dashboard and top-ups
 tessera account                     # billing id, status, balance, usage, credential
 tessera account --json
-tessera topup 25                    # direct payment address (USDC on Base by default)
+tessera topup 25                    # deposit address (USDC on Base by default)
 tessera topup 25 --asset xmr        # deposit address in another coin (Monero, BTC, ETH, USDT…)
 tessera topup 25 --invoice          # browser invoice: pick any accepted coin on the page
-tessera topup 25 --wallet           # sign x402 locally (after wallet init)
 tessera topup 25 --json             # machine-readable create result
 tessera topup 25 --wait             # poll until completed, expired or failed
 tessera topup 25 --no-wait          # create and return immediately
 tessera topup --coins               # list accepted coins
-tessera topup 25 --x402             # print the challenge to sign externally
-tessera topup 25 --payment <base64 X-PAYMENT>   # submit the signed authorization
 tessera usage --cost                # billing section + netted egress estimate
-
-# Optional local wallet for --wallet top-ups
-tessera wallet init                 # create a key in ~/.tessera/wallet.json (0600)
-tessera wallet show                 # address and USDC balance on Base
-tessera wallet fund                 # how to fund it
 ```
 
-**Three ways to pay.**
+**Two ways to pay, both through NOWPayments.**
 
-1. **Built-in x402 wallet** (USDC on Base) — best for agents, from
-   $5: `tessera wallet init`, fund it (`tessera wallet fund`), then
-   `tessera topup <usd> --wallet`. With your own signer: `topup <usd> --x402`
-   prints the challenge, `topup <usd> --payment <base64 X-PAYMENT>` submits it.
-2. **Deposit address in a coin you choose** — `tessera topup <usd>` (USDC on
+1. **Deposit address in a coin you choose** — `tessera topup <usd>` (USDC on
    Base) or `--asset <code>` (`xmr`, `btc`, `eth`, `sol`, `ltc`, `usdttrc20`,
    `usdtbsc`, … — 300+ coins; a bare ticker such as `usdt` lists its networks).
-   A few coins have a processor minimum above $5 for a deposit address.
-3. **Browser invoice** — `tessera topup <usd> --invoice` opens a NOWPayments
+   Pay the quoted amount to the printed address from any wallet or exchange
+   that supports that asset. A few coins have a processor minimum above $5
+   for a deposit address.
+2. **Browser invoice** — `tessera topup <usd> --invoice` opens a NOWPayments
    page where you pick any accepted coin (USDC, USDT, BTC, ETH, XMR, SOL, LTC
    and hundreds more).
 
@@ -348,9 +335,7 @@ command again or use the invoice link.
 On a terminal at least 60 columns wide, a USDC-on-Base deposit address is also
 printed as a QR code (an EIP-681 payment URI). `--no-qr` hides it;
 `--qr=address` encodes only the address, for exchange apps. There is no QR for
-other coins, `--invoice`, x402, `--json`, `--quiet`, or piped output.
-`tessera wallet fund` shows the same kind of QR for the local wallet, without
-an amount.
+other coins, `--invoice`, `--json`, `--quiet`, or piped output.
 
 **Top-ups default to a direct address.** A bare `topup <amount>` creates a
 payment intent and prints the payment intent id, amount, exact amount/asset/
@@ -362,8 +347,8 @@ falls back to the previous invoice output, and `--invoice` asks for that path
 explicitly. Before creating a deposit address the CLI reads that coin's processor minimum and, if the
 amount is below it, refuses with the real number and creates nothing.
 
-**Top-up range.** Top-ups are between $5 and $10,000 on every method (x402
-wallet, deposit address, browser invoice). A few coins have a higher processor
+**Top-up range.** Top-ups are between $5 and $10,000 on every method (deposit
+address or browser invoice). A few coins have a higher processor
 minimum for a deposit address; the CLI and server refuse those amounts before
 creating anything (`409 below_asset_minimum` with `minimum_usd`).
 `tessera topup --minimums [--asset <code>]` prints the range and that coin's
@@ -424,9 +409,9 @@ technical validation still allows and whether uploads are allowed now.
 `--json` has the same facts in a `trial` object (`state`, `balance_usd`,
 `can_upload`, `top_up_required`; the JSON key names are unchanged). An account
 in technical validation shows the network flag `host funding ready: false`
-until its first top-up; that is expected. Top-ups
-are open on both rails (NOWPayments and x402); see *Top-up minimums* above for
-each rail's minimum.
+until its first top-up; that is expected. The CLI top-up path is NOWPayments
+(a deposit address or a browser invoice); see *Top-up range* above for the $5
+to $10,000 range and any higher per-coin processor minimum.
 
 **Prices.** `tessera rates` prints the live price card from the billing system
 (`GET /api/v1/billing/rates`, no login): storage **$2.50 per TB-month**
@@ -495,21 +480,6 @@ one time, with a store-it warning, because the server never shows it again. No
 other command echoes it. A second `signup` refuses to overwrite the stored key
 unless you pass `--force`.
 
-**Signing is external by default.** `topup --x402` prints the payment challenge
-(network, asset, pay-to address, atomic amount, challenge nonce and timeout)
-and stops. You sign the EIP-3009 authorization with your own wallet tooling and
-hand the base64 payload back through `--payment`; on this path the CLI never
-holds a wallet or signing key.
-
-**The local wallet is opt-in.** `tessera wallet init` creates a secp256k1 key
-in `~/.tessera/wallet.json` with `0600` permissions. `wallet show` prints the
-address and its USDC balance on Base; `wallet fund` explains how to fund it.
-The key is used for payment signing only when `topup --wallet` is passed; no
-other `topup` path reads or writes the wallet file. The key never leaves the
-machine — only the EIP-3009 signature is sent. `--wallet` requires the x402 rail
-to be open for the account and cannot be combined with `--invoice`, `--x402` or
-`--payment`.
-
 **`usage`: three sizes.** With a credential, `usage` appends a Billing block
 with three sizes for the same files:
 
@@ -549,9 +519,6 @@ in `account --json` to avoid duplication. `trial_credit_usd` is deprecated
   SHA-256 before it replaces an existing file.
 - **Conflicts never lose data** under `keep-both`; under the default `newest`
   policy the losing copy is discarded, so choose `keep-both` if that matters.
-- **The local wallet is opt-in.** `tessera wallet init` writes a key to
-  `~/.tessera/wallet.json` (`0600`). Nothing creates a wallet implicitly, and
-  `topup` without `--wallet` never reads or writes that file.
 
 ## What happens under the hood
 
@@ -568,13 +535,12 @@ in `account --json` to avoid duplication. `trial_credit_usd` is deprecated
 
 ## Config
 
-Credentials, the optional wallet and per-folder sync state live in
+Credentials and per-folder sync state live in
 `~/.tessera/`:
 
 ```
 ~/.tessera/
   config.json        credentials and preferences
-  wallet.json        optional local x402 wallet key (0600)
   index.json         local cache of stored objects
   trash.json         soft-deleted items
   sync/<root-id>/    per-folder state, cursor and lock
@@ -601,10 +567,6 @@ Set `TESSERA_HOME` to use a different directory (useful for several accounts).
 `billing_session` and `billing_agent_key` are local secrets: the file is written
 `0600`, the values are never logged or echoed by any command (except the
 one-time `signup` print), and the file must never be committed or shared.
-
-`wallet.json` is separate from `config.json`: it holds the optional local x402
-wallet key and is written `0600`. `wallet init` creates it; `wallet show`,
-`wallet fund` and `topup --wallet` read it. No other `topup` path touches it.
 
 ```bash
 tessera config --version-retention 5   # keep 5 previous versions per file

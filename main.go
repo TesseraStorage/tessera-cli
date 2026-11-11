@@ -5,7 +5,7 @@
 //	tessera login       Connect this machine to Tessera
 //	tessera signup      Create an agent account (API key shown once)
 //	tessera account     Show billing account, balance, and usage
-//	tessera topup       Add funds (NOWPayments invoice or x402 USDC)
+//	tessera topup       Add funds (NOWPayments deposit address or invoice)
 //	tessera logout      Remove local credentials
 //	tessera whoami      Show current account identity
 //	tessera status      Account info + total storage used
@@ -41,7 +41,7 @@ import (
 var statusCommand = cmdStatus
 
 // version is the build version. The release workflow injects it from the git
-// tag (v1.15.0 is the release this tree is for; the tag is cut after a live
+// tag (v1.16.0 is the release this tree is for; the tag is cut after a live
 // server test, not by this change):
 //
 //	go build -ldflags "-X main.version=${GITHUB_REF_NAME}" .
@@ -99,13 +99,11 @@ func main() {
 		cmdSecrets(args)
 	case "topup":
 		if !hasFlag(args, "--coins") && !hasFlag(args, "--minimums") && !hasFlag(args, "--help") && !hasFlag(args, "-h") && len(positional(args)) < 1 {
-			usageError("topup <amount> [--asset <code>] [--invoice] [--wallet] [--json] [--wait|--no-wait]  (tessera topup --help)")
+			usageError("topup <amount> [--asset <code>] [--invoice] [--json] [--wait|--no-wait]  (tessera topup --help)")
 		}
 		cmdTopup(args)
 	case "wallet":
-		if err := runWallet(args); err != nil {
-			fatal("%v", err)
-		}
+		fatal("unknown command %q: local wallet commands were removed; add funds with 'tessera topup <amount>' (see tessera topup --help)", "wallet")
 	case "promo":
 		if len(positional(args)) < 1 {
 			usageError("promo <code>")
@@ -438,22 +436,19 @@ Billing & account:
                              (remaining balance is forfeited, no refunds)
   {exe} dashboard               Print a one-time browser login link (10 minutes)
   {exe} dashboard --logout-all  Sign out every browser session for this account
-  {exe} topup <amount> [--asset <code>] [--invoice] [--wallet]
-                             Add funds, $5 to $10,000: x402 wallet, deposit
+  {exe} topup <amount> [--asset <code>] [--invoice]
+                             Add funds, $5 to $10,000: a NOWPayments deposit
                              address in a chosen coin (USDC on Base by
-                             default; XMR, BTC, ETH, USDT...), or browser invoice.
-                             A terminal also shows a USDC-on-Base QR
-                             (--no-qr to hide; --qr=address for the address only).
-                             See 'tessera topup --help'.
+                             default; XMR, BTC, ETH, USDT...), or a browser
+                             invoice (--invoice). A terminal also shows a
+                             USDC-on-Base QR (--no-qr to hide; --qr=address
+                             for the address only). See 'tessera topup --help'.
   {exe} topup <amount> [--json] [--wait|--no-wait]
                              Machine-readable output; poll until a terminal state
-  {exe} topup <amount> --payment <base64 X-PAYMENT>
-                             Submit a signed x402 authorization to settle
   {exe} topup --coins           List coins accepted for top-ups
   {exe} topup --minimums [--asset <code>]
                              The $5 to $10,000 range, and a coin's processor
                              minimum for a deposit address when it is higher
-  {exe} wallet init|show|fund   Local x402 wallet (opt-in)
   {exe} login --billing-logout  End the email session (API key untouched)
 
 Account readiness (shown by signup, login, status, account and usage):

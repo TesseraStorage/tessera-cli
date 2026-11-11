@@ -2,24 +2,16 @@ package main
 
 import (
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"math/big"
 	"net/http"
-	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa"
 )
 
 // fakeDirectAPI implements every optional billing capability so the default,
-// polling, coin-list and wallet paths can be exercised without a server.
+// polling and coin-list paths can be exercised without a server.
 type fakeDirectAPI struct {
 	billingAPI
 	topupCalls    int
@@ -70,10 +62,6 @@ func (f *fakeDirectAPI) Account() (map[string]any, error) {
 	return map[string]any{"balance_usd": "20.00", "topup_rails": map[string]any{"x402": false}}, nil
 }
 
-func (f *fakeDirectAPI) X402Challenge(amount string) (map[string]any, error) {
-	return f.challengeResp, f.challengeErr
-}
-
 func (f *fakeDirectAPI) Currencies() ([]map[string]any, error) {
 	return f.currenciesResp, f.currenciesErr
 }
@@ -112,7 +100,6 @@ func TestParseTopupDirectFlags(t *testing.T) {
 	}{
 		{"coin", []string{"12.50", "--coin", "btc"}, topupRequest{amount: "12.50", payCurrency: "btc"}},
 		{"invoice", []string{"12.50", "--invoice"}, topupRequest{amount: "12.50", invoice: true}},
-		{"wallet", []string{"12.50", "--wallet"}, topupRequest{amount: "12.50", wallet: true}},
 		{"json no-wait", []string{"12.50", "--json", "--no-wait"}, topupRequest{amount: "12.50", json: true, noWait: true}},
 		{"wait", []string{"12.50", "--wait"}, topupRequest{amount: "12.50", wait: true}},
 		{"coins", []string{"--coins"}, topupRequest{coins: true}},
@@ -130,11 +117,10 @@ func TestParseTopupDirectFlags(t *testing.T) {
 		})
 	}
 	invalid := [][]string{
-		{"12.50", "--wallet", "--x402"},
-		{"12.50", "--wallet", "--invoice"},
-		{"12.50", "--invoice", "--payment", testX402Header},
 		{"12.50", "--wait", "--no-wait"},
-		{"12.50", "--x402", "--coin", "btc"},
+		{"12.50", "--wallet"},
+		{"12.50", "--x402"},
+		{"12.50", "--payment", "xxx"},
 		{"12.50", "--coin", "btc", "--pay-currency", "eth"},
 	}
 	for _, args := range invalid {
@@ -360,300 +346,6 @@ func TestRunTopupCoinsJSON(t *testing.T) {
 	}
 }
 
-func TestWalletInitPermissionsAndNoKeyPrint(t *testing.T) {
-	home := testConfigHome(t)
-	out := captureStdout(t, func() {
-		if err := runWalletInit(nil); err != nil {
-			t.Fatal(err)
-		}
-	})
-	path := filepath.Join(home, walletFileName)
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("wallet file: %v", err)
-	}
-	if info.Mode().Perm() != 0600 {
-		t.Fatalf("wallet mode = %o, want 0600", info.Mode().Perm())
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var doc walletKey
-	if err := json.Unmarshal(data, &doc); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(out, doc.PrivateKey) {
-		t.Fatalf("wallet init printed the private key:\n%s", out)
-	}
-	for _, want := range []string{"Wallet created", doc.Address, "You control the key; back it up"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("wallet init output missing %q:\n%s", want, out)
-		}
-	}
-	if err := runWalletInit(nil); err == nil {
-		t.Fatal("second wallet init succeeded, want an already-exists error")
-	}
-}
-
-func TestWalletShowRPCBalance(t *testing.T) {
-	home := testConfigHome(t)
-	if err := runWalletInit(nil); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(home, walletFileName)
-	data, _ := os.ReadFile(path)
-	var wallet walletKey
-	_ = json.Unmarshal(data, &wallet)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Method string `json:"method"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		w.Header().Set("Content-Type", "application/json")
-		switch req.Method {
-		case "eth_chainId":
-			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":"0x2105"}`)
-		case "eth_call":
-			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":"0xbc614e"}`)
-		default:
-			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"error":{"message":"unexpected method"}}`)
-		}
-	}))
-	defer srv.Close()
-	t.Setenv("TESSERA_WALLET_RPC_URL", srv.URL)
-	out := captureStdout(t, func() {
-		if err := runWalletShow(nil); err != nil {
-			t.Fatal(err)
-		}
-	})
-	for _, want := range []string{wallet.Address, "USDC on Base: $12.345678"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("wallet show output missing %q:\n%s", want, out)
-		}
-	}
-}
-
-func TestWalletShowUnknownChain(t *testing.T) {
-	testConfigHome(t)
-	if err := runWalletInit(nil); err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
-	}))
-	defer srv.Close()
-	t.Setenv("TESSERA_WALLET_RPC_URL", srv.URL)
-	_, stderr := captureOutput(t, func() {
-		if err := runWalletShow(nil); err != nil {
-			t.Fatal(err)
-		}
-	})
-	if !strings.Contains(stderr, "USDC balance unavailable on chain 1") {
-		t.Errorf("unknown-chain stderr = %q", stderr)
-	}
-}
-
-func TestSignX402PaymentVerifies(t *testing.T) {
-	key, err := newWalletKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	priv, err := walletPrivateKey(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	challenge := x402ChallengeMap(t)
-	now := time.Unix(1700000000, 0)
-	header, err := signX402Payment(challenge, priv, now)
-	if err != nil {
-		t.Fatalf("signX402Payment: %v", err)
-	}
-	payload := decodePaymentHeader(t, header)
-	if payload["x402Version"] != float64(2) {
-		t.Fatalf("x402Version = %v", payload["x402Version"])
-	}
-	accepted, ok := payload["accepted"].(map[string]any)
-	if !ok {
-		t.Fatalf("payload accepted = %T", payload["accepted"])
-	}
-	if topupField(accepted, "network") != "eip155:84532" {
-		t.Fatalf("accepted network = %v", accepted["network"])
-	}
-	inner, ok := payload["payload"].(map[string]any)
-	if !ok {
-		t.Fatalf("payload.payload = %T", payload["payload"])
-	}
-	sigHex, _ := inner["signature"].(string)
-	if !strings.HasPrefix(sigHex, "0x") {
-		t.Fatalf("signature = %q", sigHex)
-	}
-	auth, ok := inner["authorization"].(map[string]any)
-	if !ok {
-		t.Fatalf("authorization = %T", inner["authorization"])
-	}
-	if auth["from"] != key.Address {
-		t.Errorf("authorization from = %v, want %s", auth["from"], key.Address)
-	}
-	if auth["to"] != "0x1111111111111111111111111111111111111111" {
-		t.Errorf("authorization to = %v", auth["to"])
-	}
-	if auth["value"] != "5000000" {
-		t.Errorf("authorization value = %v", auth["value"])
-	}
-	if auth["nonce"] != "0x9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0" {
-		t.Errorf("authorization nonce = %v", auth["nonce"])
-	}
-
-	// Rebuild the digest from the signed fields and prove the signature
-	// recovers the wallet's public key. This is the same check the token and
-	// the server's verifier perform.
-	asset, _ := addressBytes("0x036CbD53842c5426634e7929541eC2318f3dCF7e")
-	payTo, _ := addressBytes("0x1111111111111111111111111111111111111111")
-	from, _ := addressBytes(key.Address)
-	nonce, _ := decodeHex("0x9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0")
-	validBefore, _ := new(big.Int).SetString(topupField(auth, "validBefore"), 10)
-	domain := eip712DomainSeparator("USDC", "2", 84532, asset)
-	digest := transferAuthorizationDigest(domain, from, payTo, big.NewInt(5000000), big.NewInt(0), validBefore, nonce)
-	sig, err := hex.DecodeString(strings.TrimPrefix(sigHex, "0x"))
-	if err != nil || len(sig) != 65 {
-		t.Fatalf("signature bytes: %v len=%d", err, len(sig))
-	}
-	compact := make([]byte, 65)
-	compact[0] = sig[64]
-	copy(compact[1:33], sig[:32])
-	copy(compact[33:], sig[32:64])
-	pub, _, err := ecdsa.RecoverCompact(compact, digest)
-	if err != nil {
-		t.Fatalf("RecoverCompact: %v", err)
-	}
-	if !pub.IsEqual(priv.PubKey()) {
-		t.Fatal("signature did not recover the wallet public key")
-	}
-}
-
-func TestSignX402PaymentRejectsBadChallenge(t *testing.T) {
-	key, _ := newWalletKey()
-	priv, _ := walletPrivateKey(key)
-	now := time.Unix(1700000000, 0)
-	cases := []struct {
-		name   string
-		mutate func(map[string]any)
-	}{
-		{"missing accepts", func(m map[string]any) { delete(m, "accepts") }},
-		{"bad network", func(m map[string]any) { firstAccept(m)["network"] = "solana" }},
-		{"bad asset", func(m map[string]any) { firstAccept(m)["asset"] = "0x1234" }},
-		{"bad amount", func(m map[string]any) { firstAccept(m)["amount"] = "0" }},
-		{"short nonce", func(m map[string]any) {
-			firstAccept(m)["extra"].(map[string]any)["x402ChallengeNonce"] = "0xabcd"
-		}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			challenge := x402ChallengeMap(t)
-			tc.mutate(challenge)
-			if _, err := signX402Payment(challenge, priv, now); err == nil {
-				t.Fatal("signX402Payment succeeded, want an error")
-			}
-		})
-	}
-}
-
-func TestRunWalletTopupSignsAndSettles(t *testing.T) {
-	testConfigHome(t)
-	if err := runWalletInit(nil); err != nil {
-		t.Fatal(err)
-	}
-	fake := &fakeDirectAPI{
-		accountResp:   map[string]any{"topup_rails": map[string]any{"x402": true}},
-		challengeResp: x402ChallengeMap(t),
-		topupResp: map[string]any{
-			"balance_usd": "15.00",
-			"transaction": "0xabc",
-			"network":     "base-sepolia",
-		},
-	}
-	out := captureStdout(t, func() {
-		if err := runTopup(fake, topupRequest{amount: "5", wallet: true}); err != nil {
-			t.Fatal(err)
-		}
-	})
-	if fake.topupCalls != 1 || fake.topupRail != "x402" || fake.topupPayment == "" {
-		t.Fatalf("TopupWithMode calls=%d rail=%q payment=%q", fake.topupCalls, fake.topupRail, fake.topupPayment)
-	}
-	payload := decodePaymentHeader(t, fake.topupPayment)
-	inner := payload["payload"].(map[string]any)
-	auth := inner["authorization"].(map[string]any)
-	if auth["value"] != "5000000" {
-		t.Errorf("signed value = %v, want 5000000", auth["value"])
-	}
-	if !strings.Contains(out, "x402 payment settled") {
-		t.Errorf("wallet output missing settlement notice:\n%s", out)
-	}
-}
-
-func TestRunWalletTopupClosedRail(t *testing.T) {
-	testConfigHome(t)
-	if err := runWalletInit(nil); err != nil {
-		t.Fatal(err)
-	}
-	fake := &fakeDirectAPI{
-		accountResp: map[string]any{"topup_rails": map[string]any{"x402": false}},
-	}
-	err := runTopup(fake, topupRequest{amount: "5", wallet: true})
-	if err == nil || !strings.Contains(err.Error(), "x402 is closed") {
-		t.Fatalf("runTopup = %v, want the closed-rail message", err)
-	}
-	if fake.topupCalls != 0 {
-		t.Fatalf("closed rail still called Topup %d times", fake.topupCalls)
-	}
-}
-
-func TestRunWalletTopupNoWallet(t *testing.T) {
-	testConfigHome(t)
-	fake := &fakeDirectAPI{
-		accountResp: map[string]any{"topup_rails": map[string]any{"x402": true}},
-	}
-	err := runTopup(fake, topupRequest{amount: "5", wallet: true})
-	if err == nil || !strings.Contains(err.Error(), "tessera wallet init") {
-		t.Fatalf("runTopup = %v, want the init guidance", err)
-	}
-}
-
-func TestChainIDFromNetwork(t *testing.T) {
-	cases := map[string]uint64{
-		"base":         8453,
-		"base-mainnet": 8453,
-		"base-sepolia": 84532,
-		"eip155:8453":  8453,
-		"eip155:84532": 84532,
-	}
-	for network, want := range cases {
-		got, err := chainIDFromNetwork(network)
-		if err != nil || got != want {
-			t.Errorf("chainIDFromNetwork(%q) = %d, %v; want %d", network, got, err, want)
-		}
-	}
-	if _, err := chainIDFromNetwork("solana"); err == nil {
-		t.Error("chainIDFromNetwork(solana) = nil error, want unsupported")
-	}
-}
-
-func TestFormatUSDC(t *testing.T) {
-	cases := map[string]*big.Int{
-		"0.000000":  big.NewInt(0),
-		"0.000001":  big.NewInt(1),
-		"12.345678": big.NewInt(12345678),
-	}
-	for want, atomic := range cases {
-		if got := formatUSDC(atomic); got != want {
-			t.Errorf("formatUSDC(%v) = %q, want %q", atomic, got, want)
-		}
-	}
-}
-
-// x402ChallengeMap parses the shared challenge JSON into the map shape the
-// server sends.
 func x402ChallengeMap(t *testing.T) map[string]any {
 	t.Helper()
 	var m map[string]any
@@ -685,20 +377,19 @@ func decodePaymentHeader(t *testing.T, header string) map[string]any {
 
 // Ensure the fake satisfies the optional interfaces the production paths use.
 var (
-	_ topupModeAPI     = (*fakeDirectAPI)(nil)
-	_ topupStatusAPI   = (*fakeDirectAPI)(nil)
-	_ currencyAPI      = (*fakeDirectAPI)(nil)
-	_ x402ChallengeAPI = (*fakeDirectAPI)(nil)
+	_ topupModeAPI   = (*fakeDirectAPI)(nil)
+	_ topupStatusAPI = (*fakeDirectAPI)(nil)
+	_ currencyAPI    = (*fakeDirectAPI)(nil)
 )
 
-func TestBelowMinimumGuidanceMentionsAmountAndX402(t *testing.T) {
+func TestBelowMinimumGuidanceMentionsAmountAndInvoice(t *testing.T) {
 	err := &billingError{
 		Status: http.StatusConflict,
 		Code:   "below_asset_minimum",
 		Extra:  map[string]any{"minimum_usd": "8.64"},
 	}
 	msg := describeTopupError(err)
-	for _, want := range []string{"below_asset_minimum", "$8.64", "nothing was created", "another coin", "--invoice", "--wallet"} {
+	for _, want := range []string{"below_asset_minimum", "$8.64", "nothing was created", "another coin", "--invoice"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("describeTopupError = %q, missing %q", msg, want)
 		}

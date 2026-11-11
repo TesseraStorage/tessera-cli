@@ -84,17 +84,14 @@ func assertNoSecrets(t *testing.T, out string, secrets ...string) {
 	}
 }
 
-// TestTopupValueFlagsRegistered guards the positional() trap the plan calls
-// out: --pay-currency and --payment take separate values, so takesValue must
-// know them. --x402 is a boolean and must keep passing through.
+// TestTopupValueFlagsRegistered guards the positional() trap: value flags
+// such as --pay-currency must be known to takesValue so their arguments
+// are not treated as positional amounts.
 func TestTopupValueFlagsRegistered(t *testing.T) {
-	for _, flag := range []string{"--pay-currency", "--payment"} {
+	for _, flag := range []string{"--pay-currency", "--coin", "--asset"} {
 		if !takesValue(flag) {
 			t.Errorf("takesValue(%q) = false; positional() would swallow its value", flag)
 		}
-	}
-	if takesValue("--x402") {
-		t.Error("takesValue(--x402) = true; --x402 is a boolean and must not consume a value")
 	}
 }
 
@@ -111,9 +108,8 @@ func TestValidateTopupAmountRange(t *testing.T) {
 	}
 }
 
-// TestParseTopupArgs pins flag resolution: the positional amount, both flag
-// forms, and --payment implying the x402 rail so the printed re-run command
-// works without restating --x402.
+// TestParseTopupArgs pins flag resolution: the positional amount and both
+// flag forms of --pay-currency/--asset.
 func TestParseTopupArgs(t *testing.T) {
 	valid := []struct {
 		name string
@@ -123,9 +119,7 @@ func TestParseTopupArgs(t *testing.T) {
 		{"amount only", []string{"12.50"}, topupRequest{amount: "12.50"}},
 		{"space-form pay-currency", []string{"12.50", "--pay-currency", "btc"}, topupRequest{amount: "12.50", payCurrency: "btc"}},
 		{"equals-form pay-currency", []string{"--pay-currency=btc", "12.50"}, topupRequest{amount: "12.50", payCurrency: "btc"}},
-		{"x402", []string{"12.50", "--x402"}, topupRequest{amount: "12.50", x402: true}},
-		{"payment implies x402", []string{"12.50", "--payment", testX402Header}, topupRequest{amount: "12.50", payment: testX402Header, x402: true}},
-		{"x402 with payment", []string{"--x402", "12.50", "--payment", testX402Header}, topupRequest{amount: "12.50", payment: testX402Header, x402: true}},
+		{"invoice", []string{"12.50", "--invoice"}, topupRequest{amount: "12.50", invoice: true}},
 	}
 	for _, tc := range valid {
 		t.Run(tc.name, func(t *testing.T) {
@@ -149,8 +143,9 @@ func TestParseTopupArgs(t *testing.T) {
 		{"negative amount", []string{"-5"}},
 		{"non-numeric amount", []string{"five"}},
 		{"two positionals", []string{"5", "6"}},
-		{"payment without value", []string{"5", "--payment"}},
-		{"empty payment", []string{"5", "--payment="}},
+		{"removed wallet flag", []string{"5", "--wallet"}},
+		{"removed x402 flag", []string{"5", "--x402"}},
+		{"removed payment flag", []string{"5", "--payment", "xxx"}},
 		{"pay-currency without value", []string{"5", "--pay-currency"}},
 		{"empty pay-currency", []string{"5", "--pay-currency="}},
 	}
@@ -257,115 +252,6 @@ func TestTopupInvoiceHTTPRequestShape(t *testing.T) {
 	}
 }
 
-// TestRunTopupX402Challenge: the unsigned --x402 call ends on moneyd's 402
-// challenge, prints exactly the fields an external EIP-3009 signer needs (the
-// nonce from accepts[0].extra.x402ChallengeNonce, never a validBefore) and the
-// re-run instruction, and returns nil because the step completed.
-func TestRunTopupX402Challenge(t *testing.T) {
-	be := parseBillingError(http.StatusPaymentRequired, []byte(x402ChallengeJSON))
-	if be.Code != "" {
-		t.Fatalf("challenge parsing produced code %q, want empty (a challenge is not a refusal)", be.Code)
-	}
-	fake := &fakeTopupAPI{err: be}
-	req, err := parseTopupArgs([]string{"5", "--x402"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	out := captureStdout(t, func() {
-		if err := runTopup(fake, req); err != nil {
-			t.Fatalf("runTopup(challenge) = %v, want nil", err)
-		}
-	})
-
-	if fake.calls != 1 || fake.amount != "5" || fake.rail != "x402" || fake.payment != "" {
-		t.Fatalf("Topup(%q, %q, %q, %q), want (5, x402, \"\", \"\")",
-			fake.amount, fake.rail, fake.payCurrency, fake.payment)
-	}
-	for _, want := range []string{
-		"eip155:84532",
-		"0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-		"0x1111111111111111111111111111111111111111",
-		"5000000",
-		"0x9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0",
-		"600",
-		"EIP-3009",
-		"--payment",
-		"<base64 X-PAYMENT>",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("challenge output missing %q:\n%s", want, out)
-		}
-	}
-	for _, forbidden := range []string{"validBefore", "valid_before", "validbefore"} {
-		if strings.Contains(out, forbidden) {
-			t.Errorf("challenge output printed %q, but validBefore is not in the response:\n%s", forbidden, out)
-		}
-	}
-	assertNoSecrets(t, out, testX402Header)
-}
-
-// TestTopupX402SettlementHTTPRequestShape is the pass-through guarantee: with
-// --payment the base64 payload is sent as X-PAYMENT byte-for-byte (with or
-// without --x402, which --payment implies), and the 200 body plus the
-// PAYMENT-RESPONSE note print while the header contents stay unseen.
-func TestTopupX402SettlementHTTPRequestShape(t *testing.T) {
-	testConfigHome(t)
-	var paths []string
-	var bodies []map[string]any
-	var xpayments []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		paths = append(paths, r.URL.Path)
-		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		bodies = append(bodies, body)
-		xpayments = append(xpayments, r.Header.Get("X-PAYMENT"))
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("PAYMENT-RESPONSE", testX402Receipt)
-		fmt.Fprint(w, `{"billing_id":"TESS-1","balance_usd":"17.50","transaction":"0xdeadbeef","network":"eip155:84532"}`)
-	}))
-	defer srv.Close()
-
-	if err := saveConfig(&Config{
-		IndexerURL:      defaultIndexer,
-		BillingAPIURL:   srv.URL,
-		BillingAgentKey: "tsk_secret",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	for _, args := range [][]string{
-		{"12.50", "--x402", "--payment", testX402Header},
-		{"12.50", "--payment", testX402Header},
-	} {
-		out := captureStdout(t, func() { cmdTopup(args) })
-
-		for _, want := range []string{"0xdeadbeef", "eip155:84532", "17.50", "PAYMENT-RESPONSE"} {
-			if !strings.Contains(out, want) {
-				t.Errorf("settlement output missing %q:\n%s", want, out)
-			}
-		}
-		assertNoSecrets(t, out, "tsk_secret", testX402Header, testX402Receipt)
-	}
-
-	if len(paths) != 2 || paths[0] != "/billing/topup" || paths[1] != "/billing/topup" {
-		t.Fatalf("paths = %v, want POST /billing/topup twice", paths)
-	}
-	for i, body := range bodies {
-		if body["amount_usd"] != "12.50" || body["rail"] != "x402" {
-			t.Errorf("body[%d] = %#v, want amount_usd and rail x402", i, body)
-		}
-	}
-	for i, xp := range xpayments {
-		if xp != testX402Header {
-			t.Fatalf("X-PAYMENT[%d] = %q, want the base64 payload passed through unchanged", i, xp)
-		}
-	}
-}
-
-// TestRunTopupErrorOutcomes: every failure shape moneyd emits comes back as a
-// non-nil error with no success output on stdout; describeTopupError then
-// carries the mapped guidance (minimum, range, codes, retry hints).
 func TestRunTopupErrorOutcomes(t *testing.T) {
 	cases := []struct {
 		name string
@@ -403,8 +289,8 @@ func TestRunTopupErrorOutcomes(t *testing.T) {
 			want: []string{"processor_error"},
 		},
 		{
-			name: "402 refusal prints the x402 error code",
-			err:  parseBillingError(http.StatusPaymentRequired, []byte(`{"x402Version":2,"error":"invalid_payload","accepts":[]}`)),
+			name: "402 refusal prints the error code",
+			err:  parseBillingError(http.StatusPaymentRequired, []byte(`{"error":"invalid_payload"}`)),
 			want: []string{"invalid_payload"},
 		},
 		{
@@ -428,7 +314,7 @@ func TestRunTopupErrorOutcomes(t *testing.T) {
 			fake := &fakeTopupAPI{err: tc.err}
 			var runErr error
 			out := captureStdout(t, func() {
-				runErr = runTopup(fake, topupRequest{amount: "5", payment: testX402Header, x402: true})
+				runErr = runTopup(fake, topupRequest{amount: "5"})
 			})
 			if runErr == nil {
 				t.Fatal("runTopup = nil, want the API error returned")
@@ -447,64 +333,11 @@ func TestRunTopupErrorOutcomes(t *testing.T) {
 	}
 }
 
-// TestRunTopupMalformedChallenge: a 402 without accepts can never be printed
-// as a challenge; the command fails with a clear message instead.
-func TestRunTopupMalformedChallenge(t *testing.T) {
-	be := parseBillingError(http.StatusPaymentRequired, []byte(`{"x402Version":2,"challenge_id":7}`))
-	fake := &fakeTopupAPI{err: be}
-	err := runTopup(fake, topupRequest{amount: "5", x402: true})
-	if err == nil {
-		t.Fatal("runTopup(malformed challenge) = nil, want an error")
-	}
-	if !strings.Contains(describeTopupError(err), "accepts") {
-		t.Fatalf("guidance = %q, want it to name the missing accepts", describeTopupError(err))
-	}
-}
-
-// TestTopup401SignInGuidance pins the shared 401 renderer on topup: a rejected
-// bearer key gets the signup/login pointer and the `signup --force` recovery.
 func TestTopup401SignInGuidance(t *testing.T) {
 	err := parseBillingError(http.StatusUnauthorized, []byte(`{"detail":{"error":"unauthorized"}}`))
 	assertSignInGuidance(t, "topup", describeTopupError(err))
 }
 
-// TestRunTopupChallengeMissingNonce: a 402 challenge whose accepts[0] carries
-// no x402ChallengeNonce (missing extra, missing key, or empty value) can never
-// be printed as signable; the command fails with a clear message naming the
-// field and prints nothing.
-func TestRunTopupChallengeMissingNonce(t *testing.T) {
-	cases := []struct {
-		name string
-		body string
-	}{
-		{"accept without extra", `{"x402Version":2,"accepts":[{"scheme":"exact","network":"base","amount":"5000000","payTo":"0xabc"}]}`},
-		{"extra without the nonce", `{"x402Version":2,"accepts":[{"scheme":"exact","network":"base","amount":"5000000","payTo":"0xabc","extra":{"name":"USDC"}}]}`},
-		{"empty nonce", `{"x402Version":2,"accepts":[{"scheme":"exact","network":"base","amount":"5000000","payTo":"0xabc","extra":{"x402ChallengeNonce":""}}]}`},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			be := parseBillingError(http.StatusPaymentRequired, []byte(tc.body))
-			if be.Code != "" {
-				t.Fatalf("test body parsed as a refusal (code %q), want a bare challenge", be.Code)
-			}
-			fake := &fakeTopupAPI{err: be}
-			var runErr error
-			out := captureStdout(t, func() { runErr = runTopup(fake, topupRequest{amount: "5", x402: true}) })
-			if runErr == nil {
-				t.Fatal("runTopup(challenge without a nonce) = nil, want an error")
-			}
-			if out != "" {
-				t.Fatalf("a half-valid challenge was printed:\n%s", out)
-			}
-			if msg := describeTopupError(runErr); !strings.Contains(msg, "x402ChallengeNonce") {
-				t.Fatalf("guidance = %q, want it to name the missing nonce field", msg)
-			}
-		})
-	}
-}
-
-// TestTopupClientGuidance: no config file and a config without billing
-// credentials both fail before any API call, with the signup/login pointer.
 func TestTopupClientGuidance(t *testing.T) {
 	t.Run("no config file", func(t *testing.T) {
 		testConfigHome(t)
