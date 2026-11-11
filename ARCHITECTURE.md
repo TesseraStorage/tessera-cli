@@ -245,6 +245,19 @@ unknown one is refused. `assetLabel` renders codes in plain words and
 `localTimeLabel` renders `address_expires_at` / `expires_at` (UTC from the
 server) in the local zone with the offset and a relative hint.
 
+On a terminal at least 60 columns wide, `printDepositQR` encodes the deposit
+address as a QR. The USDC-on-Base EIP-681 payment URI is unchanged. Bitcoin
+(`bitcoin:<addr>?amount=`), Litecoin, Dogecoin, Bitcoin Cash (`bitcoincash:`,
+including addresses that already carry that prefix), Monero
+(`monero:<addr>?tx_amount=`), native Ether on Ethereum
+(`ethereum:<addr>@1?value=<wei>`), and USDC/USDT on contracts published by
+Circle or Tether use a payment URI that includes the exact amount. Every
+other coin is a plain-address QR. `--qr=address` forces the plain address;
+`--no-qr`, `--invoice`, `--json`, `--quiet`, a non-TTY, and a terminal
+narrower than 60 columns omit it. A memo, destination tag or
+`payin_extra_id` from the server is printed in the address block and called
+out next to the QR (the QR itself does not include it).
+
 ## 10. The background watcher
 
 `tessera sync` is a one-shot command, so nothing keeps a folder in step unless

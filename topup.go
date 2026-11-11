@@ -488,8 +488,15 @@ func printTopupDirect(resp map[string]any, req topupRequest) {
 	fmt.Println()
 	fmt.Printf("  Payment intent:  %s\n", topupField(resp, "payment_intent_id"))
 	fmt.Printf("  Amount:          $%s\n", topupField(resp, "amount_usd"))
-	fmt.Printf("  Send:            %s %s\n", topupField(resp, "pay_amount"), assetLabel(topupField(resp, "pay_currency"), topupField(resp, "network")))
+	sendAmt := payAmountString(resp)
+	if sendAmt == "" {
+		sendAmt = "—"
+	}
+	fmt.Printf("  Send:            %s %s\n", sendAmt, assetLabel(topupField(resp, "pay_currency"), topupField(resp, "network")))
 	fmt.Printf("  Address:         %s\n", topupField(resp, "pay_address"))
+	if extra := extraIDFromResponse(resp); extra != "" {
+		fmt.Printf("  Memo / destination tag: %s\n", extra)
+	}
 	fmt.Printf("  Send before:     %s\n", localTimeLabel(topupField(resp, "address_expires_at"), time.Now()))
 	fmt.Printf("  Invoice URL:     %s\n", topupField(resp, "invoice_url"))
 	fmt.Printf("  Invoice open until: %s\n", localTimeLabel(topupField(resp, "expires_at"), time.Now()))
@@ -509,6 +516,7 @@ func printTopupDirect(resp map[string]any, req topupRequest) {
 		JSON:     req.json,
 		Quiet:    req.quiet,
 		Invoice:  req.invoice,
+		ExtraID:  extraIDFromResponse(resp),
 	})
 }
 
@@ -523,6 +531,9 @@ func payAmountString(m map[string]any) string {
 	case string:
 		return n
 	case float64:
+		// Shortest round-trip decimal (encoding/json stores numbers as float64).
+		// A fixed 18-digit format would print binary leftovers such as
+		// 0.098511810000000005.
 		return strconv.FormatFloat(n, 'f', -1, 64)
 	default:
 		return fmt.Sprint(n)
@@ -839,11 +850,17 @@ Options:
   --wait|--no-wait poll until paid (default on an interactive terminal)
   --no-qr          do not print a QR code
   --qr=address     QR of the plain deposit address (exchange apps). The default
-                   QR is an EIP-681 USDC-on-Base payment.
+                   QR is a payment URI that includes the exact amount when a
+                   widely supported scheme exists (Bitcoin, Litecoin, Dogecoin,
+                   Bitcoin Cash, Monero, Ether on Ethereum, and USDC/USDT on
+                   verified EVM chains); otherwise it is the address only.
 
-On a terminal at least 60 columns wide, a USDC-on-Base deposit address is also
-shown as a QR code. It is omitted for other coins, --invoice, --json, --quiet,
-and when output is not a terminal.
+On a terminal at least 60 columns wide, a deposit address is also shown as a
+QR code. The caption says whether the QR fills in the amount or only the
+address (enter the amount shown above). If the processor returns a memo or
+destination tag, it is printed with the address and again next to the QR —
+the QR does not include it. The QR is omitted for --invoice, --json,
+--quiet, and when output is not a terminal.
 
 Discover:
   tessera topup --coins                   # every accepted coin

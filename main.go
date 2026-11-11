@@ -441,7 +441,7 @@ Billing & account:
                              address in a chosen coin (USDC on Base by
                              default; XMR, BTC, ETH, USDT...), or a browser
                              invoice (--invoice). A terminal also shows a
-                             USDC-on-Base QR (--no-qr to hide; --qr=address
+                             deposit-address QR (--no-qr to hide; --qr=address
                              for the address only). See 'tessera topup --help'.
   {exe} topup <amount> [--json] [--wait|--no-wait]
                              Machine-readable output; poll until a terminal state
