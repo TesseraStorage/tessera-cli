@@ -135,14 +135,19 @@ func TestDepositQRGating(t *testing.T) {
 	}
 	off = base
 	off.Currency = "btc"
-	if depositQRAllowed(off, true, 80) {
-		t.Fatal("other coins must not show the QR")
+	if !depositQRAllowed(off, true, 80) {
+		t.Fatal("btc should show the QR")
 	}
 	off = base
 	off.Currency = "usdc"
 	off.Network = "eth"
+	if !depositQRAllowed(off, true, 80) {
+		t.Fatal("USDC on Ethereum should show the QR")
+	}
+	off = base
+	off.Address = ""
 	if depositQRAllowed(off, true, 80) {
-		t.Fatal("USDC on Ethereum must not show the QR")
+		t.Fatal("missing address must not show the QR")
 	}
 	off = base
 	off.Currency = "usdc"
@@ -249,13 +254,22 @@ func TestTopupPrintsDecodableQR(t *testing.T) {
 	btc := directTopupResponse()
 	btc["pay_currency"] = "btc"
 	btc["network"] = "btc"
+	btc["pay_address"] = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+	btc["pay_amount"] = "0.01"
 	out = captureStdout(t, func() {
 		if err := runTopup(&fakeDirectAPI{topupResp: btc}, topupRequest{amount: "10"}); err != nil {
 			t.Fatal(err)
 		}
 	})
-	if strings.ContainsAny(out, "▀▄█") {
-		t.Fatalf("QR printed for btc:\n%s", out)
+	if !strings.ContainsAny(out, "▀▄█") {
+		t.Fatalf("QR missing for btc:\n%s", out)
+	}
+	payload, err = decodeHalfBlockQR(qrBlock(out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload != "bitcoin:bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4?amount=0.01" {
+		t.Fatalf("btc QR decoded %q", payload)
 	}
 }
 

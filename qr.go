@@ -12,16 +12,17 @@ import (
 	"rsc.io/qr"
 )
 
-// QR codes for USDC on Base.
+// QR codes for deposit addresses.
 //
 // The encoder is rsc.io/qr. The terminal picture is a half-block renderer in
 // this file (two modules per row, monochrome, no color codes). Heavier QR
 // libraries are not used.
 //
-// Shown by default on `tessera topup` when it prints a USDC-on-Base deposit
-// address. Never for other coins, invoice mode, --json, --quiet, or when
-// stdout is not a terminal of at least
-// qrMinColumns.
+// Shown by default on `tessera topup` when it prints a deposit address.
+// USDC on Base keeps its EIP-681 payment URI. Other coins use a payment URI
+// that includes the amount when a widely supported scheme exists; otherwise
+// the QR is the plain address. Never for invoice mode, --json, --quiet, or
+// when stdout is not a terminal of at least qrMinColumns.
 
 const qrMinColumns = 60
 
@@ -48,6 +49,7 @@ type depositQR struct {
 	JSON     bool
 	Quiet    bool
 	Invoice  bool
+	ExtraID  string // memo / destination tag / payin_extra_id, if the server sent one
 }
 
 // qrStdoutTerminal reports whether the stream printDepositQR writes to is a
@@ -216,7 +218,7 @@ func depositQRAllowed(p depositQR, tty bool, columns int) bool {
 	if p.Quiet {
 		return false
 	}
-	if !isUSDCOnBase(p.Currency, p.Network) || !isEVMAddress(p.Address) {
+	if strings.TrimSpace(p.Address) == "" || p.Address == "—" {
 		return false
 	}
 	if !tty || columns < qrMinColumns {
@@ -306,7 +308,7 @@ func printDepositQR(w io.Writer, p depositQR) {
 	if !depositQRAllowed(p, tty, cols) {
 		return
 	}
-	payload, err := depositQRPayload(p.Address, p.Amount, p.Style)
+	payload, err := depositQRPayloadFor(p)
 	if err != nil {
 		return
 	}
@@ -314,11 +316,20 @@ func printDepositQR(w io.Writer, p depositQR) {
 	if err != nil || width > cols {
 		return
 	}
-	exact := p.Style != qrAddress && strings.Contains(payload, "&uint256=")
-	caption := depositQRCaption(exact, sendBeforeClock(p.Expires))
+	exact := p.Style != qrAddress && payloadIncludesAmount(payload)
+	hhmm := sendBeforeClock(p.Expires)
+	var caption string
+	if isUSDCOnBase(p.Currency, p.Network) && p.Style != qrAddress {
+		caption = depositQRCaption(exact, hhmm)
+	} else {
+		caption = otherQRCaption(exact, hhmm)
+	}
 	fmt.Fprintln(w)
 	fmt.Fprint(w, rendered)
 	fmt.Fprintln(w, caption)
+	if extra := strings.TrimSpace(p.ExtraID); extra != "" && extra != "—" {
+		fmt.Fprintf(w, "This QR does not include the memo/destination tag. Enter this tag as well: %s\n", extra)
+	}
 }
 
 // usdcContractForChain returns the USDC contract used in EIP-681 QR payloads

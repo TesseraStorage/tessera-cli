@@ -332,10 +332,16 @@ address's rate quote (about 20 minutes, set by NOWPayments); *Invoice open
 until* is the invoice link (24 hours). After the address window, run the
 command again or use the invoice link.
 
-On a terminal at least 60 columns wide, a USDC-on-Base deposit address is also
-printed as a QR code (an EIP-681 payment URI). `--no-qr` hides it;
-`--qr=address` encodes only the address, for exchange apps. There is no QR for
-other coins, `--invoice`, `--json`, `--quiet`, or piped output.
+On a terminal at least 60 columns wide, a deposit address is also printed as
+a QR code. USDC on Base uses the same EIP-681 payment URI as before. Bitcoin,
+Litecoin, Dogecoin, Bitcoin Cash, Monero, native Ether on Ethereum, and
+USDC/USDT on Circle- or Tether-published EVM contracts use a payment URI that
+includes the exact amount. Every other coin (TRC20, Solana, TON, XRP, and the
+rest) encodes only the address — enter the amount shown above. If the
+processor returns a memo or destination tag, the command prints it with the
+address and warns that the QR does not include it. `--no-qr` hides the QR;
+`--qr=address` encodes only the address, for exchange apps. There is no QR
+for `--invoice`, `--json`, `--quiet`, or piped output.
 
 **Top-ups default to a direct address.** A bare `topup <amount>` creates a
 payment intent and prints the payment intent id, amount, exact amount/asset/
