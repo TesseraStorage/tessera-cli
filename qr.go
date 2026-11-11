@@ -328,7 +328,7 @@ func printDepositQR(w io.Writer, p depositQR) {
 	fmt.Fprint(w, rendered)
 	fmt.Fprintln(w, caption)
 	if extra := strings.TrimSpace(p.ExtraID); extra != "" && extra != "—" {
-		fmt.Fprintf(w, "This QR does not include the memo/destination tag. Enter this tag as well: %s\n", extra)
+		fmt.Fprintf(w, "WARNING: This QR does not include the memo/destination tag. You must enter this tag as well or the payment cannot be credited: %s\n", extra)
 	}
 }
 

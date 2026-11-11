@@ -181,7 +181,13 @@ func TestTopupPrintsMemoAndNonUSDCQR(t *testing.T) {
 	if !strings.Contains(out, "Memo / destination tag: 24680") {
 		t.Fatalf("memo not in text output:\n%s", out)
 	}
-	if !strings.Contains(out, "This QR does not include the memo/destination tag. Enter this tag as well: 24680") {
+	if !strings.Contains(out, "IMPORTANT: You must include this destination tag/memo with the payment.") {
+		t.Fatalf("memo importance missing:\n%s", out)
+	}
+	if !strings.Contains(out, "Payments sent without it cannot be credited.") {
+		t.Fatalf("memo credit warning missing:\n%s", out)
+	}
+	if !strings.Contains(out, "WARNING: This QR does not include the memo/destination tag. You must enter this tag as well or the payment cannot be credited: 24680") {
 		t.Fatalf("memo warning missing:\n%s", out)
 	}
 	if !strings.Contains(out, "address only — enter the amount shown above") {
