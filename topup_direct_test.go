@@ -437,3 +437,36 @@ func TestEmitTopupErrorJSONForANonBillingError(t *testing.T) {
 		t.Errorf("message = %v", doc["message"])
 	}
 }
+
+func TestMissingDestinationTagGuidance(t *testing.T) {
+	err := &billingError{
+		Status: http.StatusBadGateway,
+		Code:   "missing_destination_tag",
+		Extra:  map[string]any{"pay_currency": "eos"},
+	}
+	msg := describeTopupError(err)
+	for _, want := range []string{"missing_destination_tag", "--invoice", "cannot be credited", "another coin"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("describeTopupError = %q, missing %q", msg, want)
+		}
+	}
+}
+
+func TestTopupJSONIncludesPayinExtraID(t *testing.T) {
+	xrp := directTopupResponse()
+	xrp["pay_currency"] = "xrp"
+	xrp["network"] = "xrp"
+	xrp["payin_extra_id"] = "24680"
+	out := captureStdout(t, func() {
+		if err := runTopup(&fakeDirectAPI{topupResp: xrp}, topupRequest{amount: "10", json: true}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, out)
+	}
+	if doc["payin_extra_id"] != "24680" {
+		t.Fatalf("payin_extra_id = %v\n%s", doc["payin_extra_id"], out)
+	}
+}

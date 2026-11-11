@@ -496,6 +496,8 @@ func printTopupDirect(resp map[string]any, req topupRequest) {
 	fmt.Printf("  Address:         %s\n", topupField(resp, "pay_address"))
 	if extra := extraIDFromResponse(resp); extra != "" {
 		fmt.Printf("  Memo / destination tag: %s\n", extra)
+		fmt.Println("  IMPORTANT: You must include this destination tag/memo with the payment.")
+		fmt.Println("  Payments sent without it cannot be credited.")
 	}
 	fmt.Printf("  Send before:     %s\n", localTimeLabel(topupField(resp, "address_expires_at"), time.Now()))
 	fmt.Printf("  Invoice URL:     %s\n", topupField(resp, "invoice_url"))
@@ -600,6 +602,12 @@ func describeTopupError(err error) string {
 		return "payments_unconfigured — payments are not configured on the server yet; try again later"
 	case be.Status == http.StatusBadGateway && be.Code == "settlement_pending":
 		return fmt.Sprintf("settlement_pending — transaction %s has not confirmed yet and may still land; retry shortly or run 'tessera account'", topupField(be.Extra, "transaction"))
+	case be.Status == http.StatusBadGateway && be.Code == "missing_destination_tag":
+		asset := "this coin"
+		if coin := topupField(be.Extra, "pay_currency"); coin != "—" {
+			asset = assetLabel(coin, "")
+		}
+		return "missing_destination_tag — " + asset + " requires a destination tag or memo, but the processor did not provide one, so no deposit address was shown. A bare address cannot be credited. Retry with --invoice, or pick another coin."
 	case be.Status == http.StatusBadGateway && be.Code == "processor_error":
 		return "processor_error — the payment processor failed and nothing was charged; try again shortly"
 	case be.Status == http.StatusPaymentRequired:
@@ -859,7 +867,8 @@ On a terminal at least 60 columns wide, a deposit address is also shown as a
 QR code. The caption says whether the QR fills in the amount or only the
 address (enter the amount shown above). If the processor returns a memo or
 destination tag, it is printed with the address and again next to the QR —
-the QR does not include it. The QR is omitted for --invoice, --json,
+the QR does not include it. The tag must be included with the payment or
+the funds cannot be credited. The QR is omitted for --invoice, --json,
 --quiet, and when output is not a terminal.
 
 Discover:
