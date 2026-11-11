@@ -118,7 +118,7 @@ func TestResolveAssetTickerListsNetworks(t *testing.T) {
 }
 
 func TestTopupHelpExplainsThreeWays(t *testing.T) {
-	for _, want := range []string{"x402 wallet", "between $5 and $10,000", "--asset xmr", "Browser invoice", "XMR", "BTC", "ETH", "USDT"} {
+	for _, want := range []string{"between $5 and $10,000", "--asset xmr", "Browser invoice", "XMR", "BTC", "ETH", "USDT", "Deposit address"} {
 		if !strings.Contains(topupHelp, want) {
 			t.Errorf("topup help missing %q", want)
 		}

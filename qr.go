@@ -19,8 +19,8 @@ import (
 // libraries are not used.
 //
 // Shown by default on `tessera topup` when it prints a USDC-on-Base deposit
-// address, and on `tessera wallet fund`. Never for other coins, invoice mode,
-// x402, --json, --quiet, or when stdout is not a terminal of at least
+// address. Never for other coins, invoice mode, --json, --quiet, or when
+// stdout is not a terminal of at least
 // qrMinColumns.
 
 const qrMinColumns = 60
@@ -48,7 +48,6 @@ type depositQR struct {
 	JSON     bool
 	Quiet    bool
 	Invoice  bool
-	X402     bool
 }
 
 // qrStdoutTerminal reports whether the stream printDepositQR writes to is a
@@ -180,7 +179,7 @@ func allDigits(s string) bool {
 }
 
 // depositQRPayload builds the EIP-681 payment URI, or the plain address when
-// style is qrAddress. uint256 is omitted when there is no amount (wallet fund).
+// style is qrAddress. uint256 is omitted when there is no amount.
 func depositQRPayload(address, amount string, style qrStyle) (string, error) {
 	if !isEVMAddress(address) {
 		return "", fmt.Errorf("not an EVM address")
@@ -208,7 +207,7 @@ func depositQRPayload(address, amount string, style qrStyle) (string, error) {
 
 // depositQRAllowed is the TTY / json / quiet / coin gate. It does not encode.
 func depositQRAllowed(p depositQR, tty bool, columns int) bool {
-	if p.Style == qrOff || p.JSON || p.Quiet || p.Invoice || p.X402 {
+	if p.Style == qrOff || p.JSON || p.Quiet || p.Invoice {
 		return false
 	}
 	if os.Getenv("TESSERA_QUIET") == "1" {
@@ -320,4 +319,16 @@ func printDepositQR(w io.Writer, p depositQR) {
 	fmt.Fprintln(w)
 	fmt.Fprint(w, rendered)
 	fmt.Fprintln(w, caption)
+}
+
+// usdcContractForChain returns the USDC contract used in EIP-681 QR payloads
+// for Base (8453) and Base Sepolia (84532).
+func usdcContractForChain(chainID uint64) (string, bool) {
+	switch chainID {
+	case 8453:
+		return "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", true
+	case 84532:
+		return "0x036CbD53842c5426634e7929541eC2318f3dCF7e", true
+	}
+	return "", false
 }
