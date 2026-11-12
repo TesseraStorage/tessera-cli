@@ -471,9 +471,19 @@ signatures): they show `?<redacted>`. `tessera <command> --help` (upload,
 download, delete, share, fetch, and the rest) prints that command's flags and
 exits 0.
 
-**Updates.** The CLI checks for a new release at most once a day in the
-background and prints a one-line notice on stderr; `tessera update` downloads
-the release asset, verifies it against `SHA256SUMS` and replaces the binary.
+**Updates.** When a newer release exists, every command (including failed
+commands and `--help`) ends with a one-line notice on stderr:
+`New version vX.Y.Z available (you have vA.B.C). Run 'tessera update' to install it.`
+`--json` output stays one JSON document on stdout; a JSON object also gets an
+extra top-level `"update_available": {"current": "vA.B.C", "latest": "vX.Y.Z"}`
+(only when an update is available; existing keys never change). The CLI
+learns the latest version from the Tessera API (a response header on normal
+requests, or `GET /api/v1/cli/latest`), falling back to GitHub, and refreshes
+it in the background at most every 6 hours, so commands never wait for it.
+Nothing is ever installed or forced: older versions keep working, and
+`tessera config --update-check off` turns the notice off. `tessera update`
+downloads the release asset, verifies it against `SHA256SUMS` and replaces the
+binary. Requests carry `User-Agent: tessera-cli/<version> (<os>/<arch>)`.
 
 **Deleting your account.** `tessera account delete` revokes every key,
 deletes all stored objects, stops billing and marks the account deleted. Any

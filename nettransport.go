@@ -34,6 +34,18 @@ func init() {
 }
 
 func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Header.Get("User-Agent") == "" {
+		// Identify the CLI version on every request (optional for the
+		// service; it only shows which versions are still in use).
+		req = req.Clone(req.Context())
+		req.Header.Set("User-Agent", userAgent())
+	}
+	resp, err := t.roundTrip(req)
+	noteLatestHeader(req, resp)
+	return resp, err
+}
+
+func (t *retryTransport) roundTrip(req *http.Request) (*http.Response, error) {
 	if !retryableRequest(req) {
 		return notePaymentRequired(t.next.RoundTrip(req))
 	}

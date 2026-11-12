@@ -20,7 +20,7 @@ import (
 const updateRepo = "TesseraStorage/tessera-cli"
 
 const (
-	updateCheckTTL  = 24 * time.Hour
+	updateCheckTTL  = 6 * time.Hour
 	updateHTTPLimit = 2 * time.Second
 )
 
@@ -32,13 +32,22 @@ const updateHint = "Run 'tessera update' to install it."
 var fetchLatestTag = defaultFetchLatestTag
 
 func defaultFetchLatestTag(repo string) (string, error) {
+	if repo == updateRepo {
+		if tag, err := fetchLatestFromAPI(); err == nil {
+			return tag, nil
+		}
+	}
+	return fetchLatestFromGitHub(repo)
+}
+
+func fetchLatestFromGitHub(repo string) (string, error) {
 	client := &http.Client{Timeout: updateHTTPLimit}
 	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/repos/"+repo+"/releases/latest", nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "tessera-cli/"+version)
+	req.Header.Set("User-Agent", userAgent())
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -57,7 +66,8 @@ func defaultFetchLatestTag(repo string) (string, error) {
 }
 
 // updateCache remembers the last check so calls are throttled to one probe per
-// TTL — a quiet background check, never a per-command network call.
+// TTL — a quiet background check, never a per-command network call. The
+// notice itself is printed after every command whenever Latest is newer.
 type updateCache struct {
 	CheckedAt time.Time `json:"checked_at"`
 	Latest    string    `json:"latest"`
@@ -149,11 +159,7 @@ func checkForUpdate(cfg *Config) string {
 // updateNotice returns a one-line "newer version" message when a newer release
 // is known, else "". It never installs anything.
 func updateNotice(cfg *Config) string {
-	latest := checkForUpdate(cfg)
-	if latest == "" || compareVersions(latest, version) <= 0 {
-		return ""
-	}
-	return fmt.Sprintf("New version %s available (you have %s). %s", latest, version, updateHint)
+	return noticeForLatest(newestTag(checkForUpdate(cfg), serverLatestTag()))
 }
 
 // ---------------------------------------------------------------- tessera update
@@ -182,7 +188,7 @@ func httpGetAll(url string, limit int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "tessera-cli/"+version)
+	req.Header.Set("User-Agent", userAgent())
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

@@ -41,7 +41,7 @@ import (
 var statusCommand = cmdStatus
 
 // version is the build version. The release workflow injects it from the git
-// tag (v1.16.2 is the release this tree is for; the tag is cut after a live
+// tag (v1.17.0 is the release this tree is for; the tag is cut after a live
 // server test, not by this change):
 //
 //	go build -ldflags "-X main.version=${GITHUB_REF_NAME}" .
@@ -64,15 +64,19 @@ func cmdVersion() {
 
 func main() {
 	if len(os.Args) < 2 {
+		notices := startBackgroundNotices("help", nil)
 		printUsage()
+		notices.print()
 		os.Exit(1)
 	}
 
 	cmd := os.Args[1]
 	args := os.Args[2:]
 
-	// Daily update check, started in the background so it never delays the
-	// command; its result is printed (at most) once the command finishes.
+	// Update check: the notice is printed after every command (success,
+	// failure, usage error or --help) whenever a newer release is known; a
+	// stale cache is refreshed in the background so it never delays the
+	// command.
 	notices := startBackgroundNotices(cmd, args)
 	switch cmd {
 	case "upload", "put", "download", "get", "fetch", "optimize":
@@ -81,6 +85,7 @@ func main() {
 
 	// "account delete --help" has its own text; only bare "account --help" here.
 	if (hasFlag(args, "--help") || hasFlag(args, "-h")) && !(cmd == "account" && len(positional(args)) > 0) && printCommandHelp(cmd) {
+		notices.print()
 		return
 	}
 
@@ -189,7 +194,7 @@ func main() {
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		printUsage()
-		os.Exit(1)
+		exitWithNotices(1)
 	}
 
 	notices.print()
@@ -362,7 +367,7 @@ func printCommandHelp(cmd string) bool {
 // usageError prints a one-line usage hint and exits.
 func usageError(usage string) {
 	fmt.Fprintf(os.Stderr, "Usage: %s %s\n", filepath.Base(os.Args[0]), usage)
-	os.Exit(1)
+	exitWithNotices(1)
 }
 
 func printUsage() {

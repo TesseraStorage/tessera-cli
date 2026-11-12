@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -22,11 +23,23 @@ type hash256 = types.Hash256
 
 // emitJSON prints v as indented JSON when the caller asked for machine-readable
 // output. It is used by every read-only command.
+//
+// When a newer CLI release is already known, a JSON object also gets an
+// additive top-level "update_available": {"current", "latest"} (existing keys
+// and their order are untouched; arrays are left as they are). The
+// human-readable notice goes to stderr, so stdout stays one JSON document.
 func emitJSON(v interface{}) {
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(v); err != nil {
+	data, err := json.Marshal(v)
+	if err != nil {
 		fatal("encode json: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, withUpdateAvailable(data), "", "  "); err != nil {
+		fatal("encode json: %v", err)
+	}
+	buf.WriteByte('\n')
+	if _, err := os.Stdout.Write(buf.Bytes()); err != nil {
+		fatal("write json: %v", err)
 	}
 }
 
