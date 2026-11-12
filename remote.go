@@ -359,12 +359,11 @@ type uploadError struct {
 	Err        error
 }
 
-// uploadMany prepares every candidate (hash plus content short-circuit) and
-// transfers only the files that still need it. Exactly one remaining file goes
-// through uploadOne so the single-file path's behavior is preserved; two or
-// more share one packed session. Per-file failures are returned without
-// stopping the rest. It returns the number of files accounted for as uploaded
-// (including already-stored short-circuits) and the bytes actually transferred.
+// uploadMany prepares every candidate and transfers each of them. Identical
+// content is not skipped. Exactly one remaining file goes through uploadOne so
+// the single-file path's behavior is preserved; two or more share one packed
+// session. Per-file failures are returned without stopping the rest. It returns
+// the number of files uploaded and the bytes actually transferred.
 func uploadMany(ctx context.Context, rt *Remote, idx *Index, candidates []uploadCandidate) (uploaded int, bytes int64, errs []uploadError) {
 	var pending []uploadRequest
 	for _, c := range candidates {

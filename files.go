@@ -218,9 +218,9 @@ func firstOversizeUpload(root string) (rel string, size int64, found bool) {
 	return rel, size, found
 }
 
-// prepareUpload hashes one file and builds its upload request. It returns
-// already=true (and updates the local index) when identical content is already
-// stored at this very path, so no transfer is needed.
+// prepareUpload hashes one file and builds its upload request. Every call
+// produces a real upload: identical content at the same path is not skipped.
+// Clients may upload multiple copies of the same file.
 func prepareUpload(ctx context.Context, rt *Remote, idx *Index, localPath, remotePath string) (req uploadRequest, already bool, err error) {
 	fi, err := os.Stat(localPath)
 	if err != nil {
@@ -229,26 +229,6 @@ func prepareUpload(ctx context.Context, rt *Remote, idx *Index, localPath, remot
 	hash, err := hashFile(localPath)
 	if err != nil {
 		return uploadRequest{}, false, fmt.Errorf("hash %s: %w", localPath, err)
-	}
-
-	// Content-addressed short circuit: an object has exactly one logical path,
-	// so the only case that needs no upload is when the identical content is
-	// already stored at this very path. Re-pointing an object that lives at
-	// another path would delete that other path, silently removing a file the
-	// user still expects to exist.
-	if existing, ok := idx.byHash(hash); ok && existing.ObjectID != "" && existing.Path == remotePath {
-		if _, err := rt.Reattach(ctx, pathInfoFromIndex(existing), remotePath, existing.Root); err == nil {
-			dinfo := PathInfo{
-				ObjectID: existing.ObjectID, Path: remotePath, Name: path.Base(remotePath),
-				Root: existing.Root, SHA256: hash, Size: fi.Size(), ModTime: fi.ModTime(),
-				Legacy: existing.Legacy,
-			}
-			idx.put(dinfo)
-			_ = idx.save()
-			recordUploadInSyncState(dinfo, fi.ModTime())
-			fmt.Printf("  = %s already stored with identical content\n", remotePath)
-			return uploadRequest{}, true, nil
-		}
 	}
 
 	return uploadRequest{
