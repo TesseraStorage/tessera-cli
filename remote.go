@@ -293,7 +293,7 @@ func (r *Remote) Upload(ctx context.Context, req uploadRequest, onProgress func(
 	}
 	bar.SetDone(req.Size)
 	bar.SetPhase("pinning")
-	if err := r.sdk.PinObject(ctx, obj); err != nil {
+	if err := r.pinObject(ctx, obj); err != nil {
 		return PathInfo{}, fmt.Errorf("pin %s: %w", req.RelPath, err)
 	}
 	if onProgress != nil {
@@ -602,7 +602,7 @@ func (r *Remote) UploadBatch(ctx context.Context, reqs []uploadRequest, onProgre
 				// descriptor after Finalize is safe and is what makes each file
 				// independently addressable.
 				obj.UpdateMetadata(metas[idx])
-				if err := r.sdk.PinObject(ctx, obj); err != nil {
+				if err := r.pinObject(ctx, obj); err != nil {
 					out[idx].Err = fmt.Errorf("pin %s: %w", req.RelPath, err)
 					continue
 				}
@@ -732,7 +732,7 @@ func (r *Remote) Reattach(ctx context.Context, from PathInfo, newPath, root stri
 	// Re-attaching to the same path is a metadata refresh; either way the
 	// previous object identity is fully described by the metadata we write.
 	obj.UpdateMetadata(meta)
-	if err := r.sdk.PinObject(ctx, obj); err != nil {
+	if err := r.pinObject(ctx, obj); err != nil {
 		return PathInfo{}, fmt.Errorf("reattach %s: %w", newPath, err)
 	}
 
