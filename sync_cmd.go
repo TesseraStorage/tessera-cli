@@ -382,7 +382,7 @@ func syncRun(args []string) {
 		}
 	}
 	if failed {
-		os.Exit(1)
+		exitWithNotices(1)
 	}
 }
 

@@ -61,7 +61,7 @@ func cmdTopup(args []string) {
 			// One JSON document on stdout whether the request succeeded or
 			// failed, so an agent never has to parse a human sentence.
 			emitTopupErrorJSON(err)
-			os.Exit(1)
+			exitWithNotices(1)
 		}
 		fatal("%s", describeTopupError(err))
 	}

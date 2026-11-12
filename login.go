@@ -1213,5 +1213,5 @@ func fatal(format string, args ...interface{}) {
 		msg += "\n"
 	}
 	fmt.Fprintf(os.Stderr, "ERROR: %s", msg)
-	os.Exit(1)
+	exitWithNotices(1)
 }

@@ -191,7 +191,7 @@ func describeUpdateCheck(disabled bool) string {
 	if disabled {
 		return "off"
 	}
-	return "on (throttled, best-effort; never installs)"
+	return "on (notice after each command when a newer release exists; never installs)"
 }
 
 // describeBillingSignIn reports how billing calls authenticate without ever
