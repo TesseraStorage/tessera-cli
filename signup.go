@@ -174,6 +174,14 @@ func warmHostFunding(cfg *Config) {
 	defer cancel()
 	_, _ = client.Hosts(ctx, appKey)
 
+	// Funding claim is triggered by the host-list fetch above. The readiness
+	// probe that used to wait and re-probe hosts is bypassed by default
+	// (same policy as requireTransferReadyFor). Opt back in with
+	// TESSERA_ENABLE_PREFLIGHT=1.
+	if os.Getenv("TESSERA_ENABLE_PREFLIGHT") != "1" || os.Getenv("TESSERA_SKIP_PREFLIGHT") == "1" {
+		return
+	}
+
 	// Wait until enough hosts show a funded balance so the first upload does
 	// not stall on "waiting for host funding: 29/30".
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), signupFundingWait)

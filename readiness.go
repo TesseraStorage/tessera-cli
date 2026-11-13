@@ -43,7 +43,8 @@ import (
 //     hosts are funded or the wait expires ("account not ready yet").
 //
 // Upload needs dataShards+parityShards hosts (30). Download needs dataShards (10).
-// TESSERA_SKIP_PREFLIGHT=1 skips the probe (the SDK errors are still mapped).
+// Probes are bypassed by default. TESSERA_ENABLE_PREFLIGHT=1 restores them.
+// TESSERA_SKIP_PREFLIGHT=1 still forces the skip.
 
 const (
 	readinessCodeNetwork      = "hosts_unreachable"
@@ -345,7 +346,11 @@ func requireTransferReady(ctx context.Context, cfg *Config, upload bool) {
 // host list is still fetched each round because that is what triggers the
 // free-path funding.
 func requireTransferReadyFor(ctx context.Context, cfg *Config, upload bool, objectID string) {
-	if os.Getenv("TESSERA_SKIP_PREFLIGHT") == "1" {
+	// Readiness probes are bypassed by default. They masked Sia network
+	// reality (unreachable hosts, async funding) at the cost of latency and
+	// extra host load. Set TESSERA_ENABLE_PREFLIGHT=1 to restore the old
+	// pre-flight checks. TESSERA_SKIP_PREFLIGHT=1 remains honored.
+	if os.Getenv("TESSERA_ENABLE_PREFLIGHT") != "1" || os.Getenv("TESSERA_SKIP_PREFLIGHT") == "1" {
 		return
 	}
 	needed := dataShards
@@ -389,6 +394,10 @@ func isHostShortageError(err error) bool {
 func explainTransferError(cfg *Config, err error, upload bool) error {
 	if _, ok := asPaymentRequired(err); ok {
 		return explainPaymentRequired(err)
+	}
+	// Diagnostic re-probe is also bypassed by default.
+	if os.Getenv("TESSERA_ENABLE_PREFLIGHT") != "1" || os.Getenv("TESSERA_SKIP_PREFLIGHT") == "1" {
+		return err
 	}
 	if pe, ok := shortageAfterPaymentRequired(err); ok {
 		return pe
