@@ -147,6 +147,20 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 // copyFileAtomic streams src into a temp file next to dst, fsyncs it and then
 // renames it over dst. It returns the number of bytes written.
 func copyFileAtomic(dst string, r io.Reader, mode os.FileMode) (int64, error) {
+	return copyFileAtomicVerify(dst, r, mode, nil)
+}
+
+// copyFileAtomicVerify is copyFileAtomic with a check that runs after the temp
+// file is fully written and closed but before it replaces dst. When verify
+// returns an error the temp file is removed and dst is left untouched.
+//
+// An existing dst that is not a regular file (a directory, device, FIFO or
+// socket) is refused before anything is written, so a download can never
+// replace something like /dev/null.
+func copyFileAtomicVerify(dst string, r io.Reader, mode os.FileMode, verify func() error) (int64, error) {
+	if fi, err := os.Stat(dst); err == nil && !fi.Mode().IsRegular() {
+		return 0, fmt.Errorf("refusing to write %s: it exists and is not a regular file", dst)
+	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 		return 0, err
 	}
@@ -168,6 +182,11 @@ func copyFileAtomic(dst string, r io.Reader, mode os.FileMode) (int64, error) {
 	}
 	if err := tmp.Close(); err != nil {
 		return n, err
+	}
+	if verify != nil {
+		if err := verify(); err != nil {
+			return n, err
+		}
 	}
 	if err := os.Chmod(tmpName, mode); err != nil {
 		return n, err

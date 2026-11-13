@@ -268,7 +268,7 @@ the Mac, add a second pair with a different prefix (for example
 | `find <pattern> [--content]` | Search paths, or file contents |
 | `versions <path> [--restore <n>]` | List or restore retained versions (1 kept by default) |
 | `trash list\|restore\|empty\|rm` | Recover soft-deleted files |
-| `audit [path] [--verify]` | Check redundancy and integrity |
+| `audit [path] [--verify] [--limit <n>]` | Check the redundancy each object was stored with; `--verify` also downloads each object (without saving it) and compares its SHA-256 with the hash stored at upload |
 | `usage [--by-folder] [--cost] [--json]` | Storage usage; with billing credentials a billing section (logical, stored and network size, downloads, balance, days left) |
 | `index --rebuild` | Rebuild the local metadata index |
 | `config` | Show or change settings |
@@ -531,8 +531,10 @@ in `account --json` to avoid duplication. `trial_credit_usd` is deprecated
   by default (`tessera trash restore <path>`), and `--dry-run` previews any sync.
 - **Downloads are atomic.** Data lands in a temp file and is renamed into place,
   so an interrupted sync never leaves a truncated file where a good one was.
-- **Downloads are verified.** Every fetch is checked against the recorded
-  SHA-256 before it replaces an existing file.
+- **Downloads are verified.** Every full download, including sync, is checked
+  against the SHA-256 recorded at upload before it replaces an existing file.
+  On a mismatch the command fails and the existing file is kept. Byte-range
+  reads (`--offset`/`--length`) have no reference hash and are not checked.
 - **Conflicts never lose data** under `keep-both`; under the default `newest`
   policy the losing copy is discarded, so choose `keep-both` if that matters.
 

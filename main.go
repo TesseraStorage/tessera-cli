@@ -331,7 +331,8 @@ List retained versions of a file, or restore one.
 `,
 	"audit": `Usage: {exe} audit [path] [--verify] [--limit <n>] [--json]
 
-Check stored objects for redundancy; --verify also downloads and checks them.
+Check stored objects for redundancy; --verify also downloads each object
+(without saving it) and checks its SHA-256 against the hash stored at upload.
 `,
 	"find": `Usage: {exe} find <pattern> [--content] [--json]
 

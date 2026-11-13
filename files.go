@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -422,8 +423,12 @@ func cmdDownload(args []string) {
 	}
 
 	start := time.Now()
-	n, err := rt.DownloadRange(ctx, pathInfoFromIndex(entry), dest, 0644, rng)
+	n, got, err := rt.downloadRangeHash(ctx, pathInfoFromIndex(entry), dest, 0644, rng)
 	if err != nil {
+		var ie *ErrIntegrity
+		if errors.As(err, &ie) {
+			fatal("%v", ie)
+		}
 		fatal("download: %v", explainTransferError(cfg, err, false))
 	}
 	elapsed := time.Since(start)
@@ -443,14 +448,8 @@ func cmdDownload(args []string) {
 		return
 	}
 
-	got, err := hashFile(dest)
-	if err != nil {
-		fatal("verify %s: %v", dest, err)
-	}
-	if entry.SHA256 != "" && got != entry.SHA256 {
-		fatal("integrity check failed for %s: expected %s, got %s", entry.Path, shortHash(entry.SHA256), shortHash(got))
-	}
-
+	// The whole-file hash was checked before dest was replaced (see
+	// downloadRangeHash), so a mismatch never reaches this point.
 	speed := float64(n) / elapsed.Seconds() / (1 << 20)
 	fmt.Printf("Downloaded %s in %.1fs (%.2f MiB/s)\n", formatBytes(uint64(n)), elapsed.Seconds(), speed)
 	if entry.SHA256 != "" {

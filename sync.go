@@ -1138,6 +1138,7 @@ func (e *SyncEngine) doConflictLocal(ctx context.Context, p, conflictPath string
 	n, err := e.rt.Download(ctx, PathInfo{
 		ObjectID: re.ObjectID,
 		Path:     e.remotePath(conflictPath),
+		SHA256:   re.SHA256,
 		ModTime:  re.ModTime,
 	}, dest, 0644)
 	if err != nil {

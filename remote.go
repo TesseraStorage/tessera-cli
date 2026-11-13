@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -665,17 +668,27 @@ func (r *Remote) Download(ctx context.Context, info PathInfo, dest string, mode 
 // the zero byteRange means the whole object). The SDK fetches only the slabs
 // covering the range.
 func (r *Remote) DownloadRange(ctx context.Context, info PathInfo, dest string, mode os.FileMode, rng byteRange) (int64, error) {
+	n, _, err := r.downloadRangeHash(ctx, info, dest, mode, rng)
+	return n, err
+}
+
+// downloadRangeHash is DownloadRange that also returns the SHA-256 of the
+// bytes written. A full download of an object with a stored hash is checked
+// before it replaces dest: on a mismatch it returns *ErrIntegrity and dest is
+// left as it was. Range downloads are not checked (there is no reference hash
+// for a slice).
+func (r *Remote) downloadRangeHash(ctx context.Context, info PathInfo, dest string, mode os.FileMode, rng byteRange) (int64, string, error) {
 	key, err := parseObjectID(info.ObjectID)
 	if err != nil {
-		return 0, fmt.Errorf("bad object reference for %s: %w", info.Path, err)
+		return 0, "", fmt.Errorf("bad object reference for %s: %w", info.Path, err)
 	}
 	obj, err := r.sdk.Object(ctx, key)
 	if err != nil {
-		return 0, fmt.Errorf("fetch %s (object %s): %w — if this persists, run 'tessera index --rebuild'", info.Path, shortHash(info.ObjectID), err)
+		return 0, "", fmt.Errorf("fetch %s (object %s): %w — if this persists, run 'tessera index --rebuild'", info.Path, shortHash(info.ObjectID), err)
 	}
 	rc, err := r.sdk.Download(obj, rng.downloadOptions()...)
 	if err != nil {
-		return 0, fmt.Errorf("download %s: %w", info.Path, err)
+		return 0, "", fmt.Errorf("download %s: %w", info.Path, err)
 	}
 	defer rc.Close()
 
@@ -686,17 +699,95 @@ func (r *Remote) DownloadRange(ctx context.Context, info PathInfo, dest string, 
 	bar := transferProgress
 	bar.Start("↓ "+path.Base(info.Path), total, "downloading")
 	defer bar.Finish()
-	n, err := copyFileAtomic(dest, &countingReader{r: rc, fn: bar.Add}, mode)
+	n, got, err := writeVerified(dest, &countingReader{r: rc, fn: bar.Add}, mode, info.Path, expectedHash(info, rng))
 	if err != nil {
-		return n, err
+		return n, got, err
 	}
 	if rng.Set && n != total {
-		return n, fmt.Errorf("download %s: got %d bytes for range %d-%d, expected %d", info.Path, n, rng.Offset, rng.end()-1, total)
+		return n, got, fmt.Errorf("download %s: got %d bytes for range %d-%d, expected %d", info.Path, n, rng.Offset, rng.end()-1, total)
 	}
 	if !rng.Set && !info.ModTime.IsZero() {
 		_ = os.Chtimes(dest, info.ModTime, info.ModTime)
 	}
-	return n, nil
+	return n, got, nil
+}
+
+// expectedHash is the hash a download must match before it may replace its
+// target: the stored hash for a full download, nothing for a range.
+func expectedHash(info PathInfo, rng byteRange) string {
+	if rng.Set {
+		return ""
+	}
+	return info.SHA256
+}
+
+// ErrIntegrity reports downloaded bytes whose SHA-256 differs from the hash
+// stored when the file was uploaded.
+type ErrIntegrity struct {
+	Path     string
+	Expected string
+	Got      string
+}
+
+func (e *ErrIntegrity) Error() string {
+	return fmt.Sprintf("integrity check failed for %s: expected %s, got %s", e.Path, shortHash(e.Expected), shortHash(e.Got))
+}
+
+// writeVerified streams r into dest atomically while hashing it. When want is
+// set, the hash is compared after the bytes are on disk but before the rename,
+// so a mismatch never replaces dest. It returns the bytes written and the hash.
+func writeVerified(dest string, r io.Reader, mode os.FileMode, name, want string) (int64, string, error) {
+	h := sha256.New()
+	var got string
+	n, err := copyFileAtomicVerify(dest, io.TeeReader(r, h), mode, func() error {
+		got = hex.EncodeToString(h.Sum(nil))
+		if want != "" && got != want {
+			return &ErrIntegrity{Path: name, Expected: want, Got: got}
+		}
+		return nil
+	})
+	return n, got, err
+}
+
+// hashStream reads r to the end without storing it and checks its SHA-256
+// against want. It returns the bytes read and the hash; a mismatch is
+// *ErrIntegrity. An empty want only computes the hash.
+func hashStream(r io.Reader, name, want string) (int64, string, error) {
+	h := sha256.New()
+	n, err := io.Copy(h, r)
+	if err != nil {
+		return n, "", err
+	}
+	got := hex.EncodeToString(h.Sum(nil))
+	if want != "" && got != want {
+		return n, got, &ErrIntegrity{Path: name, Expected: want, Got: got}
+	}
+	return n, got, nil
+}
+
+// VerifyHash downloads an object without writing it anywhere and checks its
+// SHA-256 against the hash stored at upload (info.SHA256). It returns the
+// bytes read; a mismatch is *ErrIntegrity. Objects with no stored hash are
+// only read.
+func (r *Remote) VerifyHash(ctx context.Context, info PathInfo) (int64, error) {
+	key, err := parseObjectID(info.ObjectID)
+	if err != nil {
+		return 0, fmt.Errorf("bad object reference for %s: %w", info.Path, err)
+	}
+	obj, err := r.sdk.Object(ctx, key)
+	if err != nil {
+		return 0, fmt.Errorf("fetch %s (object %s): %w", info.Path, shortHash(info.ObjectID), err)
+	}
+	rc, err := r.sdk.Download(obj)
+	if err != nil {
+		return 0, fmt.Errorf("download %s: %w", info.Path, err)
+	}
+	defer rc.Close()
+	bar := transferProgress
+	bar.Start("✓ "+path.Base(info.Path), info.Size, "verifying")
+	defer bar.Finish()
+	n, _, err := hashStream(&countingReader{r: rc, fn: bar.Add}, info.Path, info.SHA256)
+	return n, err
 }
 
 // Reattach rewrites an object's metadata to point at a new path without
