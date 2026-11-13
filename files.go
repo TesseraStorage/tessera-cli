@@ -245,10 +245,15 @@ func prepareUpload(ctx context.Context, rt *Remote, idx *Index, localPath, remot
 // recordUploaded stores one completed upload in the local index and sync
 // bookkeeping, and prints the same line the single-file path always has.
 func recordUploaded(rt *Remote, idx *Index, req uploadRequest, info PathInfo, started time.Time) error {
-	idx.put(info)
-	if err := idx.save(); err != nil {
+	// Update under the shared index lock so a concurrent command cannot
+	// overwrite this entry. Also keep the in-memory idx consistent.
+	if err := updateIndex(func(fresh *Index) error {
+		fresh.put(info)
+		return nil
+	}); err != nil {
 		return err
 	}
+	idx.put(info)
 	// If this path belongs to a registered sync folder, record it there as
 	// well. Otherwise the next `tessera sync` would treat the file as both new
 	// locally and new remotely and download its own upload back.
@@ -500,12 +505,19 @@ func cmdDelete(args []string) {
 			Size:         entry.Size,
 			DeletedAt:    time.Now(),
 		})
+		_ = updateIndex(func(fresh *Index) error {
+			fresh.remove(entry.Path)
+			fresh.put(PathInfo{
+				ObjectID: entry.ObjectID, Path: trashPath, Name: path.Base(trashPath),
+				Root: entry.RootID, SHA256: entry.SHA256, Size: entry.Size, ModTime: entry.ModTime,
+			})
+			return nil
+		})
 		idx.remove(entry.Path)
 		idx.put(PathInfo{
 			ObjectID: entry.ObjectID, Path: trashPath, Name: path.Base(trashPath),
 			Root: entry.RootID, SHA256: entry.SHA256, Size: entry.Size, ModTime: entry.ModTime,
 		})
-		_ = idx.save()
 		recordDeleteInSyncState(entry.Path)
 		fmt.Printf("Moved to trash: %s\n", entry.Path)
 		fmt.Printf("Restore with:   tessera trash restore %s\n", entry.Path)
@@ -528,8 +540,11 @@ func cmdDelete(args []string) {
 	if err := deleteVersions(ctx, rt, entry); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not remove some versions: %v\n", err)
 	}
+	_ = updateIndex(func(fresh *Index) error {
+		fresh.remove(entry.Path)
+		return nil
+	})
 	idx.remove(entry.Path)
-	_ = idx.save()
 	recordDeleteInSyncState(entry.Path)
 	fmt.Printf("Deleted: %s\n", entry.Path)
 }
@@ -991,11 +1006,15 @@ func cmdVersions(args []string) {
 		}
 		_, _ = rt.Reattach(ctx, pathInfoFromIndex(entry),
 			path.Join(restoreNamespace, fmt.Sprintf("%s-restored-over", time.Now().UTC().Format("20060102-150405"))), entry.RootID)
-		idx.put(PathInfo{
+		info := PathInfo{
 			ObjectID: chosen.ObjectID, Path: entry.Path, Name: path.Base(entry.Path),
 			Root: entry.RootID, SHA256: chosen.SHA256, Size: chosen.Size, ModTime: chosen.ModTime,
+		}
+		_ = updateIndex(func(fresh *Index) error {
+			fresh.put(info)
+			return nil
 		})
-		_ = idx.save()
+		idx.put(info)
 		fmt.Printf("Restored %s from version %d.\n", entry.Path, n)
 		fmt.Println("Run 'tessera sync' to bring it back into any synced folder.")
 		return

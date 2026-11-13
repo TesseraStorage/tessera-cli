@@ -200,12 +200,17 @@ func trashRestore(original string) {
 		fatal("restore: %v", err)
 	}
 
-	idx.put(PathInfo{
+	restored := PathInfo{
 		ObjectID: info.ObjectID, Path: entry.OriginalPath, Name: path.Base(entry.OriginalPath),
 		Root: info.Root, SHA256: info.SHA256, Size: info.Size, ModTime: info.ModTime,
+	}
+	_ = updateIndex(func(fresh *Index) error {
+		fresh.put(restored)
+		fresh.remove(entry.TrashPath)
+		return nil
 	})
+	idx.put(restored)
 	idx.remove(entry.TrashPath)
-	_ = idx.save()
 
 	t.Entries = append(t.Entries[:idxMatch], t.Entries[idxMatch+1:]...)
 	_ = t.save()

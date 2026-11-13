@@ -54,6 +54,81 @@ func indexPath() (string, error) {
 	return filepath.Join(dir, "index.json"), nil
 }
 
+// indexLockPath is the exclusive lock that serializes load-modify-save of
+// the shared account index. Without it two processes (watcher + manual
+// command, or two agents) can each load the same version and the later
+// save silently drops the earlier process's updates.
+func indexLockPath() (string, error) {
+	p, err := indexPath()
+	if err != nil {
+		return "", err
+	}
+	return p + ".lock", nil
+}
+
+// acquireIndexLock takes an exclusive advisory lock for the shared index.
+// Stale locks from a dead process are reclaimed. The returned function
+// releases it.
+func acquireIndexLock() (func(), error) {
+	p, err := indexLockPath()
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+		return nil, err
+	}
+	if data, err := os.ReadFile(p); err == nil {
+		var info struct {
+			PID     int       `json:"pid"`
+			Started time.Time `json:"started"`
+			Host    string    `json:"host"`
+		}
+		if json.Unmarshal(data, &info) == nil {
+			if info.Host != machineName() || !processAlive(info.PID) {
+				_ = os.Remove(p)
+			} else {
+				return nil, fmt.Errorf("another tessera command is updating the local index (pid %d since %s); wait for it or remove %s",
+					info.PID, info.Started.Format(time.RFC3339), p)
+			}
+		}
+	}
+	payload, _ := json.Marshal(map[string]interface{}{
+		"pid":     os.Getpid(),
+		"started": time.Now(),
+		"host":    machineName(),
+	})
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("cannot take index lock %s: %w", p, err)
+	}
+	if _, err := f.Write(payload); err != nil {
+		f.Close()
+		os.Remove(p)
+		return nil, err
+	}
+	f.Close()
+	return func() { os.Remove(p) }, nil
+}
+
+// updateIndex runs a mutation against a freshly loaded index under the
+// exclusive lock, then saves. This is the safe way to change the shared
+// index when more than one tessera process may be running.
+func updateIndex(mutator func(*Index) error) error {
+	release, err := acquireIndexLock()
+	if err != nil {
+		return err
+	}
+	defer release()
+	idx, err := loadIndex()
+	if err != nil {
+		return err
+	}
+	if err := mutator(idx); err != nil {
+		return err
+	}
+	return idx.save()
+}
+
 // loadIndex reads the local index, returning an empty one when absent.
 func loadIndex() (*Index, error) {
 	p, err := indexPath()

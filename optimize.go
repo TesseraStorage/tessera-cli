@@ -772,7 +772,14 @@ func applyOptimize(ctx context.Context, rt *Remote, idx *Index, plan optimizePla
 		idx.put(newInfo)
 		recordReplaceInSyncState(it.file.Path, newInfo)
 	}
-	if err := idx.save(); err != nil {
+	if err := updateIndex(func(fresh *Index) error {
+		for _, it := range items {
+			if ent := idx.Paths[it.file.Path]; ent != nil {
+				fresh.Paths[it.file.Path] = ent
+			}
+		}
+		return nil
+	}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not update local index: %v\n", err)
 	}
 	return unpinned, nil

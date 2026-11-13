@@ -96,7 +96,15 @@ func cmdMv(args []string) {
 			Replaced: replaced,
 		})
 	}
-	if err := idx.save(); err != nil {
+	if err := updateIndex(func(fresh *Index) error {
+		for _, it := range items {
+			if ent := idx.Paths[it.Dst]; ent != nil {
+				fresh.Paths[it.Dst] = ent
+			}
+			delete(fresh.Paths, it.Src)
+		}
+		return nil
+	}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not update local index: %v\n", err)
 	}
 
