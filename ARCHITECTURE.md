@@ -170,7 +170,7 @@ Details that make this work:
 |---|---|
 | `trash` | re-attaches the object under `.tessera-trash/<sha8>/<path>`; purged after the retention window |
 | `versions` | re-attaches the superseded object under `.tessera-versions/<path>/<stamp>-<sha8>` |
-| `audit` | reads slab redundancy from object metadata; `--verify` downloads and hashes |
+| `audit` | reads the slab redundancy recorded at upload (not live host health); `--verify` streams each object into SHA-256 without writing it and compares it with the stored hash |
 | `usage` | sums logical bytes and reports the ≈3× network footprint from 10+20 coding |
 | `find` | searches decrypted paths (and optionally content) from the local index |
 | `index` | rebuilds the local object cache used by read-only commands |

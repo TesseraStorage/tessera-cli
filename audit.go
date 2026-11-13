@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -25,6 +26,11 @@ type AuditReport struct {
 	AtRisk    []AuditFinding `json:"at_risk,omitempty"`
 	Healthy   int            `json:"healthy"`
 	Verified  int            `json:"verified_hashes"`
+	// Unverifiable counts objects that downloaded fine but have no stored
+	// hash to compare against; Mismatches counts objects whose bytes differ
+	// from the stored hash (each is also listed in at_risk).
+	Unverifiable int `json:"unverifiable_hashes"`
+	Mismatches   int `json:"hash_mismatches"`
 }
 
 // AuditFinding is one object worth the operator's attention.
@@ -65,6 +71,7 @@ func cmdAudit(args []string) {
 	}
 
 	rep := AuditReport{MinShards: dataShards, Parity: parityShards}
+	deepChecked := 0
 	paths := make([]string, 0, len(live))
 	for p := range live {
 		paths = append(paths, p)
@@ -97,12 +104,9 @@ func cmdAudit(args []string) {
 			}
 		}
 
-		if deep && (limit == 0 || rep.Verified < limit) {
-			if _, err := rt.Download(ctx, info, os.DevNull, 0600); err != nil {
-				rep.AtRisk = append(rep.AtRisk, AuditFinding{Path: p, Size: info.Size, Reason: fmt.Sprintf("download failed: %v", err)})
-				continue
-			}
-			rep.Verified++
+		if deep && (limit == 0 || deepChecked < limit) {
+			deepChecked++
+			auditVerify(ctx, rt, info, &rep)
 		}
 	}
 	rep.Healthy = rep.Objects - len(rep.AtRisk)
@@ -116,18 +120,45 @@ func cmdAudit(args []string) {
 	fmt.Printf("  objects checked:  %d\n", rep.Checked)
 	fmt.Printf("  total size:       %s\n", formatBytes(uint64(rep.Bytes)))
 	fmt.Printf("  slabs:            %d\n", rep.Slabs)
-	fmt.Printf("  erasure coding:   %d data + %d parity (survives %d host failures)\n", rep.MinShards, rep.Parity, rep.Parity)
+	fmt.Printf("  erasure coding:   %d data + %d parity (configured at upload)\n", rep.MinShards, rep.Parity)
 	if deep {
 		fmt.Printf("  hash verified:    %d object(s)\n", rep.Verified)
+		fmt.Printf("  unverifiable:     %d (no stored hash)\n", rep.Unverifiable)
+		fmt.Printf("  mismatched:       %d\n", rep.Mismatches)
 	}
 	fmt.Println()
 	if len(rep.AtRisk) == 0 {
-		fmt.Println("  ✓ every object meets the redundancy target")
+		fmt.Println("  ✓ every object was stored with the target redundancy")
 		return
 	}
 	fmt.Printf("  ! %d object(s) need attention:\n", len(rep.AtRisk))
 	for _, f := range rep.AtRisk {
 		fmt.Printf("      %-52s  %s\n", truncate(f.Path, 52), f.Reason)
+	}
+}
+
+// hashVerifier is the part of Remote that audit --verify needs; tests
+// substitute a fake.
+type hashVerifier interface {
+	VerifyHash(ctx context.Context, info PathInfo) (int64, error)
+}
+
+// auditVerify downloads one object without saving it and records the result:
+// a match counts as verified, an object with no stored hash as unverifiable,
+// and a mismatch or a failed download as an at-risk finding.
+func auditVerify(ctx context.Context, v hashVerifier, info PathInfo, rep *AuditReport) {
+	_, err := v.VerifyHash(ctx, info)
+	var ie *ErrIntegrity
+	switch {
+	case errors.As(err, &ie):
+		rep.Mismatches++
+		rep.AtRisk = append(rep.AtRisk, AuditFinding{Path: info.Path, Size: info.Size, Reason: fmt.Sprintf("hash mismatch: expected %s, got %s", ie.Expected, ie.Got)})
+	case err != nil:
+		rep.AtRisk = append(rep.AtRisk, AuditFinding{Path: info.Path, Size: info.Size, Reason: fmt.Sprintf("download failed: %v", err)})
+	case info.SHA256 == "":
+		rep.Unverifiable++
+	default:
+		rep.Verified++
 	}
 }
 
