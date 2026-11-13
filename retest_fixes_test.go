@@ -12,42 +12,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"go.sia.tech/coreutils/chain"
-	"go.sia.tech/coreutils/rhp/v4/siamux"
-	"go.sia.tech/indexd/hosts"
 )
-
-func chainAddr(proto chain.Protocol, addr string) chain.NetAddress {
-	return chain.NetAddress{Protocol: proto, Address: addr}
-}
-
-func TestReadinessStallGivesUpEarly(t *testing.T) {
-	d, clk := testDeps(37, 37, func(int) int { return 12 }, 0.05, true)
-	d.stallWait = readinessStallWait
-	start := clk.now()
-	err := checkReadiness(context.Background(), d, 30, true)
-	if readinessCode(t, err) != readinessCodeNotReady {
-		t.Fatalf("got %v", err)
-	}
-	if waited := clk.now().Sub(start); waited > 2*readinessStallWait {
-		t.Fatalf("waited %v, want about %v", waited, readinessStallWait)
-	}
-}
-
-func TestOrderedSiamuxAddrsIPFirst(t *testing.T) {
-	h := hosts.HostInfo{}
-	h.Addresses = append(h.Addresses,
-		chainAddr(siamux.Protocol, "host.example.com:9984"),
-		chainAddr("quic", "1.2.3.4:9984"),
-		chainAddr(siamux.Protocol, "203.0.113.7:9984"),
-	)
-	got := orderedSiamuxAddrs(h)
-	want := []string{"203.0.113.7:9984", "host.example.com:9984"}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("got %v want %v", got, want)
-	}
-}
 
 type flakyRT struct {
 	fails int

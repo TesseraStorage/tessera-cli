@@ -215,7 +215,6 @@ During technical validation one upload of up to 40 MiB (one slab) is allowed.
 A larger file is refused before anything is uploaded. With a balance, files of
 any size can be uploaded.
 
-Env: host readiness probes are off by default. TESSERA_ENABLE_PREFLIGHT=1 restores them.
 `,
 	"download": `Usage: {exe} download <path> [--out <file>] [--offset <bytes>] [--length <bytes>] [--quiet]
 
@@ -471,8 +470,7 @@ Other commands mention readiness only when an upload cannot run.
 status prints "Account funded: yes/no". The low-level host-funding flag
 (JSON key "ready") stays false until the first top-up, because during
 technical validation Tessera covers the hosts; that is expected. Uploads and
-downloads check host funding first and can still wait for it after the
-account is funded. Host readiness probes are off by default (TESSERA_ENABLE_PREFLIGHT=1 restores them).
+downloads use the hosts the network returns; there is no preflight probe.
 
 Indexer: https://index.tessera.storage
 Docs:    https://tessera.storage

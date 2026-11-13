@@ -164,8 +164,6 @@ func cmdOptimize(args []string) {
 		}
 	}
 
-	requireTransferReady(ctx, cfg, true)
-
 	if n, err := cleanupOptimizeLeftovers(ctx, rt, infos); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not unpin leftover copies from a previous run: %v\n", err)
 	} else if n > 0 && !asJSON {

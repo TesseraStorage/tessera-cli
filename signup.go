@@ -150,20 +150,8 @@ func signup(args []string, asJSON bool) (signupResult, error) {
 }
 
 // warmHostFunding fetches the host list once so the indexer claims the
-// one-time trial host set and enqueues funding, then waits until enough
-// hosts are funded for a trial upload (30 of 30+spares). Signup used to
-// return as soon as the list was fetched, so the first upload still waited
-// ~20s for the last of 30 hosts (TT run 5 #7).
+// one-time trial host set and enqueues funding. It does not probe or wait.
 var signupWarmHosts = warmHostFunding
-
-// signupFundingNeeded is how many funded GoodForUpload hosts a trial upload
-// needs (10 data + 20 parity). Spares are funded too (trial bag is ~40).
-const signupFundingNeeded = dataShards + parityShards
-
-// signupFundingWait is the max time signup waits for host funding after the
-// warm host-list call. Funding is async (hostfilter fundWorkers); most
-// accounts are ready well under a minute.
-const signupFundingWait = 90 * time.Second
 
 func warmHostFunding(cfg *Config) {
 	client, appKey, err := connectAPI(cfg)
@@ -173,31 +161,7 @@ func warmHostFunding(cfg *Config) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	_, _ = client.Hosts(ctx, appKey)
-
-	// Funding claim is triggered by the host-list fetch above. The readiness
-	// probe that used to wait and re-probe hosts is bypassed by default
-	// (same policy as requireTransferReadyFor). Opt back in with
-	// TESSERA_ENABLE_PREFLIGHT=1.
-	if os.Getenv("TESSERA_ENABLE_PREFLIGHT") != "1" || os.Getenv("TESSERA_SKIP_PREFLIGHT") == "1" {
-		return
-	}
-
-	// Wait until enough hosts show a funded balance so the first upload does
-	// not stall on "waiting for host funding: 29/30".
-	waitCtx, waitCancel := context.WithTimeout(context.Background(), signupFundingWait)
-	defer waitCancel()
-	d, derr := newReadinessDeps(cfg)
-	if derr != nil {
-		return
-	}
-	d.progress = func(funded, needed int) {
-		fmt.Fprintf(os.Stderr, "Host funding: %d/%d hosts funded (Tessera prepays the hosts at signup)...\n", funded, needed)
-	}
-	if err := checkReadiness(waitCtx, d, signupFundingNeeded, true); err != nil {
-		fmt.Fprintf(os.Stderr, "Note: host funding is still catching up (%v). The first upload will wait for the rest.\n", err)
-		return
-	}
-	fmt.Fprintln(os.Stderr, "Host funding ready for the technical-validation upload.")
+	// Host-list fetch claims funding. No preflight wait.
 }
 
 // createAgentAccount calls POST /agents and, on success, stores the one-time

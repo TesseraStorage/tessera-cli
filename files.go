@@ -141,7 +141,6 @@ func cmdUploadPath(src string, args []string) {
 
 	// Wall clock includes the host-funding wait (TT run 5 #6).
 	wallStart := time.Now()
-	requireTransferReady(ctx, cfg, true)
 	fundingWait := time.Since(wallStart)
 
 	rt, idx, cleanup, err := connectForWrite(ctx, cfg)
@@ -403,8 +402,6 @@ func cmdDownload(args []string) {
 		fatal("%s: %v", entry.Path, err)
 	}
 
-	requireTransferReadyFor(ctx, cfg, false, entry.ObjectID)
-
 	dest := outName
 	if dest == "" {
 		dest = filepath.Base(entry.Path)
@@ -662,8 +659,6 @@ func cmdFetch(sharedURL, outName string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-
-	requireTransferReady(ctx, cfg, false)
 
 	sdk, cleanup, err := connectSDK(ctx, cfg)
 	if err != nil {

@@ -441,12 +441,6 @@ cause:
   indexer lists every host by IP as well as by name, so DNS-only sandboxes
   (fake-IP DNS) work; a network that allows only HTTP(S) does not.
 - *insufficient balance*: run `tessera topup 5`.
-- *account not ready yet*: funding has not landed after the wait. Retry in a
-  minute.
-
-Set `TESSERA_SKIP_PREFLIGHT=1` to skip the check. Even then, a host-shortage
-error from the SDK is mapped to one of these messages.
-
 **Readiness.** `signup`, `login`, `status` and `account` print the readiness
 block: *technical validation* (one upload and one download at $0.00), *top up
 to continue* (technical validation used, or a $0 balance), or *ready*. Transfer commands (`upload`,
