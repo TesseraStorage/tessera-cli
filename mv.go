@@ -36,12 +36,20 @@ func cmdMv(args []string) {
 	}
 	defer cleanup()
 
-	moves, err := resolveMvTargets(idx, pos[0], pos[1])
+	res, err := resolveMv(idx, pos[0], pos[1], pendingMvPrefix(cfg.AppID, pos[0], pos[1]))
 	if err != nil {
 		fatal("%v", err)
 	}
+	moves := res.moves
 	if len(moves) == 0 {
 		fatal("nothing to move")
+	}
+	// A folder move is one indexer write per file. Remember where this one
+	// is going so re-running the same command after an interruption sends
+	// the remaining files to the same folder instead of nesting them inside
+	// the part that already moved.
+	if res.isDir {
+		savePendingMv(cfg.AppID, pos[0], pos[1], res.dstPrefix)
 	}
 
 	type mvItem struct {
@@ -107,6 +115,9 @@ func cmdMv(args []string) {
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not update local index: %v\n", err)
 	}
+	if res.isDir {
+		clearPendingMv(cfg.AppID, pos[0], pos[1])
+	}
 
 	if asJSON {
 		emitJSON(map[string]any{
@@ -147,20 +158,35 @@ type mvTarget struct {
 // (or folder) name. A source that names a remote prefix moves every file
 // under that prefix.
 func resolveMvTargets(idx *Index, srcRaw, dstRaw string) ([]mvTarget, error) {
+	res, err := resolveMv(idx, srcRaw, dstRaw, "")
+	return res.moves, err
+}
+
+type mvResolution struct {
+	moves     []mvTarget
+	isDir     bool
+	dstPrefix string
+}
+
+// resolveMv is resolveMvTargets for cmdMv. resumePrefix, when set, is the
+// destination folder an earlier interrupted run of the same folder move
+// chose; the remaining files go there.
+func resolveMv(idx *Index, srcRaw, dstRaw, resumePrefix string) (mvResolution, error) {
+	var res mvResolution
 	srcTrail := hasTrailingSlash(srcRaw)
 	dstTrail := hasTrailingSlash(dstRaw)
 	src, err := normalizeUserRemotePath(srcRaw)
 	if err != nil {
-		return nil, fmt.Errorf("source: %w", err)
+		return res, fmt.Errorf("source: %w", err)
 	}
 	dst, err := normalizeUserRemotePath(dstRaw)
 	if err != nil {
-		return nil, fmt.Errorf("destination: %w", err)
+		return res, fmt.Errorf("destination: %w", err)
 	}
 
 	files, isDir, err := collectMvSource(idx, src, srcTrail)
 	if err != nil {
-		return nil, err
+		return res, err
 	}
 
 	dstIsDir := dstTrail || remoteFolderExists(idx, dst)
@@ -170,7 +196,7 @@ func resolveMvTargets(idx *Index, srcRaw, dstRaw string) ([]mvTarget, error) {
 		dstIsDir = true
 	}
 	if dstTrail && idx.Paths[dst] != nil && !remoteFolderExists(idx, dst) {
-		return nil, fmt.Errorf("%s is a file, not a folder", dst)
+		return res, fmt.Errorf("%s is a file, not a folder", dst)
 	}
 
 	var out []mvTarget
@@ -180,17 +206,20 @@ func resolveMvTargets(idx *Index, srcRaw, dstRaw string) ([]mvTarget, error) {
 		if dstIsDir {
 			dstPrefix = path.Join(dst, base)
 		}
+		if resumePrefix != "" {
+			dstPrefix = resumePrefix
+		}
 		if dstPrefix == src || strings.HasPrefix(dstPrefix+"/", src+"/") {
-			return nil, fmt.Errorf("cannot move %s into itself", src)
+			return res, fmt.Errorf("cannot move %s into itself", src)
 		}
 		for _, e := range files {
 			rel := strings.TrimPrefix(e.Path, src+"/")
 			if rel == e.Path {
-				return nil, fmt.Errorf("internal path error moving %s", e.Path)
+				return res, fmt.Errorf("internal path error moving %s", e.Path)
 			}
 			out = append(out, mvTarget{src: e.Path, dst: path.Join(dstPrefix, rel)})
 		}
-		return out, nil
+		return mvResolution{moves: out, isDir: true, dstPrefix: dstPrefix}, nil
 	}
 
 	destPath := dst
@@ -198,10 +227,10 @@ func resolveMvTargets(idx *Index, srcRaw, dstRaw string) ([]mvTarget, error) {
 		destPath = path.Join(dst, path.Base(files[0].Path))
 	}
 	if destPath == src || strings.HasPrefix(destPath+"/", src+"/") {
-		return nil, fmt.Errorf("cannot move %s into itself", src)
+		return res, fmt.Errorf("cannot move %s into itself", src)
 	}
 	out = append(out, mvTarget{src: files[0].Path, dst: destPath})
-	return out, nil
+	return mvResolution{moves: out}, nil
 }
 
 func hasTrailingSlash(p string) bool {
