@@ -145,13 +145,18 @@ func shortageAfterPaymentRequired(err error) (error, bool) {
 	return nil, false
 }
 
-// balanceRefusal is the client-side "$0 balance" refusal, worded like the
-// server's 402 (and carrying its detail when one was seen in this process),
-// so every "you must top up" case reads the same.
+// balanceRefusal is the client-side refusal for not enough funded hosts,
+// worded like the server's 402 (and carrying its detail when one was seen in
+// this process), so every "you must top up" case reads the same. The default
+// Detail below never claims a specific dollar balance -- it used to hardcode
+// "$0.00", which is wrong whenever the refusal fires before this process has
+// seen any real 402 from the server (e.g. a past_due account with a nonzero,
+// possibly negative balance). Sonnet packet
+// "zerobound-storage-cap-egress-402" (2026-11-14).
 func balanceRefusal(funded, needed int) *paymentRequiredError {
 	pe := &paymentRequiredError{
 		Reason: "insufficient_balance",
-		Detail: fmt.Sprintf("Your account balance is $0.00 and only %d of the %d hosts needed are funded.", funded, needed),
+		Detail: fmt.Sprintf("Your account balance is too low and only %d of the %d hosts needed are funded.", funded, needed),
 	}
 	if seen := seenPaymentRequired.Load(); seen != nil {
 		pe.Reason, pe.Message = seen.Reason, seen.Message
