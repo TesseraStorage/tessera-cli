@@ -577,7 +577,13 @@ func (e *SyncEngine) plan() []Op {
 			// is a move, not a new file and not a disappearance. Sync should
 			// drop the old path locally instead of uploading it again.
 			if dest := e.remoteDestForLocal(p, lf, st); dest != "" {
-				if !(re != nil && re.Deleted && localChanged && e.strictlyNewerLocal(lf, re)) {
+				// The same object now lives at dest: the file was moved, not
+				// deleted. A local edit, made before or after the move,
+				// follows the file to its new path (uploaded there after the
+				// local rename) instead of re-creating the old path, which
+				// would undo the move for everyone.
+				movedObject := e.movedObjectDest(p, st) == dest
+				if movedObject || !(re != nil && re.Deleted && localChanged && e.strictlyNewerLocal(lf, re)) {
 					ops = append(ops, Op{Kind: OpDeleteLocal, Path: p, Extra: dest, Reason: "moved remotely to " + dest})
 					continue
 				}
@@ -1468,12 +1474,8 @@ func (e *SyncEngine) tombstoneRemotePath(p string, updated time.Time) {
 // remoteDestForLocal reports the live remote path that this local file was
 // moved to, matching first by object id and then by content hash.
 func (e *SyncEngine) remoteDestForLocal(p string, lf localFile, st *EntryState) string {
-	if st != nil && st.ObjectID != "" {
-		if dest := e.pathForObjectID(st.ObjectID); dest != "" && dest != p {
-			if re := e.state.Remote[dest]; re != nil && !re.Deleted {
-				return dest
-			}
-		}
+	if dest := e.movedObjectDest(p, st); dest != "" {
+		return dest
 	}
 	hash := lf.Hash
 	if hash == "" && st != nil {
@@ -1499,6 +1501,27 @@ func (e *SyncEngine) remoteDestForLocal(p string, lf localFile, st *EntryState) 
 		}
 	}
 	return dests[0]
+}
+
+// movedObjectDest reports the live remote path holding the object this
+// machine last synced at p, when that object has since moved elsewhere.
+func (e *SyncEngine) movedObjectDest(p string, st *EntryState) string {
+	if st == nil || st.ObjectID == "" {
+		return ""
+	}
+	if dest := e.pathForObjectID(st.ObjectID); dest != "" && dest != p {
+		if re := e.state.Remote[dest]; re != nil && !re.Deleted {
+			return dest
+		}
+	}
+	return ""
+}
+
+// editedSinceSync reports whether the local file at p differs from what this
+// machine last synced there.
+func (e *SyncEngine) editedSinceSync(p string, lf localFile) bool {
+	st := e.state.Entries[p]
+	return st != nil && st.BaseSHA256 != "" && lf.Hash != "" && lf.Hash != st.BaseSHA256
 }
 
 // refineMoveOps turns a delete-at-old-path plus download-at-new-path into a
@@ -1556,6 +1579,16 @@ func (e *SyncEngine) coalesceMoves(ops []Op) []Op {
 			Size:   e.local[op.Path].Size,
 			Reason: "moved remotely to " + dest,
 		})
+		// A local edit the other machine never saw is uploaded at the new
+		// path once the file is renamed there. When the remote copy also
+		// changed since our last sync, the next run resolves it like any
+		// other two-sided edit.
+		lf := e.local[op.Path]
+		if e.editedSinceSync(op.Path, lf) {
+			if re := e.state.Remote[dest]; re != nil && re.SHA256 == e.state.Entries[op.Path].BaseSHA256 {
+				moves = append(moves, Op{Kind: OpUpload, Path: dest, Size: lf.Size, Reason: "local edit follows the move to " + dest})
+			}
+		}
 	}
 	if len(moves) == 0 {
 		return ops
@@ -1624,6 +1657,13 @@ func (e *SyncEngine) doMove(src, dst string, res *Result) error {
 
 	lf := e.local[src]
 	re := e.state.Remote[dst]
+	edited := e.editedSinceSync(src, lf)
+	var srcBase string
+	var srcSize int64
+	var srcModTime time.Time
+	if sst := e.state.Entries[src]; sst != nil {
+		srcBase, srcSize, srcModTime = sst.BaseSHA256, sst.Size, sst.ModTime
+	}
 	ent := e.state.entry(dst)
 	ent.BaseSHA256 = lf.Hash
 	if ent.BaseSHA256 == "" && re != nil {
@@ -1631,7 +1671,24 @@ func (e *SyncEngine) doMove(src, dst string, res *Result) error {
 	}
 	ent.Size = lf.Size
 	ent.ModTime = lf.ModTime
-	if re != nil {
+	switch {
+	case edited:
+		// The renamed file carries a local edit that is not stored yet.
+		// Keep the last synced content as the base so the edit is seen as a
+		// local change (and uploaded) rather than recorded as in sync, and
+		// keep its own modification time. Size and time describe the synced
+		// copy too, so the next scan re-hashes the file instead of reusing
+		// the base hash.
+		ent.BaseSHA256 = srcBase
+		ent.Size, ent.ModTime = srcSize, srcModTime
+		if ent.Size == lf.Size && sameMTime(ent.ModTime, lf.ModTime) {
+			ent.ModTime = time.Time{}
+		}
+		ent.ObjectID = ""
+		if re != nil && re.SHA256 == srcBase {
+			ent.ObjectID = re.ObjectID
+		}
+	case re != nil:
 		ent.ObjectID = re.ObjectID
 		if !re.ModTime.IsZero() {
 			ent.ModTime = re.ModTime

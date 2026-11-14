@@ -97,3 +97,42 @@ func TestResolveMvMissing(t *testing.T) {
 		t.Fatal("expected not-found error")
 	}
 }
+
+// Re-running a folder move that was interrupted must continue into the same
+// destination folder, not nest the rest one level deeper.
+func TestResolveMvResumesInterruptedFolderMove(t *testing.T) {
+	t.Setenv("TESSERA_HOME", t.TempDir())
+	idx := testIndex("archive/keep.txt", "photos/a.jpg", "photos/b.jpg", "photos/c.jpg")
+	first, err := resolveMv(idx, "photos", "archive/photos", pendingMvPrefix("acct", "photos", "archive/photos"))
+	if err != nil || first.dstPrefix != "archive/photos" || !first.isDir {
+		t.Fatalf("first run: %#v %v", first, err)
+	}
+	savePendingMv("acct", "photos", "archive/photos", first.dstPrefix)
+
+	// Interrupted after a.jpg moved.
+	idx = testIndex("archive/keep.txt", "archive/photos/a.jpg", "photos/b.jpg", "photos/c.jpg")
+	before, _ := resolveMvTargets(idx, "photos", "archive/photos")
+	if len(before) == 0 || before[0].dst != "archive/photos/photos/b.jpg" {
+		t.Fatalf("expected the old nesting without the resume record: %#v", before)
+	}
+	again, err := resolveMv(idx, "photos", "archive/photos/", pendingMvPrefix("acct", "photos", "archive/photos/"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.moves) != 2 || again.moves[0].dst != "archive/photos/b.jpg" || again.moves[1].dst != "archive/photos/c.jpg" {
+		t.Fatalf("re-run must land in archive/photos/: %#v", again.moves)
+	}
+	if pendingMvPrefix("other-account", "photos", "archive/photos") != "" {
+		t.Fatal("resume record must be per account")
+	}
+	clearPendingMv("acct", "photos", "archive/photos")
+	if pendingMvPrefix("acct", "photos", "archive/photos") != "" {
+		t.Fatal("finished move must clear the resume record")
+	}
+	// Without a record, an existing folder destination still nests (mv semantics).
+	idx = testIndex("archive/keep.txt", "photos/a.jpg")
+	res, _ := resolveMv(idx, "photos", "archive", "")
+	if res.moves[0].dst != "archive/photos/a.jpg" {
+		t.Fatalf("into existing folder: %#v", res.moves)
+	}
+}
