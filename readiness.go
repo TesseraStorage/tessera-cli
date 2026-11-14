@@ -63,8 +63,5 @@ func explainFatalHostShortage(msg string) string {
 	if pe, ok := asPaymentRequired(errors.New(msg)); ok {
 		return pe.Error()
 	}
-	if pe, ok := shortageAfterPaymentRequired(errors.New(msg)); ok {
-		return pe.Error()
-	}
 	return msg
 }
