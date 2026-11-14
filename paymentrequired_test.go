@@ -56,7 +56,16 @@ func TestShortageAfterRecorded402(t *testing.T) {
 	if b, _ := io.ReadAll(resp.Body); string(b) != sample402 {
 		t.Fatal("body must be preserved")
 	}
-	msg := explainFatalHostShortage("download failed: no more hosts available")
+	// The fatal path passes host shortages through unchanged (ef28d07); the
+	// recorded 402 is still available to the sync path.
+	if got := explainFatalHostShortage("download failed: no more hosts available"); got != "download failed: no more hosts available" {
+		t.Fatalf("fatal path must pass shortages through, got %q", got)
+	}
+	pe, ok := shortageAfterPaymentRequired(errors.New("download failed: no more hosts available"))
+	if !ok {
+		t.Fatal("shortage after a recorded 402 must map to it")
+	}
+	msg := pe.Error()
 	for _, want := range []string{"Insufficient balance — top up to continue", "Technical validation (one upload of up to 40 MiB and one download) has been used", "tessera topup 5", "tessera.storage/account"} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("missing %q in %q", want, msg)
