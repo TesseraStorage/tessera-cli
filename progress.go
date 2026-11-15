@@ -22,9 +22,8 @@ import (
 //     CI logs), never a carriage-return animation.
 //   - --json, --quiet / -q or TESSERA_QUIET=1: nothing at all.
 //
-// The phase is always shown (checking host funding, waiting for host
-// funding, encoding, uploading shards X/N, pinning, downloading) so a long
-// step never looks stuck.
+// The phase is always shown (uploading shards X/N, pinning, downloading)
+// so a long step never looks stuck.
 
 type progressMode int
 
@@ -84,7 +83,7 @@ func newProgressReporter(out io.Writer, mode progressMode) *progressReporter {
 	return &progressReporter{out: out, mode: mode, now: time.Now}
 }
 
-// Phase shows a step outside a transfer (e.g. "checking host funding"). On a
+// Phase shows a step outside a transfer. On a
 // TTY it is drawn as a transient line; in plain mode it prints once.
 func (p *progressReporter) Phase(phase string) {
 	if p == nil {

@@ -139,9 +139,7 @@ func cmdUploadPath(src string, args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
 	defer cancel()
 
-	// Wall clock includes the host-funding wait (TT run 5 #6).
 	wallStart := time.Now()
-	fundingWait := time.Since(wallStart)
 
 	rt, idx, cleanup, err := connectForWrite(ctx, cfg)
 	if err != nil {
@@ -152,9 +150,6 @@ func cmdUploadPath(src string, args []string) {
 	if fi.IsDir() {
 		if err := uploadDir(ctx, rt, idx, src, asFlag); err != nil {
 			fatal("%v", explainTransferError(cfg, err, true))
-		}
-		if fundingWait > time.Second {
-			fmt.Printf("Total wall time: %.1fs (including %.1fs waiting for host funding)\n", time.Since(wallStart).Seconds(), fundingWait.Seconds())
 		}
 		if rem := secretsFileHint(); rem != "" {
 			fmt.Println(rem)
@@ -172,7 +167,7 @@ func cmdUploadPath(src string, args []string) {
 		remotePath = rel
 	}
 
-	if err := uploadOneWithWall(ctx, rt, idx, src, remotePath, wallStart, fundingWait); err != nil {
+	if err := uploadOneWithWall(ctx, rt, idx, src, remotePath, wallStart); err != nil {
 		fatal("%v", explainTransferError(cfg, err, true))
 	}
 	if rem := secretsFileHint(); rem != "" {
@@ -266,12 +261,12 @@ func recordUploaded(rt *Remote, idx *Index, req uploadRequest, info PathInfo, st
 
 // uploadOne uploads a single file and updates the local index.
 func uploadOne(ctx context.Context, rt *Remote, idx *Index, localPath, remotePath string) error {
-	return uploadOneWithWall(ctx, rt, idx, localPath, remotePath, time.Time{}, 0)
+	return uploadOneWithWall(ctx, rt, idx, localPath, remotePath, time.Time{})
 }
 
-// uploadOneWithWall is uploadOne that reports total wall time including any
-// host-funding wait that happened before the transfer started.
-func uploadOneWithWall(ctx context.Context, rt *Remote, idx *Index, localPath, remotePath string, wallStart time.Time, fundingWait time.Duration) error {
+// uploadOneWithWall is uploadOne that also reports total wall time when the
+// caller passes a start time. The extra time is setup, not a funding wait.
+func uploadOneWithWall(ctx context.Context, rt *Remote, idx *Index, localPath, remotePath string, wallStart time.Time) error {
 	req, already, err := prepareUpload(ctx, rt, idx, localPath, remotePath)
 	if err != nil {
 		return err
@@ -291,9 +286,7 @@ func uploadOneWithWall(ctx context.Context, rt *Remote, idx *Index, localPath, r
 	if !wallStart.IsZero() {
 		wall := time.Since(wallStart).Seconds()
 		xfer := time.Since(start).Seconds()
-		if fundingWait > time.Second {
-			fmt.Printf("  wall %.1fs total (%.1fs transfer + %.1fs waiting for host funding)\n", wall, xfer, fundingWait.Seconds())
-		} else if wall > xfer+0.5 {
+		if wall > xfer+0.5 {
 			fmt.Printf("  wall %.1fs total\n", wall)
 		}
 	}
