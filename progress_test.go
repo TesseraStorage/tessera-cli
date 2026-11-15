@@ -39,13 +39,13 @@ func TestProgressTTYRedrawsAndClears(t *testing.T) {
 	defer func() { progressTTYInterval = old }()
 	buf := &syncBuf{}
 	p := newProgressReporter(buf, progressTTY)
-	p.Phase("checking host funding")
+	p.Phase("preparing")
 	p.Start("↓ x", 1000, "downloading")
 	p.Add(500)
 	time.Sleep(30 * time.Millisecond)
 	p.Finish()
 	out := buf.String()
-	if !strings.Contains(out, "checking host funding...") || !strings.Contains(out, "50%") {
+	if !strings.Contains(out, "preparing...") || !strings.Contains(out, "50%") {
 		t.Fatalf("tty output: %q", out)
 	}
 	if strings.Contains(out, "\n") {
