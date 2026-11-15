@@ -152,6 +152,64 @@ func TestPrintAccountTableNulls(t *testing.T) {
 	}
 }
 
+// TestAccountStandingPrintedAsLastLine: Sonnet packet "standing-message"
+// (2026-11-15) -- the sentence is the last line of the human table,
+// unchanged, when present.
+func TestAccountStandingPrintedAsLastLine(t *testing.T) {
+	acct := map[string]any{
+		"billing_id":  "TESS-1",
+		"status":      "active",
+		"balance_usd": "0.05",
+		"topup_url":   "https://tessera.storage/account",
+		"days_left":   float64(10),
+		"standing": map[string]any{
+			"code":     "low",
+			"sentence": "Account in good standing. Balance $0.05. Based on recent usage, this covers fewer than 30 days.",
+		},
+	}
+	out := captureStdout(t, func() { printAccountTable(acct, "agent") })
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	last := lines[len(lines)-1]
+	if last != "Account in good standing. Balance $0.05. Based on recent usage, this covers fewer than 30 days." {
+		t.Fatalf("last line = %q, want the exact standing sentence", last)
+	}
+}
+
+// TestAccountStandingAbsentIsSilent: an older moneyd with no "standing" key
+// (additive-only backward compatibility) must not print anything extra or
+// crash.
+func TestAccountStandingAbsentIsSilent(t *testing.T) {
+	acct := map[string]any{
+		"billing_id":  "TESS-1",
+		"status":      "active",
+		"balance_usd": "5",
+		"topup_url":   "https://tessera.storage/account",
+	}
+	out := captureStdout(t, func() { printAccountTable(acct, "agent") })
+	if strings.Contains(out, "%!") {
+		t.Fatalf("formatting artifact with no standing field:\n%s", out)
+	}
+	if _, _, ok := accountStanding(acct); ok {
+		t.Fatal("accountStanding should report absent, not ok")
+	}
+}
+
+// TestAccountStandingExtraction covers accountStanding's shape handling.
+func TestAccountStandingExtraction(t *testing.T) {
+	if _, _, ok := accountStanding(map[string]any{"standing": nil}); ok {
+		t.Fatal("nil standing must not be ok")
+	}
+	if _, _, ok := accountStanding(map[string]any{"standing": "not a map"}); ok {
+		t.Fatal("wrong-shaped standing must not be ok")
+	}
+	code, sentence, ok := accountStanding(map[string]any{
+		"standing": map[string]any{"code": "critical", "sentence": "WARNING: ..."},
+	})
+	if !ok || code != "critical" || sentence != "WARNING: ..." {
+		t.Fatalf("got (%q, %q, %v)", code, sentence, ok)
+	}
+}
+
 // TestAccountBalanceFormatting pins the human balance rendering for FastAPI's
 // numeric balance_usd: exactly two decimals, and never scientific notation for
 // large values. A quoted decimal is a legacy/defensive shape passed through.

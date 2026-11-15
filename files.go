@@ -159,6 +159,7 @@ func cmdUploadPath(src string, args []string) {
 		if rem := secretsFileHint(); rem != "" {
 			fmt.Println(rem)
 		}
+		printStandingIfNotGood()
 		return
 	}
 
@@ -177,6 +178,7 @@ func cmdUploadPath(src string, args []string) {
 	if rem := secretsFileHint(); rem != "" {
 		fmt.Println(rem)
 	}
+	printStandingIfNotGood()
 }
 
 // firstOversizeUpload returns the lexicographically first regular file under
@@ -442,6 +444,7 @@ func cmdDownload(args []string) {
 		if rem := secretsFileHint(); rem != "" {
 			fmt.Println(rem)
 		}
+		printStandingIfNotGood()
 		return
 	}
 
@@ -458,6 +461,7 @@ func cmdDownload(args []string) {
 	if rem := secretsFileHint(); rem != "" {
 		fmt.Println(rem)
 	}
+	printStandingIfNotGood()
 }
 
 func cmdDelete(args []string) {
@@ -517,6 +521,7 @@ func cmdDelete(args []string) {
 		recordDeleteInSyncState(entry.Path)
 		fmt.Printf("Moved to trash: %s\n", entry.Path)
 		fmt.Printf("Restore with:   tessera trash restore %s\n", entry.Path)
+		printStandingIfNotGood()
 		return
 	}
 
@@ -543,6 +548,7 @@ func cmdDelete(args []string) {
 	idx.remove(entry.Path)
 	recordDeleteInSyncState(entry.Path)
 	fmt.Printf("Deleted: %s\n", entry.Path)
+	printStandingIfNotGood()
 }
 
 // recordDeleteInSyncState marks a path as deleted in whichever sync root owns

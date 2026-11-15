@@ -219,6 +219,48 @@ func printAccountTable(acct map[string]any, credential string) {
 	if h, ok := optimizeHintFromAccount(acct); ok {
 		field("Optimize", h.Message)
 	}
+	if _, sentence, ok := accountStanding(acct); ok {
+		fmt.Println()
+		fmt.Println(sentence)
+	}
+}
+
+// accountStanding extracts the standing object moneyd's GET /account adds
+// (Sonnet packet "standing-message", 2026-11-15): {"code", "sentence"}. ok
+// is false when the field is absent (an older moneyd, additive-only
+// backward compatibility) so callers never print a zero value.
+func accountStanding(acct map[string]any) (code, sentence string, ok bool) {
+	raw, exists := acct["standing"]
+	if !exists || raw == nil {
+		return "", "", false
+	}
+	m, isMap := raw.(map[string]any)
+	if !isMap {
+		return "", "", false
+	}
+	code, _ = m["code"].(string)
+	sentence, _ = m["sentence"].(string)
+	if sentence == "" {
+		return "", "", false
+	}
+	return code, sentence, true
+}
+
+// printStandingIfNotGood fetches the account's current standing after a
+// successful upload/download/delete and prints the one sentence when it is
+// not "good" (Sonnet packet "standing-message", 2026-11-15). A successful
+// transfer stays quiet when standing is good; a fetch failure here is never
+// fatal -- the transfer already succeeded.
+func printStandingIfNotGood() {
+	acct, _, err := fetchAccountSummary()
+	if err != nil {
+		return
+	}
+	code, sentence, ok := accountStanding(acct)
+	if !ok || code == "good" {
+		return
+	}
+	fmt.Println(sentence)
 }
 
 // dashIfEmpty renders missing/null fields as an em dash.
