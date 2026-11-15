@@ -426,21 +426,18 @@ block), downloads **$10 per TB** ($0.000419 per block); one block uploaded,
 stored 30 days and downloaded once costs $0.000566. TB = 10^12 bytes. Amounts
 below $1 are shown with up to six decimals, from $1 up with two.
 
-Before every `upload`, `download`, `fetch` and sync transfer the CLI checks
-whether it can run. It dials each storage host over direct TCP (siamux, on the
-port each host announces: usually 9984, some hosts use others; IP addresses first) and asks for this app
-key's balance there. An upload needs 30 funded, reachable hosts; a download
-needs 10 of the hosts that hold the file. The file name is checked first, so a
-missing file fails at once with *not found*. While funding is still landing,
-the CLI waits and prints `Waiting for host funding: N/30 hosts funded...` (up to
-2 minutes, or 45 seconds without progress). If it cannot go ahead, it names the
-cause:
+A transfer uses the hosts the network returns. There is no preflight probe: the
+CLI does not dial hosts or wait for funding before the transfer. The file name
+is checked first, so a missing file fails at once with *not found*. If a
+transfer cannot run, the error is the one the billing system or the network
+returns:
 
-- *only X of the 30 needed hosts are reachable from your network*: a firewall,
-  VPN, proxy or sandbox is blocking direct outbound TCP to the hosts. The
-  indexer lists every host by IP as well as by name, so DNS-only sandboxes
-  (fake-IP DNS) work; a network that allows only HTTP(S) does not.
-- *insufficient balance*: run `tessera topup 5`.
+- *insufficient balance*: the account must be topped up. Run `tessera topup 5`.
+- a host or network error: the client's network must allow direct outbound TCP
+  to the providers (siamux, on the port each one announces, usually 9984). Host
+  lists carry IP addresses, so fake-IP DNS sandboxes work; a network that
+  allows only HTTP(S) does not.
+
 **Readiness.** `signup`, `login`, `status` and `account` print the readiness
 block: *technical validation* (one upload and one download at $0.00), *top up
 to continue* (technical validation used, or a $0 balance), or *ready*. Transfer commands (`upload`,
@@ -450,8 +447,8 @@ an unchanged line at most every 6 hours (`TESSERA_NO_READINESS_NOTICE=1` turns
 it off).
 
 **Progress.** `upload` and `download` draw a live progress bar on stderr
-(phase — waiting for host funding, encoding, uploading shards X/30, pinning,
-downloading — bytes done/total, percent, speed and ETA). When stderr is not a
+(phase — uploading shards, pinning, downloading — bytes done/total, percent,
+speed and ETA). When stderr is not a
 terminal it prints a plain line every 10 s; `--json` and `--quiet` (or
 `TESSERA_QUIET=1`) turn it off. stdout stays clean for scripts.
 
