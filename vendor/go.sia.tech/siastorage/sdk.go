@@ -222,6 +222,10 @@ func (s *SDK) downloadSlab(ctx context.Context, hc hostClient, slab slabs.SlabSl
 	}
 	responseCh := make(chan result, len(slab.Sectors))
 	var outstanding int
+	// ring records every failed per-host read on this slab, so a fatal
+	// error carries real per-host detail instead of a bare sentinel
+	// (Sonnet packet "error-transparency", 2026-11-15).
+	var ring attemptRing
 	tryDownloadSector := func(d sectorDownload) {
 		outstanding++
 		release := hc.TrackInflightRead(d.sector.HostKey)
@@ -320,11 +324,13 @@ func (s *SDK) downloadSlab(ctx context.Context, hc hostClient, slab slabs.SlabSl
 					// enough shards downloaded
 					return shards, nil
 				}
+			} else {
+				ring.add(res.hostKey, res.err, res.elapsed)
 			}
 			// check if enough potential successes remain
 			rem := int(slab.MinShards) - successful
 			if outstanding+len(slabHosts) < rem {
-				return nil, ErrNotEnoughShards
+				return nil, ring.wrap(ErrNotEnoughShards)
 			}
 			if res.err != nil && len(slabHosts) > 0 {
 				tryDownloadSector(slabSectors[slabHosts[0]])
@@ -344,7 +350,7 @@ func (s *SDK) downloadSlab(ctx context.Context, hc hostClient, slab slabs.SlabSl
 
 		case <-ctx.Done():
 			// download got interrupted before it could finish
-			return nil, ctx.Err()
+			return nil, ring.wrap(ctx.Err())
 		}
 	}
 }

@@ -386,6 +386,10 @@ func (su *shardUpload) uploadShard(ctx context.Context, shardIndex int, sector [
 		return
 	}
 
+	// ring records every failed attempt on this shard's host loop, so a
+	// fatal error carries real per-host detail instead of a bare sentinel.
+	var ring attemptRing
+
 	// shardCtx is cancelled when a write succeeds, aborting any racers
 	shardCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -466,7 +470,7 @@ func (su *shardUpload) uploadShard(ctx context.Context, shardIndex int, sector [
 		case <-ctx.Done():
 			// defer cancel() unblocks the write goroutines, which release
 			// their inflight reservations as they exit
-			su.shardsCh <- shard{index: shardIndex, err: ctx.Err()}
+			su.shardsCh <- shard{index: shardIndex, err: ring.wrap(ctx.Err())}
 			return
 
 		case res := <-results:
@@ -501,6 +505,8 @@ func (su *shardUpload) uploadShard(ctx context.Context, shardIndex int, sector [
 
 			active--
 
+			ring.add(res.host, res.err, res.elapsed)
+
 			if active > 0 {
 				// another write is still in flight; requeue the failed host so
 				// it or another shard can retry it later
@@ -513,7 +519,7 @@ func (su *shardUpload) uploadShard(ctx context.Context, shardIndex int, sector [
 				// blocked on it
 				releasePermit, ok := su.limiter.acquire(ctx)
 				if !ok {
-					su.shardsCh <- shard{index: shardIndex, err: ctx.Err()}
+					su.shardsCh <- shard{index: shardIndex, err: ring.wrap(ctx.Err())}
 					return
 				}
 				// atomically requeue the failed host and pick a replacement so
@@ -522,7 +528,7 @@ func (su *shardUpload) uploadShard(ctx context.Context, shardIndex int, sector [
 				host, release, attempts, ok := su.pool.swap(res.host, res.canRetry)
 				if !ok {
 					releasePermit()
-					su.shardsCh <- shard{index: shardIndex, err: ErrNoMoreHosts}
+					su.shardsCh <- shard{index: shardIndex, err: ring.wrap(ErrNoMoreHosts)}
 					return
 				}
 				launchWrite(host, func() { release(); releasePermit() }, attempts < maxHostAttempts)
