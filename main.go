@@ -403,18 +403,20 @@ Billing & account:
   {exe} dashboard               Print a one-time browser login link (10 minutes)
   {exe} dashboard --logout-all  Sign out every browser session for this account
   {exe} topup <amount> [--asset <code>] [--invoice]
-                             Add funds, $5 to $10,000: a NOWPayments deposit
-                             address in a chosen coin (USDC on Base by
-                             default; XMR, BTC, ETH, USDT...), or a browser
-                             invoice (--invoice). A terminal also shows a
-                             deposit-address QR (--no-qr to hide; --qr=address
-                             for the address only). See 'tessera topup --help'.
+                             Add funds (see 'tessera topup --minimums' for the
+                             current range): a NOWPayments deposit address in
+                             a chosen coin (USDC on Base by default; XMR, BTC,
+                             ETH, USDT...), or a browser invoice (--invoice).
+                             A terminal also shows a deposit-address QR
+                             (--no-qr to hide; --qr=address for the address
+                             only). See 'tessera topup --help'.
   {exe} topup <amount> [--json] [--wait|--no-wait]
                              Machine-readable output; poll until a terminal state
   {exe} topup --coins           List coins accepted for top-ups
   {exe} topup --minimums [--asset <code>]
-                             The $5 to $10,000 range, and a coin's processor
-                             minimum for a deposit address when it is higher
+                             The current per-rail minimum and maximum, and a
+                             coin's processor minimum for a deposit address
+                             when it is higher
   {exe} login --billing-logout  End the email session (API key untouched)
 
 Account readiness (shown by signup, login, status, account and usage):
