@@ -381,7 +381,16 @@ func prepareUpload(ctx context.Context, rt *Remote, idx *Index, localPath, remot
 	if err != nil {
 		return uploadRequest{}, false, err
 	}
-	hash, err := hashFile(localPath)
+	// Empty-file client sentinel (2026-11-17): a zero-byte local file is
+	// never actually uploaded empty -- Remote.Upload substitutes the
+	// one-byte sentinel "0" (see uploadBodyWithEmptyFileSentinel in
+	// remote.go) because indexd rejects any object with zero slabs. The
+	// recorded hash must match what indexd actually received, or a later
+	// `tessera download` of this same file would fail its own integrity
+	// check against the real (empty) file's hash. Size stays the true
+	// local value (0): sync's unchanged-file detection compares Size
+	// against the real file on disk, not against what was transmitted.
+	hash, err := hashForUpload(localPath, fi.Size())
 	if err != nil {
 		return uploadRequest{}, false, fmt.Errorf("hash %s: %w", localPath, err)
 	}

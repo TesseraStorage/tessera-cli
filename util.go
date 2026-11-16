@@ -118,6 +118,36 @@ func hashFile(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// emptyFileSentinel is the exact one-byte substitution for a zero-length
+// upload: the ASCII character "0" (0x30). Fixed, not configurable and not
+// unique per file -- see sonnet-packet-empty-file-client-sentinel
+// (2026-11-17). Indexd rejects any object with zero slabs
+// (ErrObjectMinimumSlabs) and that stays a server rule by product decision,
+// so a zero-byte local file is never actually sent to the wire empty.
+const emptyFileSentinel = "0"
+
+// emptyFileSentinelHash is the SHA-256 of emptyFileSentinel, computed once.
+// Every local-hash computation for a zero-byte file must use this instead
+// of hashing the real (empty) file, because that is what indexd actually
+// receives and stores: a later `tessera download` checks the downloaded
+// bytes against the recorded hash, and a sentinel byte will never match
+// SHA-256 of an empty string.
+var emptyFileSentinelHash = func() string {
+	sum := sha256.Sum256([]byte(emptyFileSentinel))
+	return hex.EncodeToString(sum[:])
+}()
+
+// hashForUpload returns the hash to record for a local file about to be
+// uploaded: the real content hash for anything non-empty, or
+// emptyFileSentinelHash for a zero-byte file (see uploadBodyWithEmptyFileSentinel
+// in remote.go, which performs the matching substitution on the wire).
+func hashForUpload(path string, size int64) (string, error) {
+	if size == 0 {
+		return emptyFileSentinelHash, nil
+	}
+	return hashFile(path)
+}
+
 // writeFileAtomic writes data to path via a temp file in the same directory
 // followed by a rename, so a crash never leaves a half-written file where a
 // complete one used to be.

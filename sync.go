@@ -348,7 +348,11 @@ func (e *SyncEngine) ScanLocal() error {
 		if st, ok := e.state.Entries[rel]; ok && st.Size == lf.Size && sameMTime(st.ModTime, lf.ModTime) && st.BaseSHA256 != "" {
 			lf.Hash = st.BaseSHA256
 		} else {
-			h, herr := hashFile(p)
+			// Empty-file client sentinel (2026-11-17): see hashForUpload in
+			// util.go -- a zero-byte file's recorded hash must match the
+			// one-byte sentinel indexd actually receives, not the real
+			// (empty) file's hash.
+			h, herr := hashForUpload(p, lf.Size)
 			if herr != nil {
 				return fmt.Errorf("hash %s: %w", rel, herr)
 			}

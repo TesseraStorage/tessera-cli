@@ -284,6 +284,19 @@ type uploadRequest struct {
 	Root      string
 }
 
+// uploadBodyWithEmptyFileSentinel returns the reader to hand to the SDK for
+// an upload. A zero-length local file (size == 0) is replaced with a single
+// byte so indexd always has at least one real slab to pin (it rejects any
+// object with zero slabs: ErrObjectMinimumSlabs, kept as a server rule by
+// product decision -- see emptyFileSentinel in util.go). Any non-empty file
+// passes r through unchanged.
+func uploadBodyWithEmptyFileSentinel(r io.Reader, size int64) io.Reader {
+	if size == 0 {
+		return strings.NewReader(emptyFileSentinel)
+	}
+	return r
+}
+
 // Upload streams a file to the network and pins it, attaching the sync
 // descriptor to the object metadata. It returns the new object's PathInfo.
 func (r *Remote) Upload(ctx context.Context, req uploadRequest, onProgress func(int64)) (PathInfo, error) {
@@ -292,6 +305,9 @@ func (r *Remote) Upload(ctx context.Context, req uploadRequest, onProgress func(
 		return PathInfo{}, fmt.Errorf("open %s: %w", req.LocalPath, err)
 	}
 	defer f.Close()
+
+	// Empty-file client sentinel (2026-11-17): see uploadBodyWithEmptyFileSentinel.
+	body := uploadBodyWithEmptyFileSentinel(f, req.Size)
 
 	meta, err := encodeMetadata(req.Name, &tsMeta{
 		Root:    req.Root,
@@ -341,7 +357,7 @@ func (r *Remote) Upload(ctx context.Context, req uploadRequest, onProgress func(
 		}))
 	}
 
-	err = r.sdk.Upload(ctx, &obj, f, opts...)
+	err = r.sdk.Upload(ctx, &obj, body, opts...)
 	if err != nil {
 		return PathInfo{}, fmt.Errorf("upload %s: %w", req.RelPath, err)
 	}
