@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -329,7 +330,7 @@ func printBillingAccountSummary(acct map[string]any) {
 	field("Account", id)
 	field("Status", accountString(acct, "status"))
 	if bal := accountBalanceUSD(acct, "balance_usd"); bal != "" {
-		field("Balance", "$"+displayUSD(bal))
+		field("Balance", signedMoney(bal))
 	}
 	if r := readinessMap(acct); r == nil || r["free_trial"] != true {
 		field("Days left", accountString(acct, "days_left"))
@@ -1112,7 +1113,7 @@ func cmdStatus(args ...string) {
 	}
 	fmt.Printf("App ID:    %s\n", cfg.AppID)
 	if v := buildTrialView(billingAcct); v != nil {
-		fmt.Printf("Balance:   $%s\n", v.BalanceUSD)
+		fmt.Printf("Balance:   %s\n", signedMoney(v.BalanceUSD))
 		printTrialBlock(v, "", 10)
 	}
 	// "Host funding ready: true" read as "this upload will not wait", which is
@@ -1165,20 +1166,14 @@ func readyNoteFor(ready bool, state string) string {
 	return readyNote(ready)
 }
 
-// accountFundedYesNo is the human status line. The server Ready flag is true
-// once host funding has passed its repair threshold, which only happens after
-// a top-up, but an upload can still wait for host funding after that. A
-// funded account whose contracts are still being formed (Ready false, billing
-// state funded, or a positive balance) is "yes" as well.
+// accountFundedYesNo is the human status line. Yes only when the balance is
+// greater than zero. A past top-up, the server Ready flag, grace, past_due
+// and suspended do not make a zero or negative balance "yes". first_funded_at
+// is not this label.
 func accountFundedYesNo(ready bool, billing map[string]any) string {
-	if ready {
-		return "yes"
-	}
-	switch readinessState(billing) {
-	case "funded", "ready":
-		return "yes"
-	}
-	if bal := accountBalanceUSD(billing, "balance_usd"); bal != "" && !creditIsZero(bal) {
+	bal := accountBalanceUSD(billing, "balance_usd")
+	f, err := strconv.ParseFloat(bal, 64)
+	if err == nil && f > 0 {
 		return "yes"
 	}
 	return "no"

@@ -543,3 +543,39 @@ func TestAccountSessionExpiryGuidance(t *testing.T) {
 		t.Fatalf("second call sent cookie=%q auth=%q, want the agent key", cookies[1], auths[1])
 	}
 }
+
+func TestAccountFundedYesNoIsBalancePositive(t *testing.T) {
+	cases := []struct {
+		bal  any
+		want string
+	}{
+		{"0.05", "yes"},
+		{1.5, "yes"},
+		{"0", "no"},
+		{"0.00", "no"},
+		{"-0.0037293550933333333360", "no"},
+		{-0.003729, "no"},
+		{0, "no"},
+	}
+	for _, tc := range cases {
+		got := accountFundedYesNo(true, map[string]any{"balance_usd": tc.bal, "status": "past_due"})
+		if got != tc.want {
+			t.Errorf("balance %v: funded %q, want %q", tc.bal, got, tc.want)
+		}
+	}
+	if got := accountFundedYesNo(true, map[string]any{}); got != "no" {
+		t.Errorf("missing balance: funded %q, want no", got)
+	}
+}
+
+func TestSignedMoneySignBeforeDollar(t *testing.T) {
+	if got := signedMoney("-0.0037293550933333333360"); got != "-$0.003729" {
+		t.Errorf("negative = %q, want -$0.003729", got)
+	}
+	if got := signedMoney("1.5"); got != "$1.50" {
+		t.Errorf("above one = %q, want $1.50", got)
+	}
+	if got := signedMoney("0"); got != "$0.00" {
+		t.Errorf("zero = %q, want $0.00", got)
+	}
+}

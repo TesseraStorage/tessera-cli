@@ -195,16 +195,27 @@ func displayUSD(s string) string {
 	return out
 }
 
+// signedMoney is the human balance: the sign sits before the dollar sign.
+// displayUSD already carries the minus; this moves it in front of "$".
+// $1 and up stay two decimals; below $1 up to six, trailing zeros trimmed to two.
+func signedMoney(s string) string {
+	d := displayUSD(s)
+	if d == "" {
+		return ""
+	}
+	if strings.HasPrefix(d, "-") {
+		return "-$" + strings.TrimPrefix(d, "-")
+	}
+	return "$" + d
+}
+
 // printAccountTable renders the human dashboard. Missing and null fields render
 // as an em dash rather than a Go formatting artifact.
 func printAccountTable(acct map[string]any, credential string) {
 	field := func(label, value string) {
 		fmt.Printf("  %-14s %s\n", label+":", dashIfEmpty(value))
 	}
-	balance := displayUSD(accountBalanceUSD(acct, "balance_usd"))
-	if balance != "" {
-		balance = "$" + balance
-	}
+	balance := signedMoney(accountBalanceUSD(acct, "balance_usd"))
 	field("Billing ID", accountString(acct, "billing_id"))
 	field("Status", accountString(acct, "status"))
 	field("Balance", balance)
