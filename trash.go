@@ -216,7 +216,6 @@ func trashRestore(original string) {
 	_ = t.save()
 
 	fmt.Printf("Restored: %s\n", entry.OriginalPath)
-	fmt.Println("Run 'tessera sync' to bring it back into a synced folder.")
 }
 
 // trashRemove permanently deletes one trashed item.

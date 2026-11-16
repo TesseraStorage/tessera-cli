@@ -140,7 +140,7 @@ func cmdConfig(args []string) {
 	fmt.Println("             tessera config --update-check off")
 	fmt.Println("             tessera config --billing-url https://tessera.storage/api/v1")
 	fmt.Println()
-	fmt.Println("Per-folder options live in 'tessera sync list' and .tesseraignore.")
+	fmt.Println("Ignore patterns for folder uploads live in .tesseraignore.")
 }
 
 // applyIndexerURL validates raw with the same rule loadConfig enforces
@@ -459,6 +459,9 @@ func cmdService(args []string) {
 	if len(pos) > 0 {
 		sub = pos[0]
 	}
+	if serviceNotAvailableYet[sub] {
+		notAvailableYet("service")
+	}
 	if hasFlag(args, "--help") || hasFlag(args, "-h") {
 		serviceUsage()
 		return
@@ -486,18 +489,16 @@ func cmdService(args []string) {
 
 func serviceUsage() {
 	exe := filepath.Base(os.Args[0])
-	fmt.Printf(`Service — run the folder watcher in the background.
+	fmt.Printf(`Service — the background sync watcher is not available yet. These commands
+inspect or remove a watcher installed by an older version.
 
 Usage:
-  %s service install [--yes]   Install and activate the watcher
-  %s service install --dry-run Show exactly what would be installed
-  %s service print             Print the definitions without installing
   %s service status            Show what is installed and where
+  %s service stop [--yes]      Stop the watcher
   %s service uninstall [--yes] Stop and remove the watcher
-  %s service start|stop|restart [--yes]
 
 Without --yes nothing is changed: you get the exact commands to run.
-`, exe, exe, exe, exe, exe, exe)
+`, exe, exe, exe)
 }
 
 // servicePrint shows the definitions and the install plan without writing
@@ -739,10 +740,8 @@ func serviceStatus() {
 	}
 	fmt.Println()
 	if installed {
-		fmt.Println("Restart:   tessera service restart --yes")
 		fmt.Println("Remove:    tessera service uninstall --yes")
 	} else {
-		fmt.Println("Install:   tessera service install --yes")
-		fmt.Println("Preview:   tessera service install --dry-run")
+		fmt.Println("No watcher installed. The background sync watcher is not available yet.")
 	}
 }

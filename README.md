@@ -4,8 +4,8 @@ Command-line client for [Tessera](https://tessera.storage) — decentralized sto
 
 **Encrypted. Erasure-coded. 30 hosts. No single point of failure.**
 
-Sync folders across your machines, drag files into a Tessera folder, search,
-version and verify everything you store — all from one static binary.
+Upload, download, search, version and verify everything you store — all from
+one static binary.
 
 ## Quickstart
 
@@ -70,69 +70,11 @@ tessera signup                   # Creates your account AND logs you in — save
 tessera upload photo.png         # Erasure-coded across 30 Sia hosts
 tessera list                     # See all your files, with real names and paths
 tessera download photo.png       # Get it back, SHA-256 verified
-tessera share photo.png          # Create a 30-day share link
-tessera folder add               # Create a drop-in folder that syncs everywhere
 ```
 
-## Sync folders across machines
+## Ignoring files
 
-Pair a local folder with a remote prefix. Two machines pointed at the same
-prefix converge automatically — files, renames and **deletions**.
-
-```bash
-# On the Mac
-tessera sync add ~/Documents --as tessera/macos/Documents
-
-# On Windows, into a matching folder
-tessera sync add D:\tessera\macos\Documents --as tessera/macos/Documents
-
-# Keep both in sync
-tessera sync          # one pass
-tessera sync watch    # continuously
-```
-
-Deleting a file in one folder deletes it in the other. Creating a file on
-Windows downloads it on the Mac. Renaming is a metadata-only operation, so it
-does not re-upload content.
-
-### How it decides
-
-Every file carries a content hash, so sync is a three-way comparison between
-*what we last agreed on*, *what is on disk now*, and *what the network now has*:
-
-| Situation | Result |
-|---|---|
-| Local file changed | Uploaded |
-| Remote file changed | Downloaded |
-| Local file deleted | Deleted remotely (tombstone) |
-| Remote file deleted | Deleted locally |
-| Both changed | Conflict — see policy below |
-| Renamed | Re-pointed, no re-upload |
-
-**Conflict policy.** By default the copy with the newer modification time wins.
-Set `--policy keep-both` (or per folder with `sync add --policy keep-both`) to
-preserve both versions instead: the loser is kept as
-`report (conflicted copy, WINDOWS-PC 2026-09-25-143005).pdf`, visible on every
-machine. `tessera sync conflicts` lists them.
-
-**First sync of an existing folder.** The default `--adopt merge` compares per
-file: bytes that already match are adopted without transferring anything, and
-where they differ the newer copy wins. Use `--adopt local` to push what is
-already there, or `--adopt remote` to mirror the network instead.
-
-### Useful flags
-
-```bash
-tessera sync --dry-run              # show exactly what would change
-tessera sync --json                 # machine-readable summary
-tessera sync --max-rate 20MB        # cap bandwidth
-tessera sync --jobs 4               # parallel transfers
-tessera sync status                 # ahead/behind counts, no transfers
-```
-
-### Ignoring files
-
-A `.tesseraignore` at the root of a synced folder uses gitignore-style
+A `.tesseraignore` at the root of an uploaded folder uses gitignore-style
 patterns. `.DS_Store`, `Thumbs.db`, `desktop.ini`, editor temp files and
 partial downloads are always ignored.
 
@@ -141,96 +83,6 @@ partial downloads are always ignored.
 build/
 !important.log
 ```
-
-## The drop-in folder
-
-Prefer to just drag files in? `tessera folder add` creates a normal directory,
-registers it for sync and opens it in Finder/Explorer/your file manager.
-
-```bash
-tessera folder add                          # ~/Tessera by default
-tessera folder add ~/Dropbox-ish --as tessera/drop
-tessera folder add --install-service        # set up and go live in one step
-tessera folder open
-tessera folder status
-tessera folder watch                        # keep it in sync in this terminal
-```
-
-`folder add` syncs the folder **once** and then stops. A folder that is not
-watched only syncs when you run `tessera sync`, so it will offer:
-
-```
-Keep this folder in sync automatically? [Y/n]
-```
-
-Answering yes installs the background watcher for you. If you are piping output
-or running non-interactively it cannot ask, so pass `--install-service`, or set
-it up afterwards:
-
-```bash
-tessera service install             # preview what will be installed
-tessera service install --yes       # actually install and start it
-tessera service uninstall --yes     # stop and remove it
-tessera service status              # installed? running?
-```
-
-Without `--yes` nothing is changed — you get the exact commands that would run.
-`service print` shows the definitions without writing anything.
-
-Files are downloaded for real (like Dropbox's "available offline" mode) — this
-build does not mount a virtual filesystem, which keeps the single static binary
-and avoids kernel drivers.
-
-## Syncing a Mac folder to a Windows PC
-
-This is the part that trips people up, so here it is end to end.
-
-**First, both machines must be on the same account.** This is the step that
-actually matters:
-
-```bash
-# On the Mac: create the account and SAVE THE 12 WORDS (and the API key)
-tessera signup
-
-# On Windows: log in with that SAME recovery phrase — no browser, no password
-tessera login "word1 word2 ... word12"
-```
-
-The phrase restores the same account and the same App ID, so both machines see
-the same files. Running `signup` on the second machine would create a *separate
-account* instead. (You can also set `TESSERA_PHRASE`.)
-
-**Then pair the folders using the same remote prefix:**
-
-```bash
-# Mac — the folder you want to share
-tessera folder add ~/Documents --as tessera/macos/Documents --install-service
-
-# Windows — where it should land locally
-tessera folder add C:\tessera\macos\Documents --as tessera/macos/Documents --install-service
-```
-
-The local paths differ (that is expected); the **remote prefix must match
-exactly**. Paths are always stored with `/` internally, so a folder created on
-Windows is addressable from macOS and vice versa.
-
-Check it worked:
-
-```bash
-tessera status          # Files: N — should match on both
-tessera sync status     # to upload / to fetch should both be 0
-```
-
-To verify the pairing before trusting it, add a file on the Mac and run
-`tessera sync` on Windows — it should appear.
-
-**The reverse direction works the same way.** To also push Windows documents to
-the Mac, add a second pair with a different prefix (for example
-`tessera/windows/Documents`) on both machines.
-
-> Windows paths in Git Bash or PowerShell: quote them if they contain spaces,
-> and prefer `C:\tessera\...` over a OneDrive-synced folder — two sync clients
-> watching one directory will fight over it.
 
 ## Commands
 
@@ -257,14 +109,8 @@ the Mac, add a second pair with a different prefix (for example
 | `upload <path> [--as <remote>] [--quiet]` | Upload a file **or a whole folder**. During technical validation a file over 40 MiB is refused before upload; with a balance, any size |
 | `download <path> [--out <file>] [--offset <bytes>] [--length <bytes>]` | Download + SHA-256 verification; with `--offset`/`--length` only that byte range (only the slabs covering it are fetched). Interrupted downloads restart from the beginning; resume by hand with `--offset` = bytes already on disk |
 | `delete <path> [--purge]` | Move to trash (or purge permanently) |
-| `mv <src> <dst> [--force] [--json]` | Rename or move a stored file or folder without transferring data. A destination ending in `/` (or an existing remote folder) keeps the file name. A source that names a folder moves every file under it. The old path is marked deleted so `tessera sync` on other machines renames the local copy instead of uploading it again; a local edit those machines had not synced yet is uploaded at the new path. Re-running an interrupted folder move sends the remaining files to the same destination folder. `--force` replaces an existing destination (moved to the trash). |
+| `mv <src> <dst> [--force] [--json]` | Rename or move a stored file or folder without transferring data. A destination ending in `/` (or an existing remote folder) keeps the file name. A source that names a folder moves every file under it. The old path is marked deleted. Re-running an interrupted folder move sends the remaining files to the same destination folder. `--force` replaces an existing destination (moved to the trash). |
 | `optimize [prefix] [--dry-run] [--yes] [--json]` | Repack files in under-filled 40 MiB blocks into as few blocks as possible. Shows the plan (files, stored size now and after, one-off download+upload cost from live prices, monthly savings, payback, estimated time) and asks before running. `--dry-run` prints the plan only; `--yes` skips the prompt. |
-| `share <path>` | Create a 30-day share link |
-| `fetch <url> [name]` | Download a shared file |
-| `sync add\|list\|status\|conflicts\|remove` | Manage folder sync |
-| `sync watch` | Continuous two-way sync |
-| `folder add [--install-service]\|open\|status\|watch\|remove` | The drop-in folder |
-| `service install [--yes]\|uninstall\|status\|print\|start\|stop\|restart` | Background watcher |
 | `find <pattern> [--content]` | Search paths, or file contents |
 | `versions <path> [--restore <n>]` | List or restore retained versions (1 kept by default) |
 | `trash list\|restore\|empty\|rm` | Recover soft-deleted files |
@@ -272,10 +118,9 @@ the Mac, add a second pair with a different prefix (for example
 | `usage [--by-folder] [--cost] [--json]` | Storage usage; with billing credentials a billing section (logical, stored and network size, downloads, balance, days left) |
 | `index --rebuild` | Rebuild the local metadata index |
 | `config` | Show or change settings |
-| `service install\|status\|print` | Background watcher definitions |
 | `help` | Show help |
 
-Add `--json` to `list`, `status`, `find`, `sync`, `usage`, `config`, `index`,
+Add `--json` to `list`, `status`, `find`, `usage`, `config`, `index`,
 `audit`, `topup`, `account`, `mv`, and `optimize` for scripting. `topup --json` works on the
 default address, invoice, `--coins`, and `--minimums` paths. `signup --json` prints the account id and its one-time API
 key and recovery phrase (or, with `--secrets-file <path>`, only the file path).
@@ -441,7 +286,7 @@ returns:
 **Readiness.** `signup`, `login`, `status` and `account` print the readiness
 block: *technical validation* (one upload and one download at $0.00), *top up
 to continue* (technical validation used, or a $0 balance), or *ready*. Transfer commands (`upload`,
-`download`, `sync`, `share`, `fetch`) mention it on stderr only when something
+`download`) mention it on stderr only when something
 needs your action, such as a top-up — never during a working technical validation — and repeat
 an unchanged line at most every 6 hours (`TESSERA_NO_READINESS_NOTICE=1` turns
 it off).
@@ -459,7 +304,7 @@ before failing, so a flaky sandbox link does not break `status`, `account` or
 rejected the credentials; otherwise it says to check the network and retry.
 Error messages never print URL query strings (indexer URLs carry request
 signatures): they show `?<redacted>`. `tessera <command> --help` (upload,
-download, delete, share, fetch, and the rest) prints that command's flags and
+download, delete, and the rest) prints that command's flags and
 exits 0.
 
 **Updates.** When a newer release exists, every command (including failed
@@ -492,7 +337,7 @@ with three sizes for the same files:
 
 - *logical size*: your files' own bytes (a 1.7 MB PDF is 1.7 MB);
 - *stored*: whole 40 MiB slabs, which is what storage is charged on. A single
-  small file upload still takes a whole slab; folder uploads and `sync` pack
+  small file upload still takes a whole slab; folder uploads pack
   small files together into shared slabs;
 - *network size*: stored × 3. Each slab is erasure-coded into 30 pieces of
   4 MiB on 30 hosts, and any 10 rebuild it. So one 1.7 MB file shows about
@@ -519,15 +364,13 @@ in `account --json` to avoid duplication. `trial_credit_usd` is deprecated
 ## Safety
 
 - **Nothing is silently destroyed.** Deletes go to a trash namespace for 30 days
-  by default (`tessera trash restore <path>`), and `--dry-run` previews any sync.
+  by default (`tessera trash restore <path>`).
 - **Downloads are atomic.** Data lands in a temp file and is renamed into place,
-  so an interrupted sync never leaves a truncated file where a good one was.
-- **Downloads are verified.** Every full download, including sync, is checked
+  so an interrupted download never leaves a truncated file where a good one was.
+- **Downloads are verified.** Every full download is checked
   against the SHA-256 recorded at upload before it replaces an existing file.
   On a mismatch the command fails and the existing file is kept. Byte-range
   reads (`--offset`/`--length`) have no reference hash and are not checked.
-- **Conflicts never lose data** under `keep-both`; under the default `newest`
-  policy the losing copy is discarded, so choose `keep-both` if that matters.
 
 ## What happens under the hood
 
@@ -537,22 +380,16 @@ in `account --json` to avoid duplication. `trial_credit_usd` is deprecated
 - **Durability**: On-chain `Filesize` proof — the contract revision IS the durability assertion
 - **Metadata**: Object names, **paths** and content hashes are encrypted alongside
   the data, not stored server-side
-- **Sharing**: Cryptographic shared-object URLs with embedded encryption keys
-  (no re-upload needed)
-- **Sync**: Content-hash based three-way reconciliation over the indexer's
-  append-only object-event log, which is what makes deletions propagate
 
 ## Config
 
-Credentials and per-folder sync state live in
-`~/.tessera/`:
+Credentials and local state live in `~/.tessera/`:
 
 ```
 ~/.tessera/
   config.json        credentials and preferences
   index.json         local cache of stored objects
   trash.json         soft-deleted items
-  sync/<root-id>/    per-folder state, cursor and lock
 ```
 
 Set `TESSERA_HOME` to use a different directory (useful for several accounts).
@@ -595,8 +432,7 @@ never printed; `tessera whoami` shows only its public half as *Public key*.
 
 ## Further reading
 
-- `ARCHITECTURE.md` — how sync works, the metadata format, why deletions are
-  tracked the way they are, and the roadmap.
+- `ARCHITECTURE.md` — the metadata format and internal design notes.
 - `TESTING.md` — unit tests, the two-machine end-to-end harness, and the manual
   checklist.
 

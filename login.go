@@ -1131,7 +1131,7 @@ func cmdStatus(args ...string) {
 	if len(roots) > 0 {
 		fmt.Printf("Synced:    %d folder(s)", len(roots))
 		if pending > 0 {
-			fmt.Printf(", %d change(s) pending — run 'tessera sync'", pending)
+			fmt.Printf(", %d change(s) pending", pending)
 		}
 		fmt.Println()
 	}

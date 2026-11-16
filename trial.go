@@ -521,8 +521,8 @@ func honestEgressJSON(out map[string]any, acct map[string]any) {
 // than your files (TT: "120 MiB network size for a 1.7 MB file").
 var sizeExplanation = []string{
 	"Why the sizes differ: files are stored in 40 MiB slabs. A slab is billed whole,",
-	"so a small file uploaded on its own still fills one slab (uploading a folder or",
-	"using 'tessera sync' packs small files into shared slabs). Each slab is split",
+	"so a small file uploaded on its own still fills one slab (uploading a folder",
+	"packs small files into shared slabs). Each slab is split",
 	"into 30 pieces of 4 MiB on 30 different hosts, any 10 of which rebuild it, so",
 	"network size is 3× stored size.",
 }
@@ -637,4 +637,45 @@ func publicReadinessJSON(r any, v *trialView) any {
 		out["message"] = v.Summary
 	}
 	return out
+}
+
+// uploadBlockedError reads readiness.can_upload from a GET /account response.
+// It returns nil when uploads are allowed or the field is absent (an older
+// server). A refusal that a top-up resolves carries the usual top-up
+// guidance; other states (closed, paused, setup incomplete) carry the
+// server's message.
+func uploadBlockedError(acct map[string]any) error {
+	r := readinessMap(acct)
+	if r == nil {
+		return nil
+	}
+	can, ok := r["can_upload"].(bool)
+	if !ok || can {
+		return nil
+	}
+	if top, _ := r["top_up_required"].(bool); top {
+		pe := &paymentRequiredError{Reason: "insufficient_balance"}
+		if v := buildTrialView(acct); v != nil && v.FreeTrial {
+			pe.Detail = "Technical validation (one upload of up to 40 MiB and one download) has been used for uploads. Top up to continue."
+		}
+		return pe
+	}
+	if msg := publicServerMessage(readinessMessage(r)); msg != "" {
+		return fmt.Errorf("uploads are not possible on this account right now: %s", msg)
+	}
+	return errors.New("uploads are not possible on this account right now")
+}
+
+// refuseUploadIfBlocked checks GET /account before an upload starts. A
+// missing credential or an unreadable account does not block: the upload
+// then reports whatever the server answers.
+func refuseUploadIfBlocked(cfg *Config) error {
+	if cfg == nil || credentialLabel(cfg) == "" {
+		return nil
+	}
+	acct, err := newBillingClient(cfg).Account()
+	if err != nil || acct == nil {
+		return nil
+	}
+	return uploadBlockedError(acct)
 }
