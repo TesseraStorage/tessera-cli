@@ -29,7 +29,6 @@ import (
 // and read-only listings are not listed.
 var readinessNoticeCommands = map[string]bool{
 	"upload": true, "put": true, "download": true, "get": true,
-	"sync": true, "share": true, "fetch": true,
 }
 
 const (

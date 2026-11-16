@@ -136,6 +136,13 @@ func cmdUploadPath(src string, args []string) {
 		}
 	}
 
+	// Before anything is encoded or sent: an account that cannot upload
+	// (technical validation used, no usable balance) fails here with the
+	// top-up guidance. No host is dialled for this check.
+	if err := refuseUploadIfBlocked(cfg); err != nil {
+		fatal("%v", err)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
 	defer cancel()
 
@@ -1009,7 +1016,6 @@ func cmdVersions(args []string) {
 		})
 		idx.put(info)
 		fmt.Printf("Restored %s from version %d.\n", entry.Path, n)
-		fmt.Println("Run 'tessera sync' to bring it back into any synced folder.")
 		return
 	}
 

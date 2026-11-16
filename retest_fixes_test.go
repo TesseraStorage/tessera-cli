@@ -87,9 +87,14 @@ func TestConnectionHint(t *testing.T) {
 }
 
 func TestCommandHelpCoversFileCommands(t *testing.T) {
-	for _, c := range []string{"upload", "put", "download", "get", "delete", "rm", "share", "fetch"} {
+	for _, c := range []string{"upload", "put", "download", "get", "delete", "rm"} {
 		if commandHelp[c] == "" {
 			t.Errorf("no --help text for %s", c)
+		}
+	}
+	for _, c := range []string{"share", "fetch", "sync", "folder"} {
+		if commandHelp[c] != "" {
+			t.Errorf("%s is not available yet and must have no --help text", c)
 		}
 	}
 	if !strings.Contains(commandHelp["upload"], "--as") || !strings.Contains(commandHelp["upload"], "--quiet") {

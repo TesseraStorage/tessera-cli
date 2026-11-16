@@ -493,8 +493,24 @@ func uploadDir(ctx context.Context, rt *Remote, idx *Index, root, prefix string)
 	for _, e := range errs {
 		fmt.Fprintf(os.Stderr, "  ! %s: %v\n", e.RemotePath, e.Err)
 	}
+	if failed := len(candidates) - uploaded; failed > 0 {
+		fmt.Printf("Done: %d/%d uploaded, %d failed, %s\n", uploaded, len(candidates), failed, formatBytes(uint64(bytes)))
+		return folderUploadFailure(failed, len(candidates), errs)
+	}
 	fmt.Printf("Done: %d/%d uploaded, %s\n", uploaded, len(candidates), formatBytes(uint64(bytes)))
 	return nil
+}
+
+// folderUploadFailure is the error for a folder upload in which some files
+// failed (the command then exits non-zero). When one of the failures is a
+// payment refusal it is wrapped, so the caller prints the top-up guidance.
+func folderUploadFailure(failed, total int, errs []uploadError) error {
+	for _, e := range errs {
+		if _, ok := asPaymentRequired(e.Err); ok {
+			return fmt.Errorf("%d of %d file(s) failed to upload: %w", failed, total, e.Err)
+		}
+	}
+	return fmt.Errorf("%d of %d file(s) failed to upload (listed above)", failed, total)
 }
 
 // UploadBatch uploads multiple files through one PackedUpload session so small

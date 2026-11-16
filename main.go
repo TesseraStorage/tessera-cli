@@ -15,10 +15,6 @@
 //	tessera delete      Delete a file
 //	tessera mv          Rename or move a stored file or folder
 //	tessera optimize    Repack under-filled 40 MiB blocks
-//	tessera share       Create a share link for a file
-//	tessera fetch       Download a shared file
-//	tessera sync        Sync a local folder with the network
-//	tessera folder      Manage the drop-in Tessera folder
 //	tessera find        Search your files
 //	tessera versions    List or restore retained versions
 //	tessera trash       Soft delete, restore, empty
@@ -79,8 +75,14 @@ func main() {
 	// command.
 	notices := startBackgroundNotices(cmd, args)
 	switch cmd {
-	case "upload", "put", "download", "get", "fetch", "optimize":
+	case "upload", "put", "download", "get", "optimize":
 		configureProgress(args)
+	}
+
+	// Retired-for-now commands answer before any --help handling, so
+	// "tessera sync --help" gets the same clear message and a non-zero exit.
+	if notAvailableYetCommands[cmd] {
+		notAvailableYet(cmd)
 	}
 
 	// "account delete --help" has its own text; only bare "account --help" here.
@@ -146,25 +148,6 @@ func main() {
 		cmdMv(args)
 	case "optimize":
 		cmdOptimize(args)
-	case "share":
-		if len(positional(args)) < 1 {
-			usageError("share <path>")
-		}
-		cmdShare(positional(args)[0])
-	case "fetch":
-		if len(positional(args)) < 1 {
-			usageError("fetch <share-url> [output-name]")
-		}
-		pos := positional(args)
-		outName := ""
-		if len(pos) >= 2 {
-			outName = pos[1]
-		}
-		cmdFetch(pos[0], outName)
-	case "sync":
-		cmdSync(args)
-	case "folder":
-		cmdFolder(args)
 	case "find", "search":
 		cmdFind(args)
 	case "versions":
@@ -254,9 +237,7 @@ A destination ending in / or an existing remote folder keeps the file name.
 A source that names a remote folder (prefix) moves every file under it.
 
 The object id, size, SHA-256 and modification time stay the same. The old
-path is marked deleted so tessera sync on every machine removes the local
-copy there instead of uploading it again. If the new path is inside a
-synced folder on this machine, the local file is renamed when possible.
+path is marked deleted.
 
   --force   Replace an existing destination (it is moved to the trash)
   --json    Print a machine-readable result
@@ -281,15 +262,6 @@ that share a block with it are included so the shared block can be freed).
   --dry-run   Show the plan only
   --yes, -y   Run without asking
   --json      Machine-readable plan; apply only with --yes
-`,
-	"share": `Usage: {exe} share <path>
-
-Create a share link for a stored file. Anyone with the link can download it
-with 'tessera fetch <url>'.
-`,
-	"fetch": `Usage: {exe} fetch <share-url> [output-name] [--quiet]
-
-Download a file from a share link.
 `,
 	"account": `Usage: {exe} account [--json]
        {exe} account delete [--yes] [--json]   (see 'account delete --help')
@@ -404,17 +376,6 @@ Files:
   {exe} delete <path>           Delete a file (see also: trash)
   {exe} mv <src> <dst>          Rename or move a stored file or folder
   {exe} optimize [prefix]       Repack under-filled 40 MiB blocks
-  {exe} share <path>            Create a share link for a file
-  {exe} fetch <url> [name]      Download a shared file
-
-Folders & sync:
-  {exe} sync add <folder> --as <remote-prefix>
-                             Start syncing a folder (see 'sync add -h')
-  {exe} sync [--dry-run]        Sync registered folders once
-  {exe} sync watch              Keep folders in sync continuously
-  {exe} sync status|list|remove|conflicts
-  {exe} folder add <path>       Create a drop-in folder and start syncing
-  {exe} folder open|status      Open it in your file manager
 
 More:
   {exe} find <pattern>          Search your files (--content for text search)
@@ -428,9 +389,7 @@ More:
   {exe} config [--json]         Show or change settings
   {exe} version                 Print this build's version
   {exe} update [--check]        Install the latest release (SHA256SUMS-verified)
-  {exe} service install|start|stop|status
-                             Run the watcher as a background service
-  {exe} uninstall               Remove the watcher, this binary, and (optionally) local state
+  {exe} uninstall               Remove this binary and (optionally) local state
   {exe} secrets done           Delete the plaintext signup-secrets file after you saved the phrase
   {exe} phrase show             Reveal the phrase, if you saved an encrypted copy at an
                              interactive 'tessera login' (locked with a local phrase
