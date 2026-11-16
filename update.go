@@ -218,11 +218,13 @@ func expectedSHA256(sums []byte, asset string) (string, error) {
 //	tessera update [--check] [--version vX.Y.Z] [--force]
 func cmdUpdate(args []string) {
 	if hasFlag(args, "--help") || hasFlag(args, "-h") {
-		fmt.Println(`Usage: tessera update [--check] [--version vX.Y.Z] [--force]
+		fmt.Println(`Usage: tessera update [--check [--json]] [--version vX.Y.Z] [--force]
 
 Downloads the newest tessera release for this computer, verifies it against
 the release's SHA256SUMS, and replaces this binary in place.
-  --check     only report whether an update is available
+  --check     only report whether an update is available (installs nothing)
+  --json      with --check: {"current", "latest", "up_to_date"}, plus
+              "update_available" when a newer release exists
   --version   install a specific release tag
   --force     reinstall even when already up to date`)
 		return
@@ -247,6 +249,16 @@ func runUpdate(args []string) error {
 	}
 	newer := version == "dev" || compareVersions(target, version) > 0
 	if hasFlag(args, "--check") {
+		if hasFlag(args, "--json") {
+			// When newer, emitJSON adds the usual "update_available":
+			// {"current","latest"} object from the cache saved above.
+			emitJSON(map[string]interface{}{
+				"current":    version,
+				"latest":     target,
+				"up_to_date": !newer,
+			})
+			return nil
+		}
 		if newer {
 			fmt.Printf("Update available: %s (you have %s). Run 'tessera update'.\n", target, version)
 		} else {

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"go.sia.tech/core/types"
+	"go.sia.tech/coreutils/wallet"
 	indexdapp "go.sia.tech/indexd/api/appclient"
 	"go.sia.tech/indexd/slabs"
 	siastorage "go.sia.tech/siastorage"
@@ -47,6 +48,12 @@ func connectSDK(ctx context.Context, cfg *Config) (*siastorage.SDK, func(), erro
 
 	sdk, err := builder.SDK(appKey)
 	if err != nil {
+		if looksLikeAuthError(err) {
+			return nil, nil, explainAuthFailure(cfg, err)
+		}
+		if off := explainOffline(err); off != err {
+			return nil, nil, off
+		}
 		return nil, nil, fmt.Errorf("connection failed: %w — %s", err, connectionHint(err))
 	}
 	cleanup := func() { sdk.Close() }
@@ -471,7 +478,42 @@ var errRecoveryPhraseRequired = errors.New("this account already has a storage i
 // errPhraseMismatch is returned when the app key derived from the supplied
 // phrase does not equal the recovered account's public key. It is definitive
 // (never retried) and nothing is persisted.
-var errPhraseMismatch = errors.New("that recovery phrase does not match this account")
+var errPhraseMismatch = errors.New("that recovery phrase does not match this account; check the 12 words and their order, then try again (nothing was saved on this machine)")
+
+// errIndexerKeyUsed is the indexer's answer when an app key is registered
+// with a connect key that was already used up. For an account that already
+// has a storage identity the server hands back that identity's original
+// connect key: the right phrase derives the app key that is already
+// registered and needs no new use, so this answer means the phrase derives a
+// different key, i.e. it is not this account's phrase.
+func isConnectKeyUsedUp(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "no remaining uses")
+}
+
+// errPhraseFormat marks a phrase rejected by checkPhraseFormat (errors.Is).
+var errPhraseFormat = errors.New("recovery phrase format")
+
+type phraseFormatError string
+
+func (e phraseFormatError) Error() string        { return string(e) }
+func (e phraseFormatError) Is(target error) bool { return target == errPhraseFormat }
+
+// checkPhraseFormat checks a supplied recovery phrase on this machine before
+// anything is sent: 12 words from the BIP-39 list with a valid checksum. A
+// typo is reported here in plain words instead of as a registration failure.
+func checkPhraseFormat(phrase string) error {
+	if phrase == "" {
+		return nil
+	}
+	if n := len(strings.Fields(phrase)); n != 12 {
+		return phraseFormatError(fmt.Sprintf("a recovery phrase has 12 words (got %d); quote it: tessera login \"word1 word2 ...\" (nothing was saved on this machine)", n))
+	}
+	var seed [32]byte
+	if err := wallet.SeedFromPhrase(&seed, normalizePhrase(phrase)); err != nil {
+		return phraseFormatError("that is not a valid recovery phrase: a word is misspelled or not from the recovery word list, or the words are in the wrong order; check the 12 words and try again (nothing was saved on this machine)")
+	}
+	return nil
+}
 
 // isIdentityNotFound reports the 404 from POST /credentials/recovery: the
 // billing account has no active storage identity yet, so the flow mints one.
@@ -540,6 +582,15 @@ func wrapRegistrationIncomplete(err error, billingID string) error {
 func registerStorageIdentity(cfg *Config, phraseArg, billingID string) error {
 	if cfg.BillingSession == "" && cfg.BillingAgentKey == "" {
 		return errNoBillingCredentials
+	}
+	// A supplied phrase is checked on this machine first, so a typo never
+	// reaches the server's registration path.
+	if p := phraseArg; p != "" {
+		if err := checkPhraseFormat(p); err != nil {
+			return err
+		}
+	} else if err := checkPhraseFormat(os.Getenv("TESSERA_PHRASE")); err != nil {
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -666,6 +717,9 @@ func registerStorageIdentity(cfg *Config, phraseArg, billingID string) error {
 			resolvePhrase()
 			sdk, err := builder.Register(ctx, phrase)
 			if err != nil {
+				if linked && isConnectKeyUsedUp(err) {
+					return errPhraseMismatch
+				}
 				return fmt.Errorf("registration failed: %w", err)
 			}
 			appKey = sdk.AppKey()
@@ -742,6 +796,35 @@ func registerStorageIdentity(cfg *Config, phraseArg, billingID string) error {
 		printReadiness(acct)
 	}
 	return nil
+}
+
+// errMachineAccountClosed: the indexer refused this machine's app key and the
+// billing side confirms the account was deleted or closed (for example from
+// another machine with 'tessera account delete').
+var errMachineAccountClosed = errors.New("this account was deleted or closed, so the login saved on this machine no longer works. Remove it with 'tessera logout --yes'; to use Tessera again, create a new account with 'tessera signup'")
+
+// errMachineLoginRevoked: the indexer refused the app key and the billing side
+// refused the saved API key too (revoked, or the account no longer exists).
+var errMachineLoginRevoked = errors.New("the login saved on this machine is no longer accepted: its API key was revoked or the account was deleted. Remove it with 'tessera logout --yes', then log in again with your recovery phrase: tessera login \"<12 words>\" (if the account was deleted, create a new one with 'tessera signup')")
+
+// explainAuthFailure turns an indexer refusal of this machine's app key into
+// a plain answer. It asks the billing side (with the saved API key or
+// session) whether the account still exists, so a deleted account is named
+// as such instead of being reported as a network problem.
+func explainAuthFailure(cfg *Config, err error) error {
+	if cfg != nil && credentialLabel(cfg) != "" {
+		_, berr := newBillingClient(cfg).Account()
+		var be *billingError
+		switch {
+		case berr == nil:
+			// The account is active; only this machine's app key is refused.
+		case errors.As(berr, &be) && be.Code == "account_closed":
+			return errMachineAccountClosed
+		case errors.As(berr, &be) && be.Status == http.StatusUnauthorized:
+			return errMachineLoginRevoked
+		}
+	}
+	return fmt.Errorf("the storage indexer did not accept this machine's app key (%v). Log in again: 'tessera logout --yes', then tessera login \"<12 words>\"", err)
 }
 
 // errAccountClosed: the account was deleted or terminated; no credentials.
@@ -895,10 +978,17 @@ func runLogin(args []string) error {
 		if err != nil {
 			return fmt.Errorf("API key rejected: %s", describeBillingError(err))
 		}
+		restore := snapshotConfigFile()
 		if err := saveConfig(cfg); err != nil {
 			return fmt.Errorf("save config: %w", err)
 		}
-		return registerStorageIdentity(cfg, phraseArg, accountString(acct, "billing_id"))
+		err = registerStorageIdentity(cfg, phraseArg, accountString(acct, "billing_id"))
+		if errors.Is(err, errRecoveryPhraseRequired) || errors.Is(err, errPhraseMismatch) || errors.Is(err, errPhraseFormat) {
+			// Nothing was linked: put this machine back exactly as it was, so
+			// a refused login never leaves an API key with a blank App ID.
+			restore()
+		}
+		return err
 	}
 
 	// A billing credential with no storage identity yet (signup interrupted,
@@ -1015,10 +1105,19 @@ func cmdPhrase(args []string) {
 	fmt.Println("(e.g. Tessera Desktop's \"I already have an account\").")
 }
 
-func cmdWhoami() {
+func cmdWhoami(args []string) {
 	cfg, err := loadConfig()
 	if err != nil {
 		fatal("Not logged in. Run 'tessera login' first.")
+	}
+	if hasFlag(args, "--json") {
+		emitJSON(map[string]interface{}{
+			"indexer":              cfg.IndexerURL,
+			"app_id":               cfg.AppID,
+			"public_key":           appKeyPublicHex(cfg.AppKey),
+			"phrase_saved_locally": cfg.PhraseEncrypted != "",
+		})
+		return
 	}
 	fmt.Printf("Indexer:    %s\n", cfg.IndexerURL)
 	fmt.Printf("App ID:     %s\n", cfg.AppID)
@@ -1052,6 +1151,12 @@ func cmdStatus(args ...string) {
 
 	acct, err := client.Account(ctx, appKey)
 	if err != nil {
+		if looksLikeAuthError(err) {
+			fatal("%v", explainAuthFailure(cfg, err))
+		}
+		if off := explainOffline(err); off != err {
+			fatal("%v", off)
+		}
 		fatal("account: %v", err)
 	}
 

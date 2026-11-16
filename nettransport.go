@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -29,8 +30,20 @@ type retryTransport struct {
 	next http.RoundTripper
 }
 
+// connectTimeout bounds how long one attempt to open a connection (TCP and
+// TLS) may take. Go's default is 30 s, which made a blackholed network look
+// like a hang; a reachable server answers well inside 10 s.
+const connectTimeout = 10 * time.Second
+
 func init() {
-	http.DefaultTransport = &retryTransport{next: http.DefaultTransport}
+	next := http.DefaultTransport
+	if t, ok := next.(*http.Transport); ok {
+		t = t.Clone()
+		t.DialContext = (&net.Dialer{Timeout: connectTimeout, KeepAlive: 30 * time.Second}).DialContext
+		t.TLSHandshakeTimeout = connectTimeout
+		next = t
+	}
+	http.DefaultTransport = &retryTransport{next: next}
 }
 
 func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -86,6 +99,12 @@ func isTransientNetErr(err error) bool {
 	if errors.As(err, &recErr) {
 		return true
 	}
+	// A connection attempt that timed out is not retried: the network is
+	// down or blocked, and every retry would wait the full connect timeout.
+	var operr *net.OpError
+	if errors.As(err, &operr) && (operr.Op == "dial" || operr.Op == "proxyconnect") && operr.Timeout() {
+		return false
+	}
 	var nerr net.Error
 	if errors.As(err, &nerr) && nerr.Timeout() {
 		return true
@@ -118,7 +137,7 @@ func looksLikeAuthError(err error) bool {
 		return false
 	}
 	s := strings.ToLower(err.Error())
-	for _, frag := range []string{"401", "403", "unauthorized", "forbidden", "not registered", "unknown app", "invalid signature"} {
+	for _, frag := range []string{"401", "403", "unauthorized", "forbidden", "not registered", "unknown app", "invalid signature", "not authorized", "unknown account"} {
 		if strings.Contains(s, frag) {
 			return true
 		}
@@ -133,3 +152,53 @@ func connectionHint(err error) string {
 	}
 	return "check the network and retry (the login is fine; 'tessera status' shows readiness)"
 }
+
+// requestHost matches the host of the URL in a Go HTTP client error
+// ("Get \"https://host/path...\": ...").
+var requestHost = regexp.MustCompile(`"https?://([^/"?:]+)`)
+
+// offlineReason names a connection failure in plain words, or "" when err is
+// not one (an HTTP status, a refused key, bad data).
+func offlineReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(s, "no such host") || strings.Contains(s, "server misbehaving") || strings.Contains(s, "temporary failure in name resolution"):
+		return "its name could not be looked up (DNS)"
+	case strings.Contains(s, "connection refused"):
+		return "the connection was refused"
+	case strings.Contains(s, "network is unreachable") || strings.Contains(s, "no route to host"):
+		return "the network is unreachable"
+	case strings.Contains(s, "i/o timeout") || strings.Contains(s, "tls handshake timeout") ||
+		(strings.Contains(s, "dial tcp") && strings.Contains(s, "timeout")) ||
+		strings.Contains(s, "client.timeout exceeded") || strings.Contains(s, "context deadline exceeded") && strings.Contains(s, "dial"):
+		return "the connection timed out"
+	case strings.Contains(s, "connection reset") && strings.Contains(s, "dial"):
+		return "the connection was reset"
+	}
+	return ""
+}
+
+// explainOffline replaces a raw connection error with one plain sentence that
+// names the server and what went wrong. Other errors are returned unchanged.
+func explainOffline(err error) error {
+	reason := offlineReason(err)
+	if reason == "" {
+		return err
+	}
+	host := "the Tessera servers"
+	if m := requestHost.FindStringSubmatch(err.Error()); m != nil {
+		host = m[1]
+	}
+	return &offlineError{msg: fmt.Sprintf("cannot reach %s: %s. Check this machine's internet connection (and proxy settings, if any), then try again; nothing was changed", host, reason), err: err}
+}
+
+type offlineError struct {
+	msg string
+	err error
+}
+
+func (e *offlineError) Error() string { return e.msg }
+func (e *offlineError) Unwrap() error { return e.err }

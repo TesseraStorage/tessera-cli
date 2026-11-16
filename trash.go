@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -194,7 +195,15 @@ func trashRestore(original string) {
 
 	info, err := rt.HeadPath(ctx, entry.TrashPath)
 	if err != nil {
-		fatal("trashed object not found (%s): %v", entry.TrashPath, err)
+		if !errors.Is(err, errNotFound) {
+			fatal("restore %s: %v", entry.OriginalPath, explainOffline(err))
+		}
+		// The trashed copy is gone from the network (for example after
+		// 'tessera account purge-data', or 'trash empty' on another
+		// machine). Drop the stale line so the trash list matches.
+		t.Entries = append(t.Entries[:idxMatch], t.Entries[idxMatch+1:]...)
+		_ = t.save()
+		fatal("cannot restore %s: its trashed copy is no longer stored (it was permanently deleted, for example by 'tessera account purge-data' or 'tessera trash empty' on another machine). It was removed from the trash list.", entry.OriginalPath)
 	}
 	if _, err := rt.Reattach(ctx, info, entry.OriginalPath, info.Root); err != nil {
 		fatal("restore: %v", err)

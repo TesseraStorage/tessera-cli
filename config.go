@@ -300,3 +300,21 @@ func randomHex(n int) string {
 	rand.Read(b)
 	return hex.EncodeToString(b)
 }
+
+// snapshotConfigFile records config.json as it is now and returns a function
+// that puts it back (or removes it when there was none). Used when a login is
+// refused before anything was linked, so the machine is left unchanged.
+func snapshotConfigFile() func() {
+	cp, err := configFilePath()
+	if err != nil {
+		return func() {}
+	}
+	data, readErr := os.ReadFile(cp)
+	return func() {
+		if readErr != nil {
+			_ = os.Remove(cp)
+			return
+		}
+		_ = os.WriteFile(cp, data, 0600)
+	}
+}

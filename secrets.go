@@ -25,7 +25,13 @@ func cmdSecrets(args []string) {
 	}
 	paths := findSignupSecretsFiles()
 	if len(paths) == 0 {
-		fmt.Println("No signup-secrets file found under ~/.tessera — nothing to delete.")
+		if cfg, err := loadConfig(); err == nil && cfg.SignupSecretsFile != "" && !filepath.IsAbs(cfg.SignupSecretsFile) {
+			// Recorded by an older version as a relative path: it can only be
+			// found from the folder signup ran in.
+			fmt.Printf("No signup-secrets file found. Signup recorded it as %q, relative to the folder signup ran in; run 'tessera secrets done' from that folder, or delete the file yourself.\n", cfg.SignupSecretsFile)
+			return
+		}
+		fmt.Println("No signup-secrets file found (checked the --secrets-file path recorded at signup and ~/.tessera) — nothing to delete.")
 		return
 	}
 	fmt.Println("About to delete:")
@@ -99,7 +105,6 @@ func secretsFileReminder() string {
 	}
 	return "Secrets file still present (" + paths[0] + "). After the phrase is saved elsewhere, run: tessera secrets done"
 }
-
 
 // secretsFileHint is a one-line prompt after a successful upload/download when
 // a plaintext signup-secrets file is still on disk (TT run 5 #11).

@@ -272,6 +272,9 @@ func (b *httpBilling) do(req *http.Request, mode authMode, sessionOverride strin
 
 	resp, err := b.client.Do(req)
 	if err != nil {
+		if off := explainOffline(err); off != err {
+			return nil, nil, off
+		}
 		return nil, nil, fmt.Errorf("billing API request failed: %w", err)
 	}
 	defer resp.Body.Close()

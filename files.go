@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -69,9 +70,14 @@ func cmdList(args []string) {
 	}
 
 	entries := idx.SortedPaths()
-	var shown []*IndexEntry
+	shown := []*IndexEntry{}
 	var total uint64
 	for _, e := range entries {
+		// Trash and version copies are listed by 'tessera trash list' and
+		// 'tessera versions', not as files.
+		if isInternalPath(e.Path) {
+			continue
+		}
 		if prefix != "" && !strings.HasPrefix(e.Path, prefix) {
 			continue
 		}
@@ -116,12 +122,43 @@ func cmdUploadPath(src string, args []string) {
 		fatal("Not logged in. Run 'tessera login' first.")
 	}
 
-	fi, err := os.Stat(src)
-	if err != nil {
-		fatal("cannot read %s: %v", src, err)
+	// Input is checked first, all on this machine: a mistyped flag, a bad
+	// --as or an unreadable file is reported as such, never as a balance
+	// problem, and nothing is sent.
+	if err := rejectUnknownFlags("upload", args, "--as", "--quiet", "-q", "--json"); err != nil {
+		fatal("%v", err)
+	}
+	if extra := positional(args); len(extra) > 1 {
+		fatal("upload takes one file or folder (got %d paths: %s); upload a folder, or run one upload per file", len(extra), strings.Join(extra, ", "))
+	}
+	asJSON := hasFlag(args, "--json")
+	if asJSON {
+		uploadOut = os.Stderr
 	}
 
-	asFlag, _ := flagValue(args, "--as")
+	fi, err := os.Stat(src)
+	if err != nil {
+		fatal("cannot read %s: %v", src, plainFileError(err))
+	}
+	if !fi.IsDir() {
+		if !fi.Mode().IsRegular() {
+			fatal("cannot upload %s: it is not a regular file", src)
+		}
+		f, err := os.Open(src)
+		if err != nil {
+			fatal("cannot read %s: %v", src, plainFileError(err))
+		}
+		f.Close()
+	}
+
+	asFlag, hasAs := flagValue(args, "--as")
+	if hasAs {
+		rel, err := checkRemotePath(asFlag)
+		if err != nil {
+			fatal("--as: %v", err)
+		}
+		asFlag = rel
+	}
 
 	// Size is known from the local stat. Refuse a technical-validation upload
 	// that cannot fit in one slab before any host or indexer call, so the one
@@ -155,11 +192,18 @@ func cmdUploadPath(src string, args []string) {
 	defer cleanup()
 
 	if fi.IsDir() {
-		if err := uploadDir(ctx, rt, idx, src, asFlag); err != nil {
+		err := uploadDir(ctx, rt, idx, src, asFlag)
+		if asJSON {
+			emitUploadJSON(err)
+			if err == nil {
+				return
+			}
+		}
+		if err != nil {
 			fatal("%v", explainTransferError(cfg, err, true))
 		}
 		if rem := secretsFileHint(); rem != "" {
-			fmt.Println(rem)
+			fmt.Fprintln(uploadOut, rem)
 		}
 		printStandingIfNotGood()
 		return
@@ -167,20 +211,127 @@ func cmdUploadPath(src string, args []string) {
 
 	remotePath := path.Base(src)
 	if asFlag != "" {
-		rel, err := NormalizeRelPath(asFlag)
-		if err != nil {
-			fatal("--as: %v", err)
-		}
-		remotePath = rel
+		remotePath = asFlag
 	}
 
-	if err := uploadOneWithWall(ctx, rt, idx, src, remotePath, wallStart); err != nil {
+	err = uploadOneWithWall(ctx, rt, idx, src, remotePath, wallStart)
+	if asJSON {
+		if err != nil {
+			uploadResults.Failed = append(uploadResults.Failed, uploadJSONFailure{Path: remotePath, Error: explainTransferError(cfg, err, true).Error()})
+		}
+		emitUploadJSON(err)
+		if err == nil {
+			return
+		}
+	}
+	if err != nil {
 		fatal("%v", explainTransferError(cfg, err, true))
 	}
 	if rem := secretsFileHint(); rem != "" {
-		fmt.Println(rem)
+		fmt.Fprintln(uploadOut, rem)
 	}
 	printStandingIfNotGood()
+}
+
+// uploadOut receives upload's human progress lines: stdout normally, stderr
+// with --json so stdout carries only the JSON document.
+var uploadOut io.Writer = os.Stdout
+
+// uploadJSONFile is one uploaded file in 'upload --json'.
+type uploadJSONFile struct {
+	Path     string `json:"path"`
+	Size     int64  `json:"size"`
+	SHA256   string `json:"sha256"`
+	ObjectID string `json:"object_id"`
+}
+
+// uploadJSONFailure is one file that failed in 'upload --json'.
+type uploadJSONFailure struct {
+	Path  string `json:"path"`
+	Error string `json:"error"`
+}
+
+// uploadResults collects what 'upload --json' reports.
+var uploadResults struct {
+	Uploaded []uploadJSONFile
+	Failed   []uploadJSONFailure
+}
+
+// emitUploadJSON prints the 'upload --json' document: every uploaded file,
+// every failed one, and the totals. The exit status still follows err.
+func emitUploadJSON(err error) {
+	files := uploadResults.Uploaded
+	if files == nil {
+		files = []uploadJSONFile{}
+	}
+	failed := uploadResults.Failed
+	if failed == nil {
+		failed = []uploadJSONFailure{}
+	}
+	var bytes int64
+	for _, f := range files {
+		bytes += f.Size
+	}
+	emitJSON(map[string]interface{}{
+		"ok":       err == nil,
+		"uploaded": len(files),
+		"failed":   len(failed),
+		"bytes":    bytes,
+		"files":    files,
+		"errors":   failed,
+	})
+}
+
+// rejectUnknownFlags fails on a flag the command does not take, so a typo is
+// reported instead of silently ignored. --help/-h are always allowed.
+func rejectUnknownFlags(cmd string, args []string, allowed ...string) error {
+	ok := map[string]bool{"--help": true, "-h": true}
+	for _, a := range allowed {
+		ok[a] = true
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			return nil
+		}
+		if !strings.HasPrefix(a, "-") || a == "-" {
+			continue
+		}
+		name := a
+		if j := strings.IndexByte(a, '='); j > 0 {
+			name = a[:j]
+		}
+		if !ok[name] {
+			return fmt.Errorf("unknown option %s for '%s' (see 'tessera %s --help'); nothing was uploaded", name, cmd, cmd)
+		}
+		if !strings.Contains(a, "=") && takesValue(name) {
+			i++
+		}
+	}
+	return nil
+}
+
+// checkRemotePath validates a remote path given on the command line: relative,
+// inside the account, and not in Tessera's own trash or version namespaces.
+func checkRemotePath(p string) (string, error) {
+	rel, err := NormalizeRelPath(p)
+	if err != nil {
+		return "", fmt.Errorf("%q is not a valid remote path (%v); use a relative path such as docs/report.pdf", p, err)
+	}
+	if isInternalPath(rel) {
+		return "", fmt.Errorf("%q is inside %s or %s, which are reserved for Tessera's trash and versions; choose another remote path", p, TrashPrefix, VersionsPrefix)
+	}
+	return rel, nil
+}
+
+// plainFileError shortens an *os.PathError to its reason ("permission
+// denied", "no such file or directory"); the caller already names the path.
+func plainFileError(err error) error {
+	var pe *os.PathError
+	if errors.As(err, &pe) {
+		return pe.Err
+	}
+	return err
 }
 
 // firstOversizeUpload returns the lexicographically first regular file under
@@ -262,7 +413,8 @@ func recordUploaded(rt *Remote, idx *Index, req uploadRequest, info PathInfo, st
 	// well. Otherwise the next `tessera sync` would treat the file as both new
 	// locally and new remotely and download its own upload back.
 	recordUploadInSyncState(info, req.ModTime)
-	fmt.Printf("  ↑ %s (%s, %.1fs)\n", req.RelPath, formatBytes(uint64(req.Size)), time.Since(started).Seconds())
+	uploadResults.Uploaded = append(uploadResults.Uploaded, uploadJSONFile{Path: info.Path, Size: req.Size, SHA256: req.Hash, ObjectID: info.ObjectID})
+	fmt.Fprintf(uploadOut, "  ↑ %s (%s, %.1fs)\n", req.RelPath, formatBytes(uint64(req.Size)), time.Since(started).Seconds())
 	return nil
 }
 
@@ -294,7 +446,7 @@ func uploadOneWithWall(ctx context.Context, rt *Remote, idx *Index, localPath, r
 		wall := time.Since(wallStart).Seconds()
 		xfer := time.Since(start).Seconds()
 		if wall > xfer+0.5 {
-			fmt.Printf("  wall %.1fs total\n", wall)
+			fmt.Fprintf(uploadOut, "  wall %.1fs total\n", wall)
 		}
 	}
 	return nil
@@ -382,6 +534,12 @@ func cmdDownload(args []string) {
 	if err != nil {
 		fatal("%v", err)
 	}
+	// An explicit destination is checked before anything is fetched.
+	if outName != "" {
+		if err := checkDownloadDest(outName); err != nil {
+			fatal("%v", err)
+		}
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
@@ -410,6 +568,19 @@ func cmdDownload(args []string) {
 		if rng.Set {
 			dest = defaultRangeName(entry.Path, rng)
 		}
+	}
+
+	if outName == "" {
+		if err := checkDownloadDest(dest); err != nil {
+			fatal("%v", err)
+		}
+	}
+	if n := removeStaleTemps(filepath.Dir(dest)); n > 0 {
+		where := filepath.Dir(dest)
+		if abs, err := filepath.Abs(where); err == nil {
+			where = abs
+		}
+		fmt.Fprintf(os.Stderr, "Removed %d partial file(s) (%s*) left in %s by an earlier interrupted download.\n", n, tempFilePrefix, where)
 	}
 
 	if rng.Set {
@@ -473,8 +644,20 @@ func cmdDelete(args []string) {
 	pos := positional(args)
 	name := pos[0]
 	purge := hasFlag(args, "--purge")
+	assumeYes := hasFlag(args, "--yes") || hasFlag(args, "-y")
+	toTrash := !purge && trashRetention() > 0
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	// Without a terminal nobody can answer a prompt, so a delete needs an
+	// explicit --yes (the same rule as 'account delete'). Checked before any
+	// network work, so nothing changes.
+	if !assumeYes && !stdinIsTerminal() {
+		if toTrash {
+			fatal("refusing to move %s to the trash without confirmation; pass --yes (non-interactive). Nothing was changed.", name)
+		}
+		fatal("refusing to permanently delete %s without confirmation; pass --yes (non-interactive). Nothing was changed.", name)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
 	rt, idx, cleanup, err := connectForWrite(ctx, cfg)
@@ -483,60 +666,170 @@ func cmdDelete(args []string) {
 	}
 	defer cleanup()
 
-	entry, err := idx.lookup(name)
-	if err != nil {
-		fatal("%v", err)
+	// A name ending in "/" or naming a remote folder (a prefix with files
+	// under it and no file of that exact name) deletes every file under it.
+	var targets []*IndexEntry
+	folder := ""
+	if strings.HasSuffix(name, "/") {
+		folder = strings.Trim(filepath.ToSlash(name), "/")
+	} else if _, lerr := idx.lookup(name); lerr != nil && errors.Is(lerr, errNotFound) && len(filesUnder(idx, name)) > 0 {
+		folder = strings.Trim(filepath.ToSlash(name), "/")
+	}
+	if folder != "" {
+		targets = filesUnder(idx, folder)
+		if len(targets) == 0 {
+			fatal("%v: no files under %s/ (see 'tessera list')", errNotFound, folder)
+		}
+	} else {
+		entry, err := idx.lookup(name)
+		if err != nil {
+			fatal("%v", err)
+		}
+		targets = []*IndexEntry{entry}
 	}
 
-	// Trashed objects are recoverable for the retention window unless the
-	// caller explicitly purges.
-	assumeYes := hasFlag(args, "--yes") || hasFlag(args, "-y")
-	if !purge && trashRetention() > 0 {
-		trashPath := path.Join(TrashPrefix, shortHash(entry.SHA256), entry.Path)
-		info := pathInfoFromIndex(entry)
-		if _, err := rt.Reattach(ctx, info, trashPath, entry.Root); err != nil {
-			fatal("trash %s: %v", entry.Path, err)
+	// Earlier copies kept at the same paths (an upload to an existing path
+	// keeps the previous copy; see 'tessera versions').
+	earlier := map[string][]PathInfo{}
+	if all, err := rt.LiveObjects(ctx); err == nil {
+		for _, t := range targets {
+			earlier[t.Path] = earlierCopies(all, t)
 		}
-		recordTrash(TrashedEntry{
-			OriginalPath: entry.Path,
-			TrashPath:    trashPath,
-			ObjectID:     entry.ObjectID,
-			SHA256:       entry.SHA256,
-			Size:         entry.Size,
-			DeletedAt:    time.Now(),
-		})
-		_ = updateIndex(func(fresh *Index) error {
-			fresh.remove(entry.Path)
-			fresh.put(PathInfo{
-				ObjectID: entry.ObjectID, Path: trashPath, Name: path.Base(trashPath),
-				Root: entry.RootID, SHA256: entry.SHA256, Size: entry.Size, ModTime: entry.ModTime,
-			})
-			return nil
-		})
-		idx.remove(entry.Path)
-		idx.put(PathInfo{
-			ObjectID: entry.ObjectID, Path: trashPath, Name: path.Base(trashPath),
-			Root: entry.RootID, SHA256: entry.SHA256, Size: entry.Size, ModTime: entry.ModTime,
-		})
-		recordDeleteInSyncState(entry.Path)
-		fmt.Printf("Moved to trash: %s\n", entry.Path)
-		fmt.Printf("Restore with:   tessera trash restore %s\n", entry.Path)
-		printStandingIfNotGood()
-		return
+	}
+	nEarlier := 0
+	for _, list := range earlier {
+		nEarlier += len(list)
+	}
+	var total int64
+	for _, t := range targets {
+		total += t.Size
+	}
+	what := targets[0].Path
+	if folder != "" {
+		what = fmt.Sprintf("%d file(s) under %s/", len(targets), folder)
 	}
 
 	if !assumeYes {
-		fmt.Printf("Permanently delete %s (%s)? This cannot be undone. [y/N] ", entry.Path, formatBytes(uint64(entry.Size)))
+		var q string
+		switch {
+		case toTrash:
+			q = fmt.Sprintf("Move %s (%s) to the trash? It can be restored with 'tessera trash restore' for %s. [y/N] ", what, formatBytes(uint64(total)), describeTrashWindow())
+		case nEarlier > 0:
+			q = fmt.Sprintf("Permanently delete %s (%s) and %d earlier version(s)? This cannot be undone. [y/N] ", what, formatBytes(uint64(total)), nEarlier)
+		default:
+			q = fmt.Sprintf("Permanently delete %s (%s)? This cannot be undone. [y/N] ", what, formatBytes(uint64(total)))
+		}
+		fmt.Print(q)
 		var a string
 		fmt.Scanln(&a)
-		if strings.ToLower(a) != "y" {
-			fmt.Println("Aborted.")
+		if strings.ToLower(strings.TrimSpace(a)) != "y" {
+			fmt.Println("Aborted; nothing was deleted.")
 			return
 		}
 	}
 
+	failed := 0
+	for _, entry := range targets {
+		var err error
+		if toTrash {
+			err = trashOne(ctx, rt, idx, entry)
+		} else {
+			err = purgeOne(ctx, rt, idx, entry, earlier[entry.Path])
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  ! %s: %v\n", entry.Path, err)
+			failed++
+			continue
+		}
+		if toTrash {
+			fmt.Printf("Moved to trash: %s\n", entry.Path)
+			if n := len(earlier[entry.Path]); n > 0 {
+				fmt.Printf("  Note: %d earlier version(s) of %s are still stored; the newest of them is now the current file at this path ('tessera versions %s').\n", n, entry.Path, entry.Path)
+			}
+		} else {
+			fmt.Printf("Deleted: %s\n", entry.Path)
+			if n := len(earlier[entry.Path]); n > 0 {
+				fmt.Printf("  Also deleted %d earlier version(s) of it.\n", n)
+			}
+		}
+	}
+	if toTrash && failed < len(targets) {
+		if folder != "" {
+			fmt.Printf("Restore with:   tessera trash restore <path>   (see 'tessera trash list')\n")
+		} else {
+			fmt.Printf("Restore with:   tessera trash restore %s\n", targets[0].Path)
+		}
+	}
+	if failed > 0 {
+		fatal("%d of %d file(s) could not be deleted (listed above)", failed, len(targets))
+	}
+	printStandingIfNotGood()
+}
+
+// describeTrashWindow is the trash retention in words ("30 days").
+func describeTrashWindow() string {
+	d := trashRetention()
+	return fmt.Sprintf("%d days", int(d.Hours()/24))
+}
+
+// filesUnder lists the user files (not trash or version copies) under a
+// remote folder, sorted by path.
+func filesUnder(idx *Index, folder string) []*IndexEntry {
+	folder = strings.Trim(filepath.ToSlash(folder), "/")
+	if folder == "" {
+		return nil
+	}
+	var out []*IndexEntry
+	for _, e := range idx.SortedPaths() {
+		if isInternalPath(e.Path) {
+			continue
+		}
+		if strings.HasPrefix(e.Path, folder+"/") {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// trashOne moves one file into the trash namespace and records it.
+func trashOne(ctx context.Context, rt *Remote, idx *Index, entry *IndexEntry) error {
+	trashPath := path.Join(TrashPrefix, shortHash(entry.SHA256), entry.Path)
+	info := pathInfoFromIndex(entry)
+	if _, err := rt.Reattach(ctx, info, trashPath, entry.Root); err != nil {
+		return fmt.Errorf("move to trash: %w", err)
+	}
+	recordTrash(TrashedEntry{
+		OriginalPath: entry.Path,
+		TrashPath:    trashPath,
+		ObjectID:     entry.ObjectID,
+		SHA256:       entry.SHA256,
+		Size:         entry.Size,
+		DeletedAt:    time.Now(),
+	})
+	trashed := PathInfo{
+		ObjectID: entry.ObjectID, Path: trashPath, Name: path.Base(trashPath),
+		Root: entry.RootID, SHA256: entry.SHA256, Size: entry.Size, ModTime: entry.ModTime,
+	}
+	_ = updateIndex(func(fresh *Index) error {
+		fresh.remove(entry.Path)
+		fresh.put(trashed)
+		return nil
+	})
+	idx.remove(entry.Path)
+	idx.put(trashed)
+	recordDeleteInSyncState(entry.Path)
+	return nil
+}
+
+// purgeOne permanently deletes one file and its earlier versions.
+func purgeOne(ctx context.Context, rt *Remote, idx *Index, entry *IndexEntry, earlier []PathInfo) error {
 	if err := rt.DeleteObject(ctx, entry.ObjectID); err != nil {
-		fatal("delete: %v", err)
+		return fmt.Errorf("delete: %w", err)
+	}
+	for _, v := range earlier {
+		if err := rt.DeleteObject(ctx, v.ObjectID); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not remove an earlier version of %s: %v\n", entry.Path, err)
+		}
 	}
 	if err := deleteVersions(ctx, rt, entry); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not remove some versions: %v\n", err)
@@ -547,8 +840,7 @@ func cmdDelete(args []string) {
 	})
 	idx.remove(entry.Path)
 	recordDeleteInSyncState(entry.Path)
-	fmt.Printf("Deleted: %s\n", entry.Path)
-	printStandingIfNotGood()
+	return nil
 }
 
 // recordDeleteInSyncState marks a path as deleted in whichever sync root owns
@@ -780,8 +1072,11 @@ func cmdFind(args []string) {
 	}
 
 	lower := strings.ToLower(pattern)
-	var matches []*IndexEntry
+	matches := []*IndexEntry{}
 	for _, e := range idx.SortedPaths() {
+		if isInternalPath(e.Path) {
+			continue
+		}
 		if strings.Contains(strings.ToLower(e.Path), lower) {
 			matches = append(matches, e)
 		}
@@ -791,7 +1086,7 @@ func cmdFind(args []string) {
 		// Content search downloads candidates of plausible text type and size.
 		fmt.Fprintf(os.Stderr, "Searching content across %d file(s) (this downloads data)...\n", len(idx.Paths))
 		for _, e := range idx.SortedPaths() {
-			if e.Size > 4<<20 {
+			if e.Size > 4<<20 || isInternalPath(e.Path) {
 				continue
 			}
 			if !plausibleText(e.Path) {
@@ -869,7 +1164,11 @@ func objectContains(ctx context.Context, rt *Remote, e *IndexEntry, needle strin
 	}
 }
 
-// cmdVersions lists or restores retained versions of a path.
+// cmdVersions lists or restores earlier versions of a path. Uploading to a
+// path that already holds a file keeps the previous copy as an earlier
+// version (it stays stored and counts toward storage until deleted). Copies
+// kept by the older folder-sync version store (.tessera-versions) are listed
+// too.
 func cmdVersions(args []string) {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -880,8 +1179,17 @@ func cmdVersions(args []string) {
 		usageError("versions <path> [--restore <n>] [--json]")
 	}
 	target := pos[0]
+	asJSON := hasFlag(args, "--json")
 
 	restoreAt, hasRestore := flagValue(args, "--restore")
+	restoreN := 0
+	if hasRestore {
+		n, err := strconv.Atoi(strings.TrimSpace(restoreAt))
+		if err != nil || n < 1 {
+			fatal("--restore expects a version number from 'tessera versions %s' (1, 2, ...)", target)
+		}
+		restoreN = n
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
@@ -896,135 +1204,103 @@ func cmdVersions(args []string) {
 	if err != nil {
 		fatal("%v", err)
 	}
-	if entry.RootID == "" {
-		// The index is rebuilt from object metadata, which carries the sync
-		// root id. Without it there is no namespace to look in, but the object
-		// may still have versions recorded by state.
-		fmt.Fprintf(os.Stderr, "note: %s is not tagged with a sync folder; checking recorded history\n", entry.Path)
-	}
 
-	// Relative path inside the root, used for every namespace derivation.
+	all, err := rt.LiveObjects(ctx)
+	if err != nil {
+		fatal("versions: %v", explainOffline(err))
+	}
+	versions := earlierCopies(all, entry)
+	// Copies kept by the folder-sync version store, beside the file:
+	// "<dir>/.tessera-versions/<name>/<stamp>-<sha>", or under a sync root.
 	relPath := entry.Path
 	if entry.RootID != "" {
 		if rel, ok := relativeToPrefix(entry.Root, entry.Path); ok {
 			relPath = rel
 		}
 	}
+	suffix := VersionsPrefix + "/" + relPath
+	besides := path.Join(path.Dir(entry.Path), VersionsPrefix, path.Base(entry.Path))
+	for _, info := range all {
+		p := info.Path
+		base := p
+		if i := strings.LastIndex(p, "/"+VersionsPrefix+"/"); i >= 0 {
+			base = p[i+1:]
+		}
+		if strings.HasPrefix(p, besides+"/") || base == suffix || strings.HasPrefix(base, suffix+"/") {
+			versions = append(versions, info)
+		}
+	}
+	sort.SliceStable(versions, func(i, j int) bool { return versions[i].Updated.Before(versions[j].Updated) })
 
-	// Find the retained copies of this path. The namespace is matched against
-	// several spellings because a version entry holds "<remote prefix>/
-	// .tessera-versions/<path>/<stamp>" while the sync root's id is a separate
-	// value; matching on the marker keeps this working regardless of which one
-	// a given record used.
-	var nsCandidates []string
-	if entry.RootID != "" {
-		nsCandidates = append(nsCandidates,
-			path.Join(entry.RootID, VersionsPrefix, relPath),
-			path.Join(entry.RootID, VersionsPrefix, path.Base(relPath)))
-	}
-	// Legacy versions sit in a namespace beside the file, derived from the
-	// remote prefix: "<prefix>/.tessera-versions/<name>/<stamp>-<sha>".
-	nsCandidates = append(nsCandidates,
-		path.Join(path.Dir(entry.Path), VersionsPrefix, path.Base(entry.Path)))
-	if entry.Root != "" {
-		nsCandidates = append(nsCandidates, path.Join(entry.Root, VersionsPrefix, relPath))
-	}
-	live := make(map[string]PathInfo)
-	var listErr error
-	for _, ns := range nsCandidates {
-		found, perr := rt.Paths(ctx, ns)
-		if perr != nil {
-			listErr = perr
-			continue
+	if hasRestore {
+		if len(versions) == 0 {
+			fatal("%s has no earlier versions to restore (only the current copy is stored)", entry.Path)
 		}
-		for p, info := range found {
-			live[p] = info
+		if restoreN > len(versions) {
+			fatal("--restore expects a number from 1 to %d for %s (see 'tessera versions %s')", len(versions), entry.Path, entry.Path)
 		}
-	}
-	if len(live) == 0 {
-		// Depending on when a version was recorded its stored path is either
-		// "<remote prefix>/.tessera-versions/<path>" or
-		// "<root id>/.tessera-versions/<path>", so recognise both by their
-		// namespace suffix rather than by an exact prefix.
-		suffix := VersionsPrefix + "/" + relPath
-		all, aerr := rt.LivePaths(ctx)
-		if aerr != nil {
-			listErr = aerr
-		}
-		for p, info := range all {
-			base := p
-			if i := strings.LastIndex(p, "/"+VersionsPrefix+"/"); i >= 0 {
-				base = p[i+1:]
+		chosen := versions[restoreN-1]
+		sameDir := chosen.Path == entry.Path
+		restored, err := rt.Reattach(ctx, chosen, entry.Path, chosen.Root)
+		if err != nil {
+			if isNotFound(err) {
+				fatal("version %d of %s is no longer stored (it may have been deleted); run 'tessera versions %s' again", restoreN, entry.Path, entry.Path)
 			}
-			if base == suffix || strings.HasPrefix(base, suffix+"/") {
-				live[p] = info
-			}
+			fatal("restore: %v", err)
 		}
-	}
-	if listErr != nil {
-		// A retained object can disappear between indexing and fetching (it is
-		// unpinned elsewhere, or a tombstone has not propagated yet). That is a
-		// reason to report fewer versions, not to fail the command.
-		fmt.Fprintf(os.Stderr, "note: could not fully list versions for %s: %v\n", entry.Path, listErr)
-		live = nil
-	}
-	if len(live) == 0 {
-		fmt.Printf("No retained versions for %s yet.\n", entry.Path)
-		fmt.Printf("The previous copy is kept the next time this file is replaced (retention: %d).\n", versionRetention())
-		fmt.Println("Keep more with: tessera config --version-retention 5")
+		if !sameDir {
+			// A folder-sync version: the copy that was current is moved
+			// into the version store, so the restore can be undone.
+			restoreNamespace := path.Join(path.Dir(entry.Path), VersionsPrefix, path.Base(entry.Path))
+			_, _ = rt.Reattach(ctx, pathInfoFromIndex(entry),
+				path.Join(restoreNamespace, fmt.Sprintf("%s-restored-over-%s", time.Now().UTC().Format("20060102-150405"), shortHash(entry.SHA256))), entry.RootID)
+		}
+		_ = updateIndex(func(fresh *Index) error {
+			fresh.put(restored)
+			return nil
+		})
+		idx.put(restored)
+		if asJSON {
+			emitJSON(map[string]interface{}{
+				"path":            entry.Path,
+				"restored":        restoreN,
+				"object_id":       restored.ObjectID,
+				"sha256":          restored.SHA256,
+				"size":            restored.Size,
+				"previous_kept":   true,
+				"previous_sha256": entry.SHA256,
+			})
+			return
+		}
+		fmt.Printf("Restored %s to version %d (%s, SHA-256 %s).\n", entry.Path, restoreN, formatBytes(uint64(restored.Size)), shortHash(restored.SHA256))
+		fmt.Printf("The copy that was current (%s, SHA-256 %s) is kept as an earlier version; see 'tessera versions %s'.\n",
+			formatBytes(uint64(entry.Size)), shortHash(entry.SHA256), entry.Path)
 		return
 	}
 
-	versions := make([]PathInfo, 0, len(live))
-	for _, v := range live {
-		versions = append(versions, v)
-	}
-	sort.Slice(versions, func(i, j int) bool { return versions[i].ModTime.Before(versions[j].ModTime) })
-
-	if hasFlag(args, "--json") {
+	if asJSON {
+		if versions == nil {
+			versions = []PathInfo{}
+		}
 		emitJSON(versions)
 		return
 	}
 
-	if hasRestore {
-		var n int
-		fmt.Sscanf(restoreAt, "%d", &n)
-		if n < 1 || n > len(versions) {
-			fatal("--restore expects a number between 1 and %d", len(versions))
-		}
-		chosen := versions[n-1]
-		if _, err := rt.Reattach(ctx, chosen, entry.Path, entry.Root); err != nil {
-			if isNotFound(err) {
-				fatal("version %d of %s is no longer on the network (it may have been purged); run 'tessera versions %s' again", n, entry.Path, entry.Path)
-			}
-			fatal("restore: %v", err)
-		}
-		// The current copy becomes a version so the restore is reversible.
-		restoreNamespace := path.Join(entry.Root, VersionsPrefix, relPath)
-		if entry.RootID != "" {
-			restoreNamespace = path.Join(entry.RootID, VersionsPrefix, relPath)
-		}
-		_, _ = rt.Reattach(ctx, pathInfoFromIndex(entry),
-			path.Join(restoreNamespace, fmt.Sprintf("%s-restored-over", time.Now().UTC().Format("20060102-150405"))), entry.RootID)
-		info := PathInfo{
-			ObjectID: chosen.ObjectID, Path: entry.Path, Name: path.Base(entry.Path),
-			Root: entry.RootID, SHA256: chosen.SHA256, Size: chosen.Size, ModTime: chosen.ModTime,
-		}
-		_ = updateIndex(func(fresh *Index) error {
-			fresh.put(info)
-			return nil
-		})
-		idx.put(info)
-		fmt.Printf("Restored %s from version %d.\n", entry.Path, n)
+	if len(versions) == 0 {
+		fmt.Printf("No earlier versions of %s: only the current copy is stored.\n", entry.Path)
+		fmt.Println("Uploading to the same path again keeps the current copy as an earlier version.")
 		return
 	}
-
-	fmt.Printf("Versions of %s (oldest first):\n\n", entry.Path)
+	fmt.Printf("Earlier versions of %s (oldest first; the current copy is not listed):\n\n", entry.Path)
+	fmt.Printf("  %-8s  %-23s  %10s  %s\n", "N", "DATE", "SIZE", "SHA-256")
 	for i, v := range versions {
-		fmt.Printf("  [%d]  %s  %10s  %s\n", i+1, localStamp(v.ModTime, true),
+		fmt.Printf("  %-8s  %-23s  %10s  %s\n", fmt.Sprintf("[%d]", i+1), localStamp(v.Updated, true),
 			formatBytes(uint64(v.Size)), shortHash(v.SHA256))
 	}
-	fmt.Printf("\nRestore with: tessera versions %s --restore <n>\n", entry.Path)
+	fmt.Printf("  %-8s  %-23s  %10s  %s\n\n", "current", localStamp(entry.Updated, true), formatBytes(uint64(entry.Size)), shortHash(entry.SHA256))
+	fmt.Println("Earlier versions stay stored and count toward storage until removed with")
+	fmt.Printf("'tessera delete %s --purge' (deletes the file and all of its versions).\n", entry.Path)
+	fmt.Printf("Restore one with: tessera versions %s --restore <N>\n", entry.Path)
 }
 
 // uploadedTime is when the object was stored on Tessera (index Updated).

@@ -267,6 +267,10 @@ func (i *Index) lookup(name string) (*IndexEntry, error) {
 	}
 	var matches []*IndexEntry
 	for _, e := range i.Paths {
+		// A bare file name never resolves to a trash or version copy.
+		if isInternalPath(e.Path) {
+			continue
+		}
 		if e.Name == name || e.Path == name {
 			matches = append(matches, e)
 		}
@@ -294,4 +298,17 @@ func (i *Index) lookup(name string) (*IndexEntry, error) {
 		}
 		return nil, errors.New(msg)
 	}
+}
+
+// isInternalPath reports whether a remote path is one of Tessera's own
+// namespaces (the trash, or retained versions) rather than a user file. Such
+// paths are not listed as files; 'tessera trash' and 'tessera versions'
+// show them.
+func isInternalPath(p string) bool {
+	for _, ns := range []string{TrashPrefix, VersionsPrefix} {
+		if p == ns || strings.HasPrefix(p, ns+"/") || strings.Contains(p, "/"+ns+"/") {
+			return true
+		}
+	}
+	return false
 }

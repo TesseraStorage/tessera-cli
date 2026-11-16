@@ -457,12 +457,12 @@ func printTopupCompleted(api billingAPI, initial, status map[string]any, req top
 	}
 	credited := topupField(status, "credited_usd")
 	if credited != "—" {
-		fmt.Printf("Credited $%s", credited)
+		fmt.Printf("Credited %s", signedMoney(credited))
 	} else {
 		fmt.Print("Top-up completed")
 	}
 	if balance != "" && balance != "—" {
-		fmt.Printf(", balance $%s", balance)
+		fmt.Printf(", balance %s", signedMoney(balance))
 	}
 	fmt.Println()
 	return nil

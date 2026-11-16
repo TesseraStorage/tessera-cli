@@ -202,7 +202,11 @@ func collectUsageStorage(idx *Index) (map[string]usageFolder, uint64) {
 	var total uint64
 	for _, e := range idx.Paths {
 		key := "—"
-		if e.Root != "" {
+		if strings.HasPrefix(e.Path, TrashPrefix+"/") || strings.Contains(e.Path, "/"+TrashPrefix+"/") {
+			key = usageTrashFolder
+		} else if isInternalPath(e.Path) {
+			key = usageVersionsFolder
+		} else if e.Root != "" {
 			if r, err := loadSyncConfig(e.Root); err == nil {
 				key = r.RemotePrefix
 			} else {
@@ -219,6 +223,13 @@ func collectUsageStorage(idx *Index) (map[string]usageFolder, uint64) {
 	}
 	return byFolder, total
 }
+
+// Rows of the usage report for Tessera's own namespaces, named for people
+// instead of by their internal remote paths.
+const (
+	usageTrashFolder    = "(trash)"
+	usageVersionsFolder = "(earlier versions)"
+)
 
 // parenIf wraps text in parentheses when cond holds, else "".
 func parenIf(cond bool, text string) string {
@@ -301,7 +312,12 @@ func usageStorageJSON(idx *Index, total uint64, byFolder map[string]usageFolder)
 // section existed.
 func printUsageStorage(idx *Index, total uint64, byFolder map[string]usageFolder, byFolderTable bool) {
 	fmt.Printf("Storage usage\n\n")
-	fmt.Printf("  files:           %d\n", len(idx.Paths))
+	inTrash := byFolder[usageTrashFolder].Files + byFolder[usageVersionsFolder].Files
+	if inTrash > 0 {
+		fmt.Printf("  files:           %d (%d in the trash or kept as earlier versions)\n", len(idx.Paths), inTrash)
+	} else {
+		fmt.Printf("  files:           %d\n", len(idx.Paths))
+	}
 	fmt.Printf("  your files:      %s (logical size, as uploaded from this machine)\n", formatBytes(total))
 
 	if byFolderTable && len(byFolder) > 0 {
