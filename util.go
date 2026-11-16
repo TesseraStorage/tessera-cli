@@ -6,11 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -164,11 +167,13 @@ func copyFileAtomicVerify(dst string, r io.Reader, mode os.FileMode, verify func
 	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 		return 0, err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(dst), ".tessera-tmp-*")
+	tmp, err := os.CreateTemp(filepath.Dir(dst), tempFilePrefix+"*")
 	if err != nil {
 		return 0, err
 	}
 	tmpName := tmp.Name()
+	trackTemp(tmpName)
+	defer untrackTemp(tmpName)
 	defer os.Remove(tmpName)
 
 	n, err := io.Copy(tmp, r)
@@ -282,4 +287,128 @@ func formatAge(t time.Time) string {
 	default:
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
+}
+
+// tempFilePrefix names the partial file a download writes before it is
+// verified and renamed into place.
+const tempFilePrefix = ".tessera-tmp-"
+
+// staleTempAge is how long a partial download file must have been left
+// unchanged before a later download in the same folder removes it. A running
+// download writes to its file continuously, so it is never this old.
+const staleTempAge = 15 * time.Minute
+
+var (
+	tempMu    sync.Mutex
+	tempFiles = map[string]bool{}
+	tempOnce  sync.Once
+)
+
+// trackTemp remembers a partial file so an interrupt (Ctrl-C, SIGTERM)
+// removes it before the process exits. The handler is installed on first use.
+func trackTemp(name string) {
+	tempOnce.Do(func() {
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+		go func() {
+			sig := <-ch
+			transferProgress.Finish()
+			removeTrackedTemps()
+			fmt.Fprintln(os.Stderr, "\nInterrupted; the partial download was removed.")
+			code := 130
+			if sig == syscall.SIGTERM {
+				code = 143
+			}
+			os.Exit(code)
+		}()
+	})
+	tempMu.Lock()
+	tempFiles[name] = true
+	tempMu.Unlock()
+}
+
+func untrackTemp(name string) {
+	tempMu.Lock()
+	delete(tempFiles, name)
+	tempMu.Unlock()
+}
+
+func removeTrackedTemps() {
+	tempMu.Lock()
+	defer tempMu.Unlock()
+	for name := range tempFiles {
+		_ = os.Remove(name)
+	}
+}
+
+// removeStaleTemps deletes partial download files left in dir by an earlier
+// download that was killed (for example with SIGKILL, which cannot be caught)
+// and returns how many it removed. Only regular files named
+// .tessera-tmp-* that have not changed for staleTempAge are touched.
+func removeStaleTemps(dir string) int {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	removed := 0
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), tempFilePrefix) || !e.Type().IsRegular() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || time.Since(info.ModTime()) < staleTempAge {
+			continue
+		}
+		if os.Remove(filepath.Join(dir, e.Name())) == nil {
+			removed++
+		}
+	}
+	return removed
+}
+
+// checkDownloadDest fails early, before anything is downloaded, when dest
+// cannot be written: it is a folder or another non-regular file, or its
+// folder (or the nearest existing parent, since missing folders are created)
+// is not a writable folder.
+func checkDownloadDest(dest string) error {
+	if fi, err := os.Stat(dest); err == nil {
+		if fi.IsDir() {
+			return fmt.Errorf("%s is a folder; give a file name, for example %s", dest, filepath.Join(dest, "<name>"))
+		}
+		if !fi.Mode().IsRegular() {
+			return fmt.Errorf("refusing to write %s: it exists and is not a regular file", dest)
+		}
+	}
+	dir := filepath.Dir(dest)
+	for {
+		fi, err := os.Stat(dir)
+		if err == nil {
+			if !fi.IsDir() {
+				return fmt.Errorf("cannot save to %s: %s is not a folder", dest, dir)
+			}
+			break
+		}
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("cannot save to %s: %v", dest, err)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	probe, err := os.CreateTemp(dir, tempFilePrefix+"probe-*")
+	if err != nil {
+		var pe *os.PathError
+		if errors.As(err, &pe) {
+			err = pe.Err
+		}
+		if missing := filepath.Dir(dest); missing != dir {
+			return fmt.Errorf("cannot save to %s: the folder %s does not exist and cannot be created in %s (%v); nothing was downloaded", dest, missing, dir, err)
+		}
+		return fmt.Errorf("cannot save to %s: the folder %s is not writable (%v); nothing was downloaded", dest, dir, err)
+	}
+	probe.Close()
+	_ = os.Remove(probe.Name())
+	return nil
 }

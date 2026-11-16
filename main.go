@@ -121,7 +121,7 @@ func main() {
 	case "update", "upgrade":
 		cmdUpdate(args)
 	case "whoami":
-		cmdWhoami()
+		cmdWhoami(args)
 	case "status":
 		statusCommand(args...)
 	case "list", "ls":
@@ -175,8 +175,7 @@ func main() {
 	case "help", "-h", "--help":
 		printUsage()
 	default:
-		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
-		printUsage()
+		fmt.Fprintf(os.Stderr, "ERROR: unknown command %q. Run '%s help' to see all commands.\n", cmd, filepath.Base(os.Args[0]))
 		exitWithNotices(1)
 	}
 
@@ -186,13 +185,24 @@ func main() {
 // commandHelp is the --help text for file commands that have no flag parser
 // of their own. Printed to stdout with exit status 0.
 var commandHelp = map[string]string{
-	"upload": `Usage: {exe} upload <path> [--as <remote-path>] [--quiet]
+	"upload": `Usage: {exe} upload <path> [--as <remote-path>] [--quiet] [--json]
 
 Upload a file or a folder (folders are uploaded recursively).
 
-  --as <remote-path>  Store it under this remote name (folders: remote prefix;
-                      default for a folder: tessera/<name>)
+  --as <remote-path>  Store it under this remote path. For a folder it is the
+                      remote folder the files go into. Without --as a file is
+                      stored under its own name, and a folder under
+                      tessera/<folder name>/ (upload photos stores
+                      photos/a.jpg as tessera/photos/a.jpg)
   --quiet             Hide live progress (or set TESSERA_QUIET=1)
+  --json              Print the result as JSON: uploaded files (path, size,
+                      sha256, object_id), failed files, totals. Progress and
+                      notes go to stderr
+
+Uploading to a path that already holds a file replaces it as the current
+file; the previous copy is kept as an earlier version ('tessera versions
+<path>'), and it stays stored and counts toward storage until it is removed
+with 'tessera delete <path> --purge'.
 
 During technical validation one upload of up to 40 MiB (one slab) is allowed.
 A larger file is refused before anything is uploaded. With a balance, files of
@@ -218,12 +228,21 @@ whole-file SHA-256 is checked only on a full download.
 Interrupted downloads restart from the beginning. To resume by hand, use
 --offset with the number of bytes already on disk and append the result.
 `,
-	"delete": `Usage: {exe} delete <path> [--purge] [--yes]
+	"delete": `Usage: {exe} delete <path>|<folder>/ [--purge] [--yes]
 
-Move a file to the trash (restore with 'tessera trash restore').
+Move a file to the trash (restore with 'tessera trash restore'). A name
+ending in / (or a remote folder with no file of that exact name) moves every
+file under that folder to the trash.
 
-  --purge     Delete permanently (with its retained versions) instead of trashing
+  --purge     Delete permanently, with the file's earlier versions, instead of
+              trashing. Cannot be undone
   --yes, -y   Do not ask for confirmation
+
+Without a terminal (a script or an agent) --yes is required; without it
+nothing is changed and the exit status is 1.
+
+When an earlier version of the file is kept (see 'tessera versions'), moving
+the file to the trash makes the newest earlier version the current file.
 `,
 	"mv": `Usage: {exe} mv <src> <dst> [--force] [--json]
 
@@ -277,7 +296,7 @@ List stored files (path, size, date), optionally under a remote prefix.
 
 Account readiness and total storage used.
 `,
-	"whoami": `Usage: {exe} whoami
+	"whoami": `Usage: {exe} whoami [--json]
 
 Show this machine's indexer, App ID, the public key of its app key (the
 private app key stays in ~/.tessera/config.json as "app_key" and is never
@@ -299,7 +318,15 @@ netted egress estimate.
 `,
 	"versions": `Usage: {exe} versions <path> [--restore <n>] [--json]
 
-List retained versions of a file, or restore one.
+List the earlier versions of a file, or restore one.
+
+Uploading to a path that already holds a file keeps the previous copy as an
+earlier version. Earlier versions stay stored and count toward storage until
+removed with 'tessera delete <path> --purge' (the file and all its versions).
+
+  --restore <n>  Make version n (from the list) the current file again; the
+                 copy that was current is kept as an earlier version
+  --json         The earlier versions as a JSON array ([] when there are none)
 `,
 	"audit": `Usage: {exe} audit [path] [--verify] [--limit <n>] [--json]
 
@@ -309,6 +336,22 @@ Check stored objects for redundancy; --verify also downloads each object
 	"find": `Usage: {exe} find <pattern> [--content] [--json]
 
 Search file names; --content searches inside text files.
+`,
+	"index": `Usage: {exe} index [--rebuild] [--json]
+
+Show this machine's local file index (a cache of your file list), or rebuild
+it from the network with --rebuild. Commands that change files rebuild it on
+their own; this is only needed if it looks out of date.
+`,
+	"config": `Usage: {exe} config [--json]
+       {exe} config --trash-retention <days>   (0 = default 30 days; negative turns the trash off)
+       {exe} config --update-check on|off
+       {exe} config --billing-url <url>
+
+Show or change this machine's settings (~/.tessera/config.json).
+
+--version-retention and --default-jobs are accepted for compatibility; they
+only affect folder sync, which is not available yet.
 `,
 	"trash": `Usage: {exe} trash list|restore <path>|rm <path>|empty [--yes]
 
@@ -362,10 +405,10 @@ Get started:
   {exe} logout [--yes]          Remove local credentials (account and files stay)
 
 Files:
-  {exe} whoami                  Show current account identity
+  {exe} whoami [--json]         Show current account identity
   {exe} status                  Account readiness + total storage used
   {exe} list [prefix]           List files (path, size, date)
-  {exe} upload <path> [--as <remote-path>] [--quiet]
+  {exe} upload <path> [--as <remote-path>] [--quiet] [--json]
                              Upload a file or folder (--as: name it remotely)
   {exe} download <path> [--out <file>] [--offset <bytes>] [--length <bytes>] [--quiet]
                              Download a file (--out: local file name;
@@ -373,13 +416,14 @@ Files:
                              (live progress on stderr: phase, bytes, %, speed, ETA;
                              plain lines every 10s when stderr is not a terminal;
                              --quiet / TESSERA_QUIET=1 hides it)
-  {exe} delete <path>           Delete a file (see also: trash)
+  {exe} delete <path>           Move a file (or <folder>/) to the trash; --purge deletes
+                             permanently; needs --yes without a terminal
   {exe} mv <src> <dst>          Rename or move a stored file or folder
   {exe} optimize [prefix]       Repack under-filled 40 MiB blocks
 
 More:
   {exe} find <pattern>          Search your files (--content for text search)
-  {exe} versions <path>         List retained versions
+  {exe} versions <path>         List earlier versions of a file (kept on re-upload)
   {exe} trash list|restore|empty|rm <path>
   {exe} audit [path]            Verify durability of stored data
   {exe} rates [--json]          Live prices: storage, uploads, downloads (no login)
@@ -388,7 +432,8 @@ More:
   {exe} index --rebuild         Rebuild the local metadata index
   {exe} config [--json]         Show or change settings
   {exe} version                 Print this build's version
-  {exe} update [--check]        Install the latest release (SHA256SUMS-verified)
+  {exe} update [--check]        Install the latest release (SHA256SUMS-verified;
+                             --check only reports)
   {exe} uninstall               Remove this binary and (optionally) local state
   {exe} secrets done           Delete the plaintext signup-secrets file after you saved the phrase
   {exe} phrase show             Reveal the phrase, if you saved an encrypted copy at an

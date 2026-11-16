@@ -148,6 +148,57 @@ func (r *Remote) LivePaths(ctx context.Context) (map[string]PathInfo, error) {
 	return live, nil
 }
 
+// LiveObjects returns every live object with a logical path, one entry per
+// object (not per path). Uploading to a path that already holds a file keeps
+// the previous object, so one path can have several objects; LivePaths shows
+// only the newest of them, and this is how the earlier ones are found.
+func (r *Remote) LiveObjects(ctx context.Context) ([]PathInfo, error) {
+	byKey := make(map[string]PathInfo)
+	deleted := make(map[string]time.Time)
+	err := r.Events(ctx, func(ev siastorage.ObjectEvent) error {
+		key := ev.Key.String()
+		if ev.Deleted || ev.Object == nil {
+			if t, ok := deleted[key]; !ok || ev.UpdatedAt.After(t) {
+				deleted[key] = ev.UpdatedAt
+			}
+			return nil
+		}
+		info, ok := pathFromEvent(ev)
+		if !ok {
+			return nil
+		}
+		if prev, dup := byKey[key]; dup && prev.Updated.After(info.Updated) {
+			return nil
+		}
+		byKey[key] = info
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PathInfo, 0, len(byKey))
+	for key, info := range byKey {
+		if t, ok := deleted[key]; ok && !t.Before(info.Updated) {
+			continue
+		}
+		out = append(out, info)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Updated.Before(out[j].Updated) })
+	return out, nil
+}
+
+// earlierCopies returns the objects stored at entry's path other than the
+// current one (entry), oldest first.
+func earlierCopies(all []PathInfo, entry *IndexEntry) []PathInfo {
+	var out []PathInfo
+	for _, info := range all {
+		if info.Path == entry.Path && info.ObjectID != entry.ObjectID {
+			out = append(out, info)
+		}
+	}
+	return out
+}
+
 // Paths returns live objects whose path starts with prefix (slash-separated).
 // An empty prefix returns everything.
 //
@@ -441,7 +492,7 @@ func uploadDir(ctx context.Context, rt *Remote, idx *Index, root, prefix string)
 	// their structure instead of all collapsing onto one remote path.
 	clean, err := NormalizeRelPath(prefix)
 	switch {
-	case err != nil:
+	case prefix == "" || err != nil:
 		// No --as given: namespace it under tessera/ so a plain directory
 		// upload cannot collide with another folder of the same name.
 		prefix = path.Join("tessera", path.Base(filepath.ToSlash(root)))
@@ -484,20 +535,21 @@ func uploadDir(ctx context.Context, rt *Remote, idx *Index, root, prefix string)
 		return fmt.Errorf("walk %s: %w", root, err)
 	}
 	if skipped > 0 {
-		fmt.Printf("Skipped %d ignored file(s) (see .tesseraignore).\n", skipped)
+		fmt.Fprintf(uploadOut, "Skipped %d ignored file(s) (see .tesseraignore).\n", skipped)
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].RemotePath < candidates[j].RemotePath })
 
-	fmt.Printf("Uploading %d file(s) from %s → %s/\n", len(candidates), root, prefix)
+	fmt.Fprintf(uploadOut, "Uploading %d file(s) from %s → %s/\n", len(candidates), root, prefix)
 	uploaded, bytes, errs := uploadMany(ctx, rt, idx, candidates)
 	for _, e := range errs {
 		fmt.Fprintf(os.Stderr, "  ! %s: %v\n", e.RemotePath, e.Err)
+		uploadResults.Failed = append(uploadResults.Failed, uploadJSONFailure{Path: e.RemotePath, Error: e.Err.Error()})
 	}
 	if failed := len(candidates) - uploaded; failed > 0 {
-		fmt.Printf("Done: %d/%d uploaded, %d failed, %s\n", uploaded, len(candidates), failed, formatBytes(uint64(bytes)))
+		fmt.Fprintf(uploadOut, "Done: %d/%d uploaded, %d failed, %s\n", uploaded, len(candidates), failed, formatBytes(uint64(bytes)))
 		return folderUploadFailure(failed, len(candidates), errs)
 	}
-	fmt.Printf("Done: %d/%d uploaded, %s\n", uploaded, len(candidates), formatBytes(uint64(bytes)))
+	fmt.Fprintf(uploadOut, "Done: %d/%d uploaded, %s\n", uploaded, len(candidates), formatBytes(uint64(bytes)))
 	return nil
 }
 

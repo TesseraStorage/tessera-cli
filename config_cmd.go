@@ -21,6 +21,9 @@ const (
 	serviceUnitAlt = "tessera"
 )
 
+// maxDefaultJobs caps --default-jobs (parallel transfers for folder sync).
+const maxDefaultJobs = 64
+
 // cmdConfig shows or changes persistent settings.
 //
 //	tessera config
@@ -53,8 +56,8 @@ func cmdConfig(args []string) {
 	}
 	if v, ok := flagValue(args, "--default-jobs"); ok {
 		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 {
-			fatal("--default-jobs expects a positive integer")
+		if err != nil || n < 1 || n > maxDefaultJobs {
+			fatal("--default-jobs expects a whole number from 1 to %d (got %q)", maxDefaultJobs, v)
 		}
 		cfg.DefaultJobs = n
 		changed = true
@@ -126,17 +129,12 @@ func cmdConfig(args []string) {
 	fmt.Printf("Billing API:      %s\n", cfg.BillingAPIURL)
 	fmt.Printf("Billing sign-in:  %s\n", describeBillingSignIn(cfg))
 	fmt.Printf("App ID:           %s\n", cfg.AppID)
-	fmt.Printf("Sync folders:     %d\n", len(roots))
 	fmt.Printf("Trashed items:    %d\n", len(trash.Entries))
 	fmt.Println()
-	fmt.Printf("Version retention:  %s\n", describeVersions(cfg.VersionRetention))
 	fmt.Printf("Trash retention:    %s\n", describeTrash(cfg.TrashRetentionDays))
-	fmt.Printf("Default jobs:       %s\n", describeJobs(cfg.DefaultJobs))
 	fmt.Printf("Update check:       %s\n", describeUpdateCheck(cfg.UpdateCheckDisabled))
 	fmt.Println()
-	fmt.Println("Change with: tessera config --version-retention 5")
-	fmt.Println("             tessera config --trash-retention 14")
-	fmt.Println("             tessera config --default-jobs 4")
+	fmt.Println("Change with: tessera config --trash-retention 14")
 	fmt.Println("             tessera config --update-check off")
 	fmt.Println("             tessera config --billing-url https://tessera.storage/api/v1")
 	fmt.Println()
@@ -608,11 +606,27 @@ func serviceInstall(args []string) {
 	fmt.Println("Check it: tessera service status")
 }
 
+// watcherInstalled reports whether a watcher definition from an older
+// version is on this machine. known is false where that cannot be told from
+// a file (Windows Task Scheduler), and the caller then runs the removal
+// command as before.
+func watcherInstalled(plan servicePlan) (installed, known bool) {
+	if plan.Content == "" {
+		return false, false
+	}
+	_, err := os.Stat(plan.DefPath)
+	return err == nil, true
+}
+
 // serviceUninstall stops the watcher and removes the definition.
 func serviceUninstall(args []string) {
 	plan, err := planService("")
 	if err != nil {
 		fatal("%v", err)
+	}
+	if installed, known := watcherInstalled(plan); known && !installed {
+		fmt.Println("No background watcher is installed on this machine; nothing to remove.")
+		return
 	}
 	if !hasFlag(args, "--yes") && !hasFlag(args, "-y") {
 		fmt.Printf("Stop and remove the watcher service?\n")
@@ -643,6 +657,12 @@ func serviceControl(args []string, action string) {
 	plan, err := planService(mustWatcherExe())
 	if err != nil {
 		fatal("%v", err)
+	}
+	if action == "stop" {
+		if installed, known := watcherInstalled(plan); known && !installed {
+			fmt.Println("No background watcher is installed on this machine; nothing to stop.")
+			return
+		}
 	}
 	verb := action
 	if action == "restart" {

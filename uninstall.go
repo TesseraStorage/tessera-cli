@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// cmdUninstall removes tessera-cli itself: the background watcher service,
-// optionally all local state (login, synced-folder list, trash), and
+// cmdUninstall removes tessera-cli itself: a background watcher left by an
+// older version, optionally all local state (login, file index, trash), and
 // finally the binary. Split into separate confirmations because removing
 // the watcher is always safe to reverse (reinstall) but removing local
 // state is not -- losing the synced-folder list or a still-valid login
@@ -27,12 +27,24 @@ func cmdUninstall(args []string) {
 	dir, _ := configDir()
 	dryRun := hasFlag(args, "--dry-run")
 
+	plan, planErr := planService("")
+	watcher := false
+	if planErr == nil {
+		installed, known := watcherInstalled(plan)
+		watcher = installed || !known
+	}
+
 	fmt.Println("This will:")
-	fmt.Println("  1. Stop and remove the background watcher, if installed")
-	fmt.Printf("  2. Remove this binary: %s\n", exe)
+	step := 1
+	if watcher {
+		fmt.Printf("  %d. Stop and remove the background sync watcher installed by an older version\n", step)
+		step++
+	}
+	fmt.Printf("  %d. Remove this binary: %s\n", step, exe)
 	fmt.Println()
-	fmt.Printf("Your login, synced-folder list and trash in %s are kept\n", dir)
+	fmt.Printf("Your login, local file index and trash list in %s are kept\n", dir)
 	fmt.Println("unless you also confirm removing them below (or pass --purge).")
+	fmt.Println("Your stored files and your account are not affected either way.")
 	fmt.Println()
 
 	if dryRun {
@@ -54,7 +66,7 @@ func cmdUninstall(args []string) {
 
 	// 1. Watcher -- same removal this binary would do for `service uninstall`,
 	// just tolerant of "nothing was installed" so uninstall always succeeds.
-	if plan, err := planService(""); err == nil {
+	if watcher {
 		fmt.Println("Stopping the watcher:")
 		if err := serviceRun(plan.RemoveCmd[0], plan.RemoveCmd[1:]...); err != nil {
 			fmt.Printf("  (%v)\n", err)
@@ -75,7 +87,7 @@ func cmdUninstall(args []string) {
 	purge := hasFlag(args, "--purge")
 	if !purge && dir != "" {
 		if ok, asked := promptYesNo(
-			fmt.Sprintf("Also remove %s (login, synced-folder list, trash, all local state)?", dir),
+			fmt.Sprintf("Also remove %s (login, local file index, trash list, all local state)?", dir),
 			false,
 		); asked && ok {
 			purge = true
@@ -105,16 +117,19 @@ func cmdUninstall(args []string) {
 
 func uninstallUsage() {
 	exe := filepath.Base(os.Args[0])
-	fmt.Printf(`Uninstall — remove the watcher, this binary, and (optionally) local state.
+	fmt.Printf(`Uninstall — remove this binary and (optionally) local state.
 
 Usage:
   %s uninstall            Ask before removing anything
   %s uninstall --yes      Skip the main confirmation (still asks about local state)
-  %s uninstall --purge    Also remove %s without asking (login, sync list, trash)
+  %s uninstall --purge    Also remove %s without asking (login, file index, trash list)
   %s uninstall --dry-run  Show what would happen; change nothing
 
-Local state (config, synced-folder list, trash) is kept by default so
-reinstalling can pick up right where you left off.
+Local state (login, local file index, trash list) is kept by default so
+reinstalling can pick up right where you left off. A background sync watcher
+installed by an older version is stopped and removed too. Your stored files
+and your account are not affected; to delete them use
+'tessera account purge-data' or 'tessera account delete'.
 `, exe, exe, exe, strings.TrimSuffix(mustConfigDirForUsage(), "\n"), exe)
 }
 

@@ -193,6 +193,11 @@ type signupOutput struct {
 // --secrets-file is given.
 func signupOutputMode(args []string, asJSON bool) signupOutput {
 	if p, ok := flagValue(args, "--secrets-file"); ok && p != "" {
+		// Stored and printed as an absolute path, so 'tessera secrets done'
+		// and the reminder find the same file from any folder.
+		if abs, err := filepath.Abs(p); err == nil {
+			p = abs
+		}
 		return signupOutput{JSON: asJSON, SecretsFile: p, Explicit: true}
 	}
 	if asJSON || hasFlag(args, "--show-secrets") || stdoutIsTerminal() {
@@ -340,7 +345,7 @@ func printSignupResultTo(result signupResult, mode signupOutput) {
 	}
 	if v != nil {
 		fmt.Println()
-		fmt.Printf("Balance: $%s\n", v.BalanceUSD)
+		fmt.Printf("Balance: %s\n", signedMoney(v.BalanceUSD))
 		printTrialBlock(v, "", 8)
 	}
 	fmt.Println()

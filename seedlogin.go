@@ -173,6 +173,9 @@ func seedLogin(cfg *Config, phrase string) error {
 	if n := len(strings.Fields(phrase)); n != 12 {
 		return fmt.Errorf("a recovery phrase has 12 words (got %d); quote it: tessera login \"word1 word2 ...\"", n)
 	}
+	if err := checkPhraseFormat(phrase); err != nil {
+		return err
+	}
 	api, ok := newBillingClient(cfg).(recoveryAPI)
 	if !ok {
 		return errors.New("billing client does not support seed login")
@@ -393,6 +396,9 @@ prompt (agents, scripts).`)
 	if err != nil {
 		fatal("%s", describeBillingError(err))
 	}
+	// Every object is gone, trashed ones included, so the local trash list
+	// and file index would only point at deleted data.
+	clearLocalFileState()
 	if hasFlag(args, "--json") {
 		emitJSON(res)
 		return
@@ -400,6 +406,7 @@ prompt (agents, scripts).`)
 	objects, _ := res["objects_removed"].(float64)
 	slabsRemoved, _ := res["slabs_removed"].(float64)
 	fmt.Printf("Purged %d object(s), unpinned %d slab(s).\n", int64(objects), int64(slabsRemoved))
+	fmt.Println("The trash and this machine's file index were cleared too.")
 	if _, sentence, ok := accountStanding(res); ok {
 		fmt.Println(sentence)
 	}
@@ -434,7 +441,7 @@ to skip the prompt. Local credentials (~/.tessera) are removed afterwards.`)
 	}
 	fmt.Fprintf(os.Stderr, "This permanently deletes account %s and ALL of its files.\n", id)
 	if bal := accountString(acct, "balance_usd"); bal != "" {
-		fmt.Fprintf(os.Stderr, "Your remaining balance ($%s) is forfeited and will NOT be refunded.\n", bal)
+		fmt.Fprintf(os.Stderr, "Your remaining balance (%s) is forfeited and will NOT be refunded.\n", signedMoney(bal))
 	}
 	if !hasFlag(args, "--yes") {
 		if !stdinIsTerminal() {
@@ -455,14 +462,51 @@ to skip the prompt. Local credentials (~/.tessera) are removed afterwards.`)
 	if err != nil {
 		fatal("%s", describeBillingError(err))
 	}
-	_ = deleteConfigFiles()
+	dir, _ := configDir()
+	removeAccountLocalState()
 	if hasFlag(args, "--json") {
 		emitJSON(res)
-		return
+	} else {
+		fmt.Printf("Account %s deleted.\n", id)
+		if v := accountString(res, "balance_forfeited_usd"); v != "" {
+			fmt.Printf("  balance forfeited: %s (no refunds)\n", signedMoney(v))
+		}
+		fmt.Println("  Stored files are being removed from the network.")
+		fmt.Printf("  This machine's login, file index, trash list and update-check cache were removed from %s.\n", dir)
 	}
-	fmt.Printf("Account %s deleted.\n", id)
-	if v := accountString(res, "balance_forfeited_usd"); v != "" {
-		fmt.Printf("  balance forfeited: $%s (no refunds)\n", v)
+	// The update notice runs now, and the local state is removed once more
+	// afterwards, so nothing about the deleted account is left behind.
+	flushNotices()
+	removeAccountLocalState()
+	os.Exit(0)
+}
+
+// removeAccountLocalState deletes everything in ~/.tessera that belongs to
+// the account after 'tessera account delete': the login (config.json), the
+// readiness cache, the local file index (index.json and its lock), the
+// trash list (trash.json) and the update-check cache. A signup-secrets file
+// is left alone: it is the user's own copy and 'tessera secrets done'
+// removes it. The directory itself is removed when it is then empty.
+func removeAccountLocalState() {
+	clearLocalFileState()
+	_ = deleteConfigFiles()
+	if p, err := updateCachePath(); err == nil {
+		_ = os.Remove(p)
 	}
-	fmt.Println("  stored files are being removed from the network; local credentials were removed.")
+	if dir, err := configDir(); err == nil {
+		_ = os.Remove(dir) // only removes it if empty
+	}
+}
+
+// clearLocalFileState removes the local file index (and its lock) and the
+// trash list. Both are caches of the account's remote objects; the index is
+// rebuilt from the network by the next command that needs it.
+func clearLocalFileState() {
+	if p, err := indexPath(); err == nil {
+		_ = os.Remove(p)
+		_ = os.Remove(p + ".lock")
+	}
+	if p, err := trashIndexPath(); err == nil {
+		_ = os.Remove(p)
+	}
 }

@@ -14,10 +14,10 @@ one static binary.
 ```bash
 curl -fsSL https://tessera.storage/install.sh | sh
 # same script: curl -fsSL https://raw.githubusercontent.com/TesseraStorage/tessera-cli/main/install.sh | sh
-# a specific version: ... | sh -s v1.14.2
+# a specific version: ... | sh -s v1.20.1
 ```
 
-Current release: **v1.14.2**. `tessera version` reports the git tag the release
+Current release: **v1.20.1**. `tessera version` reports the git tag the release
 workflow stamps into the binary. The same release also publishes `install.sh`
 and `install.ps1` (`https://github.com/TesseraStorage/tessera-cli/releases/latest/download/install.sh`).
 
@@ -95,9 +95,10 @@ build/
 | `login --billing-logout` | End the billing session (an API key, if any, is untouched) |
 | `signup [--name <n>] [--contact-email <e>] [--json] [--force] [--secrets-file <path>] [--show-secrets]` | Create an account and log this machine in; the recovery phrase and API key are shown once — keep both. When stdout is not a terminal they go to a `0600` file instead (see below) |
 | `logout [--yes]` | Remove local credentials from `~/.tessera/` (account and files stay) |
-| `account delete [--yes]` | Permanently delete the account: keys revoked, files deleted, billing stopped. **No refund** of any balance. Type the account ID to confirm; `--yes` for scripts |
-| `update [--check] [--version vX.Y.Z]` | Install the latest release after verifying it against `SHA256SUMS` |
-| `whoami` | Show current account identity: account ID, App ID and the *public* key (the private `app_key` is never printed) |
+| `account delete [--yes]` | Permanently delete the account: keys revoked, files deleted, billing stopped. **No refund** of any balance. Type the account ID to confirm; `--yes` for scripts. Afterwards this machine's login, file index, trash list and update-check cache are removed from `~/.tessera` |
+| `account purge-data [--yes] [--json]` | Permanently delete **all files** now (every object deleted, every slab unpinned; cannot be undone) and keep the account, its API key and its balance. Works at any balance, including $0. Asks `Type y to confirm`; without a terminal `--yes` is required. Also clears the local trash list and file index |
+| `update [--check [--json]] [--version vX.Y.Z]` | Install the latest release after verifying it against `SHA256SUMS`. `--check` only reports; `--check --json` prints `current`, `latest` and `up_to_date` (plus `update_available` when newer) |
+| `whoami [--json]` | Show current account identity: indexer, App ID and the *public* key (the private `app_key` is never printed). `--json`: `indexer`, `app_id`, `public_key`, `phrase_saved_locally` |
 | `account [--json]` | Billing account dashboard (status, balance, usage, active credential). When packing would free stored blocks, a hint points at `tessera optimize` |
 | `dashboard` | Print a one-time browser login link (10 minutes) |
 | `dashboard --logout-all` | Sign out every browser session for this account |
@@ -105,23 +106,25 @@ build/
 | `topup --minimums [--asset <code>] [--json]` | Show the $5 to $10,000 range and a coin's processor minimum for a deposit address |
 | `topup --coins [--json]` | List the coins accepted for top-ups |
 | `status` | Account funded (yes/no) + file count + total storage. JSON key `ready` is unchanged. Transfers still run their own host-funding check |
-| `list [prefix]` | Files with real paths, sizes and dates (dates in your local time zone, labelled) |
-| `upload <path> [--as <remote>] [--quiet]` | Upload a file **or a whole folder**. During technical validation a file over 40 MiB is refused before upload; with a balance, any size |
-| `download <path> [--out <file>] [--offset <bytes>] [--length <bytes>]` | Download + SHA-256 verification; with `--offset`/`--length` only that byte range (only the slabs covering it are fetched). Interrupted downloads restart from the beginning; resume by hand with `--offset` = bytes already on disk |
-| `delete <path> [--purge]` | Move to trash (or purge permanently) |
+| `list [prefix]` | Files with real paths, sizes and dates (dates in your local time zone, labelled). Trashed files and earlier versions are not listed (see `trash list` and `versions`); `--json` gives `"files": []` when there are none |
+| `upload <path> [--as <remote>] [--quiet] [--json]` | Upload a file **or a whole folder** (a folder without `--as` goes under `tessera/<folder name>/`). Unknown options, an invalid `--as` (absolute, `..`, or inside `.tessera-trash`/`.tessera-versions`) and unreadable files are refused before anything else, including the balance check. During technical validation a file over 40 MiB is refused before upload; with a balance, any size. Uploading to a path that already holds a file keeps the previous copy as an earlier version (see `versions`). `--json`: `ok`, `uploaded`, `failed`, `bytes`, `files` (path, size, sha256, object_id), `errors` |
+| `download <path> [--out <file>] [--offset <bytes>] [--length <bytes>]` | Download + SHA-256 verification; with `--offset`/`--length` only that byte range (only the slabs covering it are fetched). `--out` is checked before anything is downloaded (a folder, or a location that cannot be written, is refused; missing folders are created). Interrupted downloads restart from the beginning; resume by hand with `--offset` = bytes already on disk. Ctrl-C removes the partial `.tessera-tmp-*` file; one left by a killed download is removed by the next download into that folder once it is 15 minutes old |
+| `delete <path>\|<folder>/ [--purge] [--yes]` | Move a file to the trash, or every file under a folder (`delete photos/`). `--purge` deletes permanently, with the file's earlier versions. Asks for confirmation in a terminal; without a terminal (scripts, agents) `--yes` is required, otherwise nothing changes and the exit status is 1. When a file has an earlier version, trashing it makes the newest earlier version the current file (the command says so) |
 | `mv <src> <dst> [--force] [--json]` | Rename or move a stored file or folder without transferring data. A destination ending in `/` (or an existing remote folder) keeps the file name. A source that names a folder moves every file under it. The old path is marked deleted. Re-running an interrupted folder move sends the remaining files to the same destination folder. `--force` replaces an existing destination (moved to the trash). |
 | `optimize [prefix] [--dry-run] [--yes] [--json]` | Repack files in under-filled 40 MiB blocks into as few blocks as possible. Shows the plan (files, stored size now and after, one-off download+upload cost from live prices, monthly savings, payback, estimated time) and asks before running. `--dry-run` prints the plan only; `--yes` skips the prompt. |
 | `find <pattern> [--content]` | Search paths, or file contents |
-| `versions <path> [--restore <n>]` | List or restore retained versions (1 kept by default) |
-| `trash list\|restore\|empty\|rm` | Recover soft-deleted files |
+| `versions <path> [--restore <n>] [--json]` | List the earlier versions of a file (uploading to a path that already holds a file keeps the previous copy), or make one current again with `--restore <n>` (the copy that was current is kept as an earlier version). Earlier versions stay stored and count toward storage until `delete <path> --purge`. `--json` is an array, `[]` when there are none |
+| `trash list\|restore\|empty\|rm` | Recover soft-deleted files. Restoring an item whose trashed copy is no longer stored (for example after `account purge-data`) says so and removes it from the list |
 | `audit [path] [--verify] [--limit <n>]` | Check the redundancy each object was stored with; `--verify` also downloads each object (without saving it) and compares its SHA-256 with the hash stored at upload |
-| `usage [--by-folder] [--cost] [--json]` | Storage usage; with billing credentials a billing section (logical, stored and network size, downloads, balance, days left) |
-| `index --rebuild` | Rebuild the local metadata index |
-| `config` | Show or change settings |
+| `usage [--by-folder] [--cost] [--json]` | Storage usage; with billing credentials a billing section (logical, stored and network size, downloads, balance, days left). Trashed files are counted under `(trash)` |
+| `index [--rebuild] [--json]` | Show or rebuild the local file index (a cache of your file list) |
+| `config [--json]` | Show or change settings (`--trash-retention <days>`, `--update-check on\|off`, `--billing-url <url>`). `--version-retention` and `--default-jobs` (1 to 64) are accepted but only affect folder sync, which is not available yet |
 | `help` | Show help |
 
 Add `--json` to `list`, `status`, `find`, `usage`, `config`, `index`,
-`audit`, `topup`, `account`, `mv`, and `optimize` for scripting. `topup --json` works on the
+`audit`, `topup`, `account`, `mv`, `optimize`, `upload`, `versions`, `whoami`
+and `update --check` for scripting. JSON key names never change between
+releases; empty lists are `[]`, not `null`. `topup --json` works on the
 default address, invoice, `--coins`, and `--minimums` paths. `signup --json` prints the account id and its one-time API
 key and recovery phrase (or, with `--secrets-file <path>`, only the file path).
 
@@ -232,9 +235,11 @@ log, it does **not** print them: it writes them to
 plus an `rm` command for after you have stored them. `--secrets-file <path>`
 picks the file (also with `--json`, which then carries `secrets_file` instead
 of the secrets); `--show-secrets` prints them anyway. If the file cannot be
-written the secrets are printed, so the phrase is never lost. Signup also
-fetches the host list once and waits until enough hosts are funded for the
-technical-validation upload.
+written the secrets are printed, so the phrase is never lost. A
+`--secrets-file` path is recorded as an absolute path, so `tessera secrets done`
+and the reminder find the same file from any folder. Signup also fetches the
+host list once, so funding for the technical-validation hosts starts; it does
+not probe hosts or wait.
 
 **Seed login restores the same account.** On a new machine (or after
 `rm -rf ~/.tessera`), `tessera login "<12 words>"` proves the phrase to Tessera,
@@ -364,9 +369,13 @@ in `account --json` to avoid duplication. `trial_credit_usd` is deprecated
 ## Safety
 
 - **Nothing is silently destroyed.** Deletes go to a trash namespace for 30 days
-  by default (`tessera trash restore <path>`).
-- **Downloads are atomic.** Data lands in a temp file and is renamed into place,
-  so an interrupted download never leaves a truncated file where a good one was.
+  by default (`tessera trash restore <path>`), and a delete without a terminal
+  needs `--yes`. Re-uploading to an existing path keeps the previous copy
+  (`tessera versions <path>`).
+- **Downloads are atomic.** Data lands in a temp file (`.tessera-tmp-*`) and is
+  renamed into place, so an interrupted download never leaves a truncated file
+  where a good one was. Ctrl-C removes the temp file; one left by a killed
+  download is removed by the next download into the same folder.
 - **Downloads are verified.** Every full download is checked
   against the SHA-256 recorded at upload before it replaces an existing file.
   On a mismatch the command fails and the existing file is kept. Byte-range
@@ -404,9 +413,9 @@ Set `TESSERA_HOME` to use a different directory (useful for several accounts).
   "app_key": "...",
   "phrase_encrypted": "...",       // optional — AES-GCM with Argon2id key
   "phrase_salt": "...",
-  "version_retention": 0,          // 0 = keep 1 previous copy (default), negative = off
+  "version_retention": 0,          // folder sync only (not available yet)
   "trash_retention_days": 0,       // 0 = 30 day default, negative = off
-  "default_jobs": 0                // parallel transfers, 0 = automatic
+  "default_jobs": 0                // folder sync only (not available yet), 1 to 64
 }
 ```
 
@@ -415,9 +424,8 @@ Set `TESSERA_HOME` to use a different directory (useful for several accounts).
 one-time `signup` print), and the file must never be committed or shared.
 
 ```bash
-tessera config --version-retention 5   # keep 5 previous versions per file
 tessera config --trash-retention 14
-tessera config --default-jobs 4
+tessera config --update-check off
 tessera config --billing-url https://tessera.storage/api/v1
 ```
 
