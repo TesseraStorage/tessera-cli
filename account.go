@@ -23,6 +23,10 @@ func cmdAccount(args []string) {
 		cmdAccountDelete(args[1:])
 		return
 	}
+	if pos := positional(args); len(pos) > 0 && pos[0] == "purge-data" {
+		cmdAccountPurgeData(args[1:])
+		return
+	}
 	acct, credential, err := fetchAccountSummary()
 	if err != nil {
 		fatal("%s", describeBillingError(err))

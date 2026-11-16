@@ -293,6 +293,7 @@ Download a file from a share link.
 `,
 	"account": `Usage: {exe} account [--json]
        {exe} account delete [--yes] [--json]   (see 'account delete --help')
+       {exe} account purge-data [--yes] [--json]   (see 'account purge-data --help')
 
 Show the account ID, balance, readiness and usage.
 `,
@@ -439,6 +440,7 @@ Billing & account:
   {exe} account [--json]        Show account, balance, readiness and usage
   {exe} account delete [--yes]  Permanently delete your account and all files
                              (remaining balance is forfeited, no refunds)
+  {exe} account purge-data [--yes]  Permanently delete all files, keep the account
   {exe} dashboard               Print a one-time browser login link (10 minutes)
   {exe} dashboard --logout-all  Sign out every browser session for this account
   {exe} topup <amount> [--asset <code>] [--invoice]

@@ -56,8 +56,16 @@ type accountDeleteAPI interface {
 	DeleteAccount(confirmAccountID string) (map[string]any, error)
 }
 
+// purgeDataAPI is the Sonnet packet "client-actions-audit-and-purge-data"
+// (2026-11-16) user-initiated purge-data command: deletes every object and
+// unpins every slab but keeps the account, connect key, and balance.
+type purgeDataAPI interface {
+	PurgeData() (map[string]any, error)
+}
+
 var _ recoveryAPI = (*httpBilling)(nil)
 var _ accountDeleteAPI = (*httpBilling)(nil)
+var _ purgeDataAPI = (*httpBilling)(nil)
 
 func (b *httpBilling) RegisterRecoveryKey(publicKey string, ts int64, signature string) error {
 	req, err := b.request(http.MethodPost, "/credentials/recovery-key", map[string]any{
@@ -96,6 +104,22 @@ func (b *httpBilling) RecoverWithKey(publicKey string, ts int64, signature strin
 
 func (b *httpBilling) DeleteAccount(confirmAccountID string) (map[string]any, error) {
 	req, err := b.request(http.MethodPost, "/account/delete", map[string]any{"confirm_account_id": confirmAccountID})
+	if err != nil {
+		return nil, err
+	}
+	_, data, err := b.do(req, authAuto, "")
+	if err != nil {
+		return nil, err
+	}
+	return decodeBillingObject(data)
+}
+
+// PurgeData calls moneyd's user-initiated purge-data endpoint. Works at any
+// balance, including ≤ $0 and grace; leaves the account, connect key, and
+// balance untouched (Sonnet packet "client-actions-audit-and-purge-data",
+// 2026-11-16).
+func (b *httpBilling) PurgeData() (map[string]any, error) {
+	req, err := b.request(http.MethodPost, "/account/purge-data", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -331,6 +355,56 @@ func clearReadinessCache() {
 // ---------------------------------------------------------------- account delete
 
 // cmdAccountDelete: tessera account delete [--yes] [--json]
+func cmdAccountPurgeData(args []string) {
+	if hasFlag(args, "--help") || hasFlag(args, "-h") {
+		fmt.Println(`Usage: tessera account purge-data [--yes] [--json]
+
+Permanently deletes ALL of your files right now:
+  - every object is deleted and every slab is unpinned (cannot be undone),
+  - works at any balance, including $0 or in the grace period.
+Your account, connect key, and balance are NOT affected -- this is NOT the
+same as "tessera account delete". Use --yes to skip the confirmation
+prompt (agents, scripts).`)
+		return
+	}
+	cfg, err := loadConfig()
+	if err != nil || credentialLabel(cfg) == "" {
+		fatal("%v", errNoBillingCredentials)
+	}
+	client := newBillingClient(cfg)
+	if !hasFlag(args, "--yes") {
+		if !stdinIsTerminal() {
+			fatal("refusing to purge all data without confirmation; pass --yes (non-interactive)")
+		}
+		fmt.Fprintln(os.Stderr, "This permanently deletes ALL of your files. This cannot be undone.")
+		fmt.Fprintln(os.Stderr, "Your account, connect key, and balance are kept.")
+		fmt.Fprint(os.Stderr, "Type y to confirm: ")
+		var typed string
+		fmt.Scanln(&typed)
+		if strings.TrimSpace(typed) != "y" {
+			fatal("confirmation did not match; nothing was purged")
+		}
+	}
+	pd, ok := client.(purgeDataAPI)
+	if !ok {
+		fatal("billing client does not support purge-data")
+	}
+	res, err := pd.PurgeData()
+	if err != nil {
+		fatal("%s", describeBillingError(err))
+	}
+	if hasFlag(args, "--json") {
+		emitJSON(res)
+		return
+	}
+	objects, _ := res["objects_removed"].(float64)
+	slabsRemoved, _ := res["slabs_removed"].(float64)
+	fmt.Printf("Purged %d object(s), unpinned %d slab(s).\n", int64(objects), int64(slabsRemoved))
+	if _, sentence, ok := accountStanding(res); ok {
+		fmt.Println(sentence)
+	}
+}
+
 func cmdAccountDelete(args []string) {
 	if hasFlag(args, "--help") || hasFlag(args, "-h") {
 		fmt.Println(`Usage: tessera account delete [--yes] [--json]
