@@ -30,6 +30,11 @@ $defaultBase = if ($Version -eq 'latest') { "https://github.com/$repo/releases/l
 $base = if ($env:TESSERA_RELEASE_BASE_URL) { $env:TESSERA_RELEASE_BASE_URL } else { $defaultBase }
 $dest = if ($env:TESSERA_INSTALL_DIR) { $env:TESSERA_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Tessera\bin' }
 $asset = 'tessera-windows-amd64.exe'
+# Windows on Arm gets the native arm64 build when the release has one
+# (v1.20.1 on); older releases only have amd64, which Windows on Arm runs
+# under emulation, so it falls back to that.
+$cpu = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+$arm64 = ($cpu -eq 'ARM64')
 
 function Die($m) { Write-Error "install: $m"; exit 1 }
 
@@ -43,6 +48,16 @@ if ($env:TESSERA_RELEASE_BASE_URL) {
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("tessera-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
+    if ($arm64) {
+        # Pick the asset from this release's SHA256SUMS before downloading it.
+        Invoke-WebRequest -UseBasicParsing "$base/SHA256SUMS" -OutFile (Join-Path $tmp 'SHA256SUMS')
+        $armAsset = 'tessera-windows-arm64.exe'
+        $hasArm = Get-Content (Join-Path $tmp 'SHA256SUMS') |
+            Where-Object { $_ -match "\s\*?$([regex]::Escape($armAsset))$" } |
+            Select-Object -First 1
+        if ($hasArm) { $asset = $armAsset } else { Write-Host "      no Windows arm64 build in this release; using $asset (runs under emulation)" }
+    }
+
     Write-Host "[1/4] downloading $asset ($Version)"
     Invoke-WebRequest -UseBasicParsing "$base/$asset" -OutFile (Join-Path $tmp $asset)
 
