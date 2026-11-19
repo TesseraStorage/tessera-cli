@@ -65,9 +65,6 @@ case "$arch" in
   arm64|aarch64) arch_part=arm64 ;;
   *) die "unsupported architecture: $arch" ;;
 esac
-if [ "$os_part" = linux ] && [ "$arch_part" = arm64 ]; then
-  die "no Linux arm64 build is published"
-fi
 asset="tessera-${os_part}-${arch_part}"
 
 command -v curl >/dev/null 2>&1 || die "curl is required"
@@ -83,7 +80,12 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
 echo "[1/4] downloading $asset ($VERSION)"
-curl -fsSL "$BASE/$asset" -o "$tmp/$asset" || die "download failed: $BASE/$asset"
+if ! curl -fsSL "$BASE/$asset" -o "$tmp/$asset"; then
+  if [ "$os_part" = linux ] && [ "$arch_part" = arm64 ]; then
+    die "download failed: $BASE/$asset (Linux arm64 builds are published from v1.20.1 on)"
+  fi
+  die "download failed: $BASE/$asset"
+fi
 
 echo "[2/4] downloading SHA256SUMS"
 curl -fsSL "$BASE/SHA256SUMS" -o "$tmp/SHA256SUMS" || die "download failed: $BASE/SHA256SUMS"
