@@ -52,7 +52,7 @@ func TestZeroBalanceTechnicalValidation(t *testing.T) {
 
 func TestTechnicalValidationOversizeMessage(t *testing.T) {
 	got := technicalValidationOversizeMessage(50<<20, "")
-	want := "Technical validation allows one upload of up to 40 MiB. This file is 50.00 MiB. Top up to upload larger files: tessera topup 5"
+	want := "Technical validation allows one upload of up to 40 MiB. This file is 50.00 MiB. Top up to upload larger files: tessera topup 1 (402 / x402) or tessera topup 5 (other rails)"
 	if got != want {
 		t.Fatalf("message =\n%q\nwant\n%q", got, want)
 	}

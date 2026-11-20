@@ -20,7 +20,7 @@ func TestAsPaymentRequiredWrappedHTTPError(t *testing.T) {
 		t.Fatalf("got %+v %v", pe, ok)
 	}
 	s := explainTransferError(nil, err, true).Error()
-	for _, want := range []string{"Insufficient balance — top up to continue", "tessera topup 5", "--asset xmr", "tessera.storage/account"} {
+	for _, want := range []string{"Insufficient balance — top up to continue", "tessera topup 1", "tessera topup 5", "--asset xmr", "tessera.storage/account"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("missing %q in %q", want, s)
 		}
@@ -66,7 +66,7 @@ func TestShortageAfterRecorded402(t *testing.T) {
 		t.Fatal("shortage after a recorded 402 must map to it")
 	}
 	msg := pe.Error()
-	for _, want := range []string{"Insufficient balance — top up to continue", "Technical validation (one upload of up to 40 MiB and one download) has been used", "tessera topup 5", "tessera.storage/account"} {
+	for _, want := range []string{"Insufficient balance — top up to continue", "Technical validation (one upload of up to 40 MiB and one download) has been used", "tessera topup 1", "tessera topup 5", "tessera.storage/account"} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("missing %q in %q", want, msg)
 		}
@@ -80,7 +80,7 @@ func TestBalanceRefusalMatchesServerWording(t *testing.T) {
 	seenPaymentRequired.Store(nil)
 	defer seenPaymentRequired.Store(nil)
 	s := balanceRefusal(3, 10).Error()
-	for _, want := range []string{"Insufficient balance — top up to continue", "only 3 of the 10 hosts", "tessera topup 5", "--asset xmr", "tessera.storage/account"} {
+	for _, want := range []string{"Insufficient balance — top up to continue", "only 3 of the 10 hosts", "tessera topup 1", "tessera topup 5", "--asset xmr", "tessera.storage/account"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("missing %q in %q", want, s)
 		}

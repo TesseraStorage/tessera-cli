@@ -25,7 +25,7 @@ import (
 const trialCreditUSDDefault = "0"
 
 // topUpHint is the plain top-up instruction shown when an upload is blocked.
-const topUpHint = "tessera topup 5"
+const topUpHint = "tessera topup 1 (402 / x402) or tessera topup 5 (other rails)"
 
 // trialView is the consistent trial/balance state. It is also emitted as the
 // "trial" object of account/status/usage --json.
@@ -179,7 +179,7 @@ func creditIsZero(s string) bool {
 // technicalValidationSummary is the locked wording for the zero-balance
 // allowance (CLI wording pass, 2026-11-06). No timer, no "free trial".
 const technicalValidationSummary = "Technical validation: one upload of up to 40 MiB and one download. " +
-	"Balance stays $0.00. Tessera covers the hosts. After that, top up to continue: tessera topup 5"
+	"Balance stays $0.00. Tessera covers the hosts. After that, top up to continue: " + topUpHint
 
 // zeroBalanceTechnicalValidation reports whether acct is the zero-balance
 // allowance: one upload of up to one 40 MiB slab and one download, balance
@@ -229,7 +229,7 @@ func technicalValidationOversizeMessage(size int64, name string) string {
 	if name != "" {
 		shown += " (" + name + ")"
 	}
-	return fmt.Sprintf("Technical validation allows one upload of up to 40 MiB. This file is %s. Top up to upload larger files: tessera topup 5", shown)
+	return fmt.Sprintf("Technical validation allows one upload of up to 40 MiB. This file is %s. Top up to upload larger files: %s", shown, topUpHint)
 }
 
 // rejectTechnicalValidationOversize refuses a file larger than one 40 MiB slab
@@ -272,10 +272,10 @@ func blockTrialLines(v *trialView, serverMsg string) (summary, uploads string) {
 		uploads = "Uploads: allowed now, no top-up needed"
 	case v.State == "free_trial_active":
 		summary = "Technical validation: upload used; your one download is still available. " +
-			"Balance stays $0.00. Tessera covers the hosts. After that, top up to continue: tessera topup 5"
+			"Balance stays $0.00. Tessera covers the hosts. After that, top up to continue: " + topUpHint
 		uploads = "Uploads: blocked until you top up: " + topUpHint
 	default:
-		summary = "Technical validation used (one upload and one download). Top up to continue: tessera topup 5"
+		summary = "Technical validation used (one upload and one download). Top up to continue: " + topUpHint
 		if m := publicServerMessage(serverMsg); m != "" {
 			summary = m
 		}
@@ -317,11 +317,11 @@ func shortTrialBanner(v *trialView) string {
 	}
 	switch v.State {
 	case "free_trial":
-		return "Technical validation available (1 upload + 1 download). Top up any time: tessera topup 5"
+		return "Technical validation available (1 upload + 1 download). Top up any time: " + topUpHint
 	case "free_trial_active":
-		return "Technical validation: upload used; 1 download left. Top up to upload again: tessera topup 5"
+		return "Technical validation: upload used; 1 download left. Top up to upload again: " + topUpHint
 	default:
-		return "Technical validation used — top up to continue: tessera topup 5"
+		return "Technical validation used — top up to continue: " + topUpHint
 	}
 }
 
