@@ -36,7 +36,7 @@ func TestTrialViewStates(t *testing.T) {
 	if v.Summary != technicalValidationSummary {
 		t.Fatalf("Summary must be the locked technical-validation wording: %q", v.Summary)
 	}
-	if v.ShortBanner != "Technical validation available (1 upload + 1 download). Top up any time: tessera topup 5" {
+	if v.ShortBanner != "Technical validation available (1 upload + 1 download). Top up any time: tessera topup 1 (402 / x402) or tessera topup 5 (other rails)" {
 		t.Fatalf("free_trial short banner: %+v", v)
 	}
 	if strings.Contains(v.Summary+v.UploadsLine, "credit") {
@@ -47,7 +47,7 @@ func TestTrialViewStates(t *testing.T) {
 		!strings.HasPrefix(v.UploadsLine, "Uploads: blocked until you top up") {
 		t.Fatalf("active view: %+v", v)
 	}
-	if v.ShortBanner != "Technical validation: upload used; 1 download left. Top up to upload again: tessera topup 5" {
+	if v.ShortBanner != "Technical validation: upload used; 1 download left. Top up to upload again: tessera topup 1 (402 / x402) or tessera topup 5 (other rails)" {
 		t.Fatalf("active short banner: %q", v.ShortBanner)
 	}
 	v = buildTrialView(trialAcct("top_up_required", "0", false, nil))
@@ -58,8 +58,8 @@ func TestTrialViewStates(t *testing.T) {
 	a := trialAcct("top_up_required", "0", false, nil)
 	a["readiness"].(map[string]any)["message"] = "Free trial used or ended. Files are deleted 72 hours after signup."
 	v = buildTrialView(a)
-	if v.Summary != "Technical validation used (one upload and one download). Top up to continue: tessera topup 5" ||
-		v.ShortBanner != "Technical validation used — top up to continue: tessera topup 5" {
+	if v.Summary != "Technical validation used (one upload and one download). Top up to continue: tessera topup 1 (402 / x402) or tessera topup 5 (other rails)" ||
+		v.ShortBanner != "Technical validation used — top up to continue: tessera topup 1 (402 / x402) or tessera topup 5 (other rails)" {
 		t.Fatalf("retired server wording leaked: %+v", v)
 	}
 }

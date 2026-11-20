@@ -33,6 +33,7 @@ func (e *paymentRequiredError) Error() string {
 	if d := publicPaymentDetail(e.Detail); d != "" {
 		b.WriteString("\n  " + d)
 	}
+	b.WriteString("\n  402 / x402 payment (min $1): tessera topup 1")
 	b.WriteString("\n  Deposit address (USDC on Base by default): tessera topup 5")
 	b.WriteString("\n  Pay in XMR, BTC, ETH, USDT or another coin:  tessera topup 10 --asset xmr")
 	b.WriteString("\n  Or top up at https://tessera.storage/account")
