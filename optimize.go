@@ -165,9 +165,9 @@ func cmdOptimize(args []string) {
 	}
 
 	if n, err := cleanupOptimizeLeftovers(ctx, rt, infos); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not unpin leftover copies from a previous run: %v\n", err)
+		fmt.Fprintf(os.Stderr, "warning: could not remove duplicate copies (earlier versions identical to the current file): %v\n", err)
 	} else if n > 0 && !asJSON {
-		fmt.Printf("Unpinned %d leftover cop%s from a previous run.\n", n, pluralY(n))
+		fmt.Printf("Removed %d duplicate cop%s: earlier version(s) byte-identical to the current file (left by a re-upload or an interrupted optimize). Earlier versions with different content are kept.\n", n, pluralY(n))
 	}
 
 	unpinned, err := applyOptimize(ctx, rt, idx, plan)

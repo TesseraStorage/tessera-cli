@@ -713,7 +713,7 @@ func cmdDelete(args []string) {
 		var q string
 		switch {
 		case toTrash:
-			q = fmt.Sprintf("Move %s (%s) to the trash? It can be restored with 'tessera trash restore' for %s. [y/N] ", what, formatBytes(uint64(total)), describeTrashWindow())
+			q = fmt.Sprintf("Move %s (%s) to the trash? It stays there (and counts toward storage) until you empty the trash, and can be restored with 'tessera trash restore'. [y/N] ", what, formatBytes(uint64(total)))
 		case nEarlier > 0:
 			q = fmt.Sprintf("Permanently delete %s (%s) and %d earlier version(s)? This cannot be undone. [y/N] ", what, formatBytes(uint64(total)), nEarlier)
 		default:
@@ -764,12 +764,6 @@ func cmdDelete(args []string) {
 		fatal("%d of %d file(s) could not be deleted (listed above)", failed, len(targets))
 	}
 	printStandingIfNotGood()
-}
-
-// describeTrashWindow is the trash retention in words ("30 days").
-func describeTrashWindow() string {
-	d := trashRetention()
-	return fmt.Sprintf("%d days", int(d.Hours()/24))
 }
 
 // filesUnder lists the user files (not trash or version copies) under a

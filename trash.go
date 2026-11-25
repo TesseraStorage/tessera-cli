@@ -13,8 +13,9 @@ import (
 )
 
 // TrashPrefix is the reserved remote namespace for soft-deleted files. They
-// stay pinned (and therefore recoverable) until the retention window passes or
-// the user purges them.
+// stay pinned (and therefore recoverable) until the user purges them
+// ('trash rm', 'trash empty'). Nothing expires them automatically: expireTrash
+// only ran from folder sync, which is retired.
 const TrashPrefix = ".tessera-trash"
 
 // TrashedEntry records a soft deletion so restore does not need a rescan.
@@ -148,19 +149,16 @@ func trashList(args []string) {
 		fmt.Println("Trash is empty.")
 		return
 	}
-	retention := trashRetention()
-	fmt.Printf("%-44s  %10s  %-24s  %s\n", "ORIGINAL PATH", "SIZE", "DELETED", "EXPIRES")
-	fmt.Println(strings.Repeat("-", 90))
+	// No EXPIRES column: trashed files never expire automatically.
+	fmt.Printf("%-44s  %10s  %s\n", "ORIGINAL PATH", "SIZE", "DELETED")
+	fmt.Println(strings.Repeat("-", 80))
 	for _, e := range t.Entries {
-		expires := "never"
-		if retention > 0 {
-			expires = e.DeletedAt.Add(retention).Format("2006-01-02")
-		}
-		fmt.Printf("%-44s  %10s  %-24s  %s\n",
+		fmt.Printf("%-44s  %10s  %s\n",
 			truncate(e.OriginalPath, 44), formatBytes(uint64(e.Size)),
-			localStamp(e.DeletedAt, true), expires)
+			localStamp(e.DeletedAt, true))
 	}
-	fmt.Printf("\n%d item(s). Restore with: tessera trash restore <path>\n", len(t.Entries))
+	fmt.Printf("\n%d item(s), trashed from this machine. Restore with: tessera trash restore <path>\n", len(t.Entries))
+	fmt.Println("Trashed files stay, and count toward storage, until 'tessera trash rm <path>' or 'tessera trash empty'.")
 }
 
 func trashRestore(original string) {

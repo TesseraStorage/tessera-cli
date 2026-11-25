@@ -202,7 +202,12 @@ Upload a file or a folder (folders are uploaded recursively).
 Uploading to a path that already holds a file replaces it as the current
 file; the previous copy is kept as an earlier version ('tessera versions
 <path>'), and it stays stored and counts toward storage until it is removed
-with 'tessera delete <path> --purge'.
+with 'tessera delete <path> --purge' (or, if its bytes are identical to the
+current file, by 'tessera optimize').
+
+Retrying an upload that already went through stores the file again (an
+earlier version with the same content); there is no idempotency key. To check
+before retrying, run 'tessera list --json' and match path plus sha256.
 
 During technical validation one upload of up to 40 MiB (one slab) is allowed.
 A larger file is refused before anything is uploaded. With a balance, files of
@@ -275,7 +280,9 @@ payback, and estimated time to run. Then asks "Proceed? [y/N]".
 Downloads only each file's real data, uploads them together with the same
 paths, dates and hashes, verifies the new copies, and only then unpins the
 old ones, so a failure never loses data. Paths and folders look as they did
-before. An optional prefix limits the plan to that remote folder (files
+before. Before repacking it removes earlier versions that are byte-identical
+(same SHA-256) to the current file at the same path, such as those left by
+re-uploading the same file; earlier versions with different content are kept. An optional prefix limits the plan to that remote folder (files
 that share a block with it are included so the shared block can be freed).
 
   --dry-run   Show the plan only
@@ -303,6 +310,11 @@ private app key stays in ~/.tessera/config.json as "app_key" and is never
 printed), and whether an encrypted copy of the recovery phrase is saved here
 (only if you chose one, with a phrase password, at an interactive
 'tessera login'; see 'tessera phrase show').
+
+whoami reads the local config only and does not contact the network, so it
+succeeds (exit 0) even when the app key is missing or no longer valid. Use
+'tessera status' to check the key with the indexer. --json adds
+"local_check_only": true to say so.
 `,
 	"rates": `Usage: {exe} rates [--json]
 
@@ -344,18 +356,27 @@ it from the network with --rebuild. Commands that change files rebuild it on
 their own; this is only needed if it looks out of date.
 `,
 	"config": `Usage: {exe} config [--json]
-       {exe} config --trash-retention <days>   (0 = default 30 days; negative turns the trash off)
+       {exe} config --trash-retention <days>   (negative turns the trash off; 0 or more keeps it on)
        {exe} config --update-check on|off
        {exe} config --billing-url <url>
 
 Show or change this machine's settings (~/.tessera/config.json).
+
+Trashed files are not removed automatically: they stay in the trash, and
+count toward storage, until 'tessera trash rm <path>' or 'tessera trash empty'.
+A positive --trash-retention is accepted for compatibility but does not make
+the trash expire. The trash list is kept on this machine
+(~/.tessera/trash.json); files trashed from another machine are not listed here.
 
 --version-retention and --default-jobs are accepted for compatibility; they
 only affect folder sync, which is not available yet.
 `,
 	"trash": `Usage: {exe} trash list|restore <path>|rm <path>|empty [--yes]
 
-Inspect, restore or permanently remove trashed files.
+Inspect, restore or permanently remove trashed files. Trashed files stay (and
+count toward storage) until 'trash rm' or 'trash empty'; nothing expires
+automatically. The list is kept on this machine (~/.tessera/trash.json), so
+'trash list' shows only files trashed from here.
 `,
 }
 
@@ -475,7 +496,8 @@ Account readiness (shown by signup, login, status, account and usage):
                      tessera topup 5
   ready              funded; uploads and downloads run normally
 Other commands mention readiness only when an upload cannot run.
-status prints "Account funded: yes/no". The low-level host-funding flag
+status prints "Account funded: yes/no" ("unknown" when the balance cannot be
+read, e.g. no billing key on this machine). The low-level host-funding flag
 (JSON key "ready") stays false until the first top-up, because during
 technical validation Tessera covers the hosts; that is expected. Uploads and
 downloads use the hosts the network returns; there is no preflight probe.

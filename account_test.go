@@ -566,6 +566,10 @@ func TestAccountFundedYesNoIsBalancePositive(t *testing.T) {
 	if got := accountFundedYesNo(true, map[string]any{}); got != "no" {
 		t.Errorf("missing balance: funded %q, want no", got)
 	}
+	// No billing key (or billing unreachable): unknown, never "no".
+	if got := accountFundedYesNo(true, nil); !strings.HasPrefix(got, "unknown") {
+		t.Errorf("no billing account: funded %q, want unknown", got)
+	}
 }
 
 func TestSignedMoneySignBeforeDollar(t *testing.T) {

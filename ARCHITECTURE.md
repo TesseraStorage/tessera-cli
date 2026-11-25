@@ -168,7 +168,7 @@ Details that make this work:
 
 | command | mechanism |
 |---|---|
-| `trash` | re-attaches the object under `.tessera-trash/<sha8>/<path>`; purged after the retention window |
+| `trash` | re-attaches the object under `.tessera-trash/<sha8>/<path>`; kept until `trash rm` / `trash empty` (no automatic expiry: `expireTrash` only ran from folder sync, which is retired). The trash list is local to each machine (`~/.tessera/trash.json`) |
 | `versions` | re-attaches the superseded object under `.tessera-versions/<path>/<stamp>-<sha8>` |
 | `audit` | reads the slab redundancy recorded at upload (not live host health); `--verify` streams each object into SHA-256 without writing it and compares it with the stored hash |
 | `usage` | sums logical bytes and reports the ≈3× network footprint from 10+20 coding |
