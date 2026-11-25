@@ -40,6 +40,14 @@ func cmdUninstall(args []string) {
 		fmt.Printf("  %d. Stop and remove the background sync watcher installed by an older version\n", step)
 		step++
 	}
+	pathEdits := planPathLineEdits(exe)
+	for _, e := range pathEdits {
+		fmt.Printf("  %d. Remove the PATH line the installer added to %s:\n", step, e.File)
+		for _, l := range e.Lines {
+			fmt.Printf("       %s\n", l)
+		}
+		step++
+	}
 	fmt.Printf("  %d. Remove this binary: %s\n", step, exe)
 	fmt.Println()
 	fmt.Printf("Your login, local file index and trash list in %s are kept\n", dir)
@@ -80,6 +88,16 @@ func cmdUninstall(args []string) {
 		}
 		if defDir, derr := serviceDefinitionDir(); derr == nil {
 			_ = os.RemoveAll(defDir)
+		}
+	}
+
+	// 1b. The PATH line(s) install.sh added (only lines carrying its marker
+	// for this binary's directory; nothing else in the file changes).
+	for _, e := range pathEdits {
+		if err := writeFileAtomic(e.File, e.NewData, e.Mode); err != nil {
+			fmt.Printf("  could not edit %s: %v\n  Remove this line yourself: %s\n", e.File, err, strings.Join(e.Lines, " / "))
+		} else {
+			fmt.Printf("Removed the installer's PATH line from %s (open a new terminal)\n", e.File)
 		}
 	}
 
@@ -127,7 +145,9 @@ Usage:
 
 Local state (login, local file index, trash list) is kept by default so
 reinstalling can pick up right where you left off. A background sync watcher
-installed by an older version is stopped and removed too. Your stored files
+installed by an older version is stopped and removed too, and so is the
+PATH line install.sh added to a shell startup file (only the line marked
+"# added by the Tessera installer" for this binary's directory). Your stored files
 and your account are not affected; to delete them use
 'tessera account purge-data' or 'tessera account delete'.
 `, exe, exe, exe, strings.TrimSuffix(mustConfigDirForUsage(), "\n"), exe)
