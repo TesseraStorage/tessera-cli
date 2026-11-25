@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -29,7 +30,7 @@ import (
 // connectSDK builds an SDK instance from the saved config.
 func connectSDK(ctx context.Context, cfg *Config) (*siastorage.SDK, func(), error) {
 	appKeyBytes, err := hex.DecodeString(cfg.AppKey)
-	if err != nil || len(appKeyBytes) < 32 {
+	if err != nil || len(appKeyBytes) != ed25519.PrivateKeySize {
 		return nil, nil, fmt.Errorf("invalid app key (%d bytes) — run 'tessera login'", len(appKeyBytes))
 	}
 	appKey := types.PrivateKey(appKeyBytes)
@@ -70,7 +71,7 @@ func connectSDK(ctx context.Context, cfg *Config) (*siastorage.SDK, func(), erro
 // must still use connectSDK.
 func connectAPI(cfg *Config) (*indexdapp.Client, types.PrivateKey, error) {
 	appKeyBytes, err := hex.DecodeString(cfg.AppKey)
-	if err != nil || len(appKeyBytes) < 32 {
+	if err != nil || len(appKeyBytes) != ed25519.PrivateKeySize {
 		return nil, nil, fmt.Errorf("invalid app key (%d bytes) — run 'tessera login'", len(appKeyBytes))
 	}
 	appKey := types.PrivateKey(appKeyBytes)

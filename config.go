@@ -26,7 +26,7 @@ const (
 type Config struct {
 	IndexerURL      string `json:"indexer_url"`
 	AppID           string `json:"app_id"`
-	AppKey          string `json:"app_key"`                    // hex-encoded 32-byte seed
+	AppKey          string `json:"app_key"`                    // hex-encoded 64-byte ed25519 private key
 	PhraseEncrypted string `json:"phrase_encrypted,omitempty"` // AES-GCM encrypted, hex-encoded
 	PhraseSalt      string `json:"phrase_salt,omitempty"`      // argon2 salt, hex-encoded
 

@@ -149,3 +149,17 @@ func TestDescribeTrashNoExpiry(t *testing.T) {
 		t.Errorf("describeTrash(-1) = %q", s)
 	}
 }
+
+// A malformed app key (wrong length) is a clear error, not a panic in Sign.
+func TestConnectAPIRejectsWrongKeyLength(t *testing.T) {
+	for _, n := range []int{0, 32, 63, 65} {
+		cfg := &Config{AppKey: strings.Repeat("ab", n), IndexerURL: defaultIndexer}
+		if _, _, err := connectAPI(cfg); err == nil || !strings.Contains(err.Error(), "invalid app key") {
+			t.Errorf("%d bytes: err %v", n, err)
+		}
+	}
+	cfg := &Config{AppKey: strings.Repeat("ab", 64), IndexerURL: defaultIndexer}
+	if _, _, err := connectAPI(cfg); err != nil {
+		t.Errorf("64 bytes: %v", err)
+	}
+}
