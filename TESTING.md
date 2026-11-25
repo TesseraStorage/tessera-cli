@@ -91,9 +91,9 @@ go build -mod=vendor .
 exist on a build runner (they do not exist on GitHub Actions).
 
 CI runs the same gates: the test job does `go vet -mod=vendor ./...` and
-`go test -mod=vendor ./...`, and the build matrix cross-compiles all four
-targets with `-mod=vendor` (linux-amd64, darwin-amd64, darwin-arm64,
-windows-amd64 — see `.github/workflows/build.yml`). The full local gate before a
+`go test -mod=vendor ./...`, and the build matrix cross-compiles all six
+targets with `-mod=vendor` (linux-amd64, linux-arm64, darwin-amd64,
+darwin-arm64, windows-amd64, windows-arm64 — see `.github/workflows/build.yml`). The full local gate before a
 release adds `gofmt` and disables the test cache:
 
 ```bash
@@ -101,9 +101,11 @@ gofmt -l *.go                    # must print nothing
 go vet -mod=vendor ./...
 go test -mod=vendor -count=1 ./...
 GOOS=linux   GOARCH=amd64 go build -mod=vendor -o /tmp/tessera-linux-amd64 .
+GOOS=linux   GOARCH=arm64 go build -mod=vendor -o /tmp/tessera-linux-arm64 .
 GOOS=darwin  GOARCH=amd64 go build -mod=vendor -o /tmp/tessera-darwin-amd64 .
 GOOS=darwin  GOARCH=arm64 go build -mod=vendor -o /tmp/tessera-darwin-arm64 .
 GOOS=windows GOARCH=amd64 go build -mod=vendor -o /tmp/tessera-windows-amd64.exe .
+GOOS=windows GOARCH=arm64 go build -mod=vendor -o /tmp/tessera-windows-arm64.exe .
 ```
 
 ### Re-vendoring after a fork change

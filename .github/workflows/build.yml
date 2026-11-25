@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   # Fast gate: the unit suite covers the reconciliation table, deletion and
-  # conflict handling, so a failing test stops the matrix before four binaries
+  # conflict handling, so a failing test stops the matrix before six binaries
   # are produced. Vendor mode is pinned so the runner never needs the local
   # fork checkouts referenced by go.mod's replace directives (the committed
   # vendor/ tree is the source of truth; see TESTING.md).
@@ -43,6 +43,10 @@ jobs:
             goos: linux
             goarch: amd64
             ext: ""
+          - target: linux-arm64
+            goos: linux
+            goarch: arm64
+            ext: ""
           - target: darwin-amd64
             goos: darwin
             goarch: amd64
@@ -54,6 +58,10 @@ jobs:
           - target: windows-amd64
             goos: windows
             goarch: amd64
+            ext: ".exe"
+          - target: windows-arm64
+            goos: windows
+            goarch: arm64
             ext: ".exe"
 
     steps:

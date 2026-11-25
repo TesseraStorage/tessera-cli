@@ -70,9 +70,11 @@ terminals pick it up). The same environment variables apply.
 | Platform | Binary |
 |---|---|
 | **Linux** (x86_64) | `tessera-linux-amd64` |
+| **Linux** (arm64 / aarch64) | `tessera-linux-arm64` |
 | **macOS** (Apple Silicon) | `tessera-darwin-arm64` |
 | **macOS** (Intel) | `tessera-darwin-amd64` |
 | **Windows** (x86_64) | `tessera-windows-amd64.exe` |
+| **Windows** (arm64) | `tessera-windows-arm64.exe` |
 
 ### Next steps
 
@@ -488,6 +490,9 @@ fork checkouts; see `TESTING.md` §2 for the exact procedure.
 # Linux (x86_64)
 GOOS=linux GOARCH=amd64 go build -mod=vendor -o tessera-linux-amd64 .
 
+# Linux arm64 (aarch64)
+GOOS=linux GOARCH=arm64 go build -mod=vendor -o tessera-linux-arm64 .
+
 # macOS Intel
 GOOS=darwin GOARCH=amd64 go build -mod=vendor -o tessera-darwin-amd64 .
 
@@ -496,6 +501,9 @@ GOOS=darwin GOARCH=arm64 go build -mod=vendor -o tessera-darwin-arm64 .
 
 # Windows (x86_64)
 GOOS=windows GOARCH=amd64 go build -mod=vendor -o tessera-windows-amd64.exe .
+
+# Windows arm64
+GOOS=windows GOARCH=arm64 go build -mod=vendor -o tessera-windows-arm64.exe .
 ```
 
 The resulting binaries are **statically linked** — no dependencies needed. Ship
