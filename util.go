@@ -202,6 +202,7 @@ func copyFileAtomicVerify(dst string, r io.Reader, mode os.FileMode, verify func
 		return 0, err
 	}
 	tmpName := tmp.Name()
+	lockTempFile(tmp) // held until Close; see removeStaleTemps
 	trackTemp(tmpName)
 	defer untrackTemp(tmpName)
 	defer os.Remove(tmpName)
@@ -215,6 +216,11 @@ func copyFileAtomicVerify(dst string, r io.Reader, mode os.FileMode, verify func
 		tmp.Close()
 		return n, err
 	}
+	// Set the mode through the open file, while the lock is still held.
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		return n, tempGoneErr(err, tmpName, dst)
+	}
 	if err := tmp.Close(); err != nil {
 		return n, err
 	}
@@ -223,10 +229,20 @@ func copyFileAtomicVerify(dst string, r io.Reader, mode os.FileMode, verify func
 			return n, err
 		}
 	}
-	if err := os.Chmod(tmpName, mode); err != nil {
-		return n, err
+	return n, tempGoneErr(os.Rename(tmpName, dst), tmpName, dst)
+}
+
+// tempGoneErr turns "no such file" on the partial file into an error that
+// says what happened: something else removed it before it could be saved.
+// dst was not changed. Other errors are returned as they are.
+func tempGoneErr(err error, tmpName, dst string) error {
+	if err == nil || !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
-	return n, os.Rename(tmpName, dst)
+	if _, serr := os.Stat(tmpName); serr == nil {
+		return err
+	}
+	return fmt.Errorf("the partial download file %s was removed by another process before it could be saved; %s was not changed. Run the download again", tmpName, dst)
 }
 
 // durationFlag parses a Go duration flag with a fallback.
@@ -324,8 +340,9 @@ func formatAge(t time.Time) string {
 const tempFilePrefix = ".tessera-tmp-"
 
 // staleTempAge is how long a partial download file must have been left
-// unchanged before a later download in the same folder removes it. A running
-// download writes to its file continuously, so it is never this old.
+// unchanged before a later download in the same folder removes it. Age alone
+// is not proof the download is dead (a stalled or stopped one stops writing),
+// so removeStaleTemps also skips files a live download still holds locked.
 const staleTempAge = 15 * time.Minute
 
 var (
@@ -374,7 +391,8 @@ func removeTrackedTemps() {
 // removeStaleTemps deletes partial download files left in dir by an earlier
 // download that was killed (for example with SIGKILL, which cannot be caught)
 // and returns how many it removed. Only regular files named
-// .tessera-tmp-* that have not changed for staleTempAge are touched.
+// .tessera-tmp-* that have not changed for staleTempAge and that no running
+// download holds open (locked) are touched.
 func removeStaleTemps(dir string) int {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -389,7 +407,7 @@ func removeStaleTemps(dir string) int {
 		if err != nil || time.Since(info.ModTime()) < staleTempAge {
 			continue
 		}
-		if os.Remove(filepath.Join(dir, e.Name())) == nil {
+		if removeUnlockedTemp(filepath.Join(dir, e.Name())) {
 			removed++
 		}
 	}

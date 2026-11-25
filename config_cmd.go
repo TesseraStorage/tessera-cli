@@ -28,7 +28,7 @@ const maxDefaultJobs = 64
 //
 //	tessera config
 //	tessera config --version-retention 5
-//	tessera config --trash-retention 14
+//	tessera config --trash-retention -1
 //	tessera config --default-jobs 4
 //	tessera config --billing-url https://tessera.storage/api/v1
 func cmdConfig(args []string) {
@@ -49,7 +49,7 @@ func cmdConfig(args []string) {
 	if v, ok := flagValue(args, "--trash-retention"); ok {
 		n, err := strconv.Atoi(v)
 		if err != nil {
-			fatal("--trash-retention expects a number of days (0 = default 30, negative disables)")
+			fatal("--trash-retention expects a whole number (negative turns the trash off; 0 or more keeps it on)")
 		}
 		cfg.TrashRetentionDays = n
 		changed = true
@@ -131,10 +131,10 @@ func cmdConfig(args []string) {
 	fmt.Printf("App ID:           %s\n", cfg.AppID)
 	fmt.Printf("Trashed items:    %d\n", len(trash.Entries))
 	fmt.Println()
-	fmt.Printf("Trash retention:    %s\n", describeTrash(cfg.TrashRetentionDays))
+	fmt.Printf("Trash:              %s\n", describeTrash(cfg.TrashRetentionDays))
 	fmt.Printf("Update check:       %s\n", describeUpdateCheck(cfg.UpdateCheckDisabled))
 	fmt.Println()
-	fmt.Println("Change with: tessera config --trash-retention 14")
+	fmt.Println("Change with: tessera config --trash-retention -1   (turn the trash off)")
 	fmt.Println("             tessera config --update-check off")
 	fmt.Println("             tessera config --billing-url https://tessera.storage/api/v1")
 	fmt.Println()
@@ -171,10 +171,10 @@ func describeTrash(n int) string {
 	switch {
 	case n < 0:
 		return "off (delete is immediate)"
-	case n == 0:
-		return "30 days (default)"
 	default:
-		return fmt.Sprintf("%d days", n)
+		// Any non-negative value keeps the trash on. Nothing expires
+		// automatically (expiry only ran from folder sync, which is retired).
+		return "on (trashed files stay until 'tessera trash rm' or 'trash empty'; nothing expires automatically)"
 	}
 }
 

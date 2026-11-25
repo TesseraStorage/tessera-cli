@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -29,7 +30,7 @@ import (
 // connectSDK builds an SDK instance from the saved config.
 func connectSDK(ctx context.Context, cfg *Config) (*siastorage.SDK, func(), error) {
 	appKeyBytes, err := hex.DecodeString(cfg.AppKey)
-	if err != nil || len(appKeyBytes) < 32 {
+	if err != nil || len(appKeyBytes) != ed25519.PrivateKeySize {
 		return nil, nil, fmt.Errorf("invalid app key (%d bytes) — run 'tessera login'", len(appKeyBytes))
 	}
 	appKey := types.PrivateKey(appKeyBytes)
@@ -70,7 +71,7 @@ func connectSDK(ctx context.Context, cfg *Config) (*siastorage.SDK, func(), erro
 // must still use connectSDK.
 func connectAPI(cfg *Config) (*indexdapp.Client, types.PrivateKey, error) {
 	appKeyBytes, err := hex.DecodeString(cfg.AppKey)
-	if err != nil || len(appKeyBytes) < 32 {
+	if err != nil || len(appKeyBytes) != ed25519.PrivateKeySize {
 		return nil, nil, fmt.Errorf("invalid app key (%d bytes) — run 'tessera login'", len(appKeyBytes))
 	}
 	appKey := types.PrivateKey(appKeyBytes)
@@ -1116,6 +1117,9 @@ func cmdWhoami(args []string) {
 			"app_id":               cfg.AppID,
 			"public_key":           appKeyPublicHex(cfg.AppKey),
 			"phrase_saved_locally": cfg.PhraseEncrypted != "",
+			// whoami reads ~/.tessera/config.json only; it does not contact
+			// the network, so it cannot tell whether the key still works.
+			"local_check_only": true,
 		})
 		return
 	}
@@ -1133,6 +1137,8 @@ func cmdWhoami(args []string) {
 	} else {
 		fmt.Println("Recovery:   phrase not saved on this machine (only the app key is; keep your written copy)")
 	}
+	fmt.Println("Checked:    local config only (no network). This does not prove the key")
+	fmt.Println("            works; 'tessera status' checks it with the indexer.")
 }
 
 func cmdStatus(args ...string) {
@@ -1276,6 +1282,11 @@ func readyNoteFor(ready bool, state string) string {
 // and suspended do not make a zero or negative balance "yes". first_funded_at
 // is not this label.
 func accountFundedYesNo(ready bool, billing map[string]any) string {
+	if billing == nil {
+		// No billing key on this machine, or the billing service did not
+		// answer: the balance is not known, which is not the same as "no".
+		return "unknown (no billing key on this machine, or billing did not answer)"
+	}
 	bal := accountBalanceUSD(billing, "balance_usd")
 	f, err := strconv.ParseFloat(bal, 64)
 	if err == nil && f > 0 {

@@ -124,6 +124,14 @@ path_line() {
     *)            printf 'export PATH="%s:$PATH" %s\n' "$DEST" "$path_marker" ;;
   esac
 }
+# The "for this one run" command, in the syntax of the shell the startup file
+# belongs to (fish has no "export PATH=...:$PATH").
+run_hint() {
+  case "$1" in
+    *config.fish) printf 'set -gx PATH "%s" $PATH' "$DEST" ;;
+    *)            printf 'export PATH="%s:$PATH"' "$DEST" ;;
+  esac
+}
 add_to_path() {
   rc="$1"
   if [ -f "$rc" ] && grep -F "$DEST" "$rc" 2>/dev/null | grep -qF "$path_marker"; then
@@ -133,9 +141,10 @@ add_to_path() {
   mkdir -p "$(dirname "$rc")" 2>/dev/null || true
   if printf '\n%s\n' "$(path_line "$rc")" >>"$rc" 2>/dev/null; then
     echo "      Added $DEST to PATH in $rc (one line, marked \"$path_marker\")."
-    echo "      New terminals pick it up; for this one run:  export PATH=\"$DEST:\$PATH\""
+    echo "      New terminals pick it up; for this one run:  $(run_hint "$rc")"
+    echo "      'tessera uninstall' removes this line again."
   else
-    echo "      Could not write $rc. Add it yourself:  export PATH=\"$DEST:\$PATH\""
+    echo "      Could not write $rc. Add it yourself:  $(run_hint "$rc")"
   fi
 }
 
@@ -147,13 +156,13 @@ case ":${PATH:-}:" in
     echo "      $DEST is not on your PATH."
     if [ "${TESSERA_NO_MODIFY_PATH:-}" = 1 ]; then
       echo "      TESSERA_NO_MODIFY_PATH=1, so no startup file was changed. Add it with:"
-      echo "        export PATH=\"$DEST:\$PATH\""
+      echo "        $(run_hint "$rc")"
     elif (: </dev/tty) 2>/dev/null && [ -t 2 ]; then
       printf '      Add it to PATH in %s? [Y/n] ' "$rc" >/dev/tty
       answer=""
       read -r answer </dev/tty || answer=""
       case "$answer" in
-        [nN]*) echo "      Left $rc unchanged. Add it yourself:  export PATH=\"$DEST:\$PATH\"" ;;
+        [nN]*) echo "      Left $rc unchanged. Add it yourself:  $(run_hint "$rc")" ;;
         *) add_to_path "$rc" ;;
       esac
     else
@@ -165,4 +174,5 @@ case ":${PATH:-}:" in
 esac
 echo
 echo "Next: tessera signup   (needs outbound TCP to storage hosts, usually port 9984)"
+echo "Remove later with: tessera uninstall   (removes the binary, and the PATH line if the installer added one)"
 echo "Done."

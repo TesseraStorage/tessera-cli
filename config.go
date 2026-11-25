@@ -26,15 +26,17 @@ const (
 type Config struct {
 	IndexerURL      string `json:"indexer_url"`
 	AppID           string `json:"app_id"`
-	AppKey          string `json:"app_key"`                    // hex-encoded 32-byte seed
+	AppKey          string `json:"app_key"`                    // hex-encoded 64-byte ed25519 private key
 	PhraseEncrypted string `json:"phrase_encrypted,omitempty"` // AES-GCM encrypted, hex-encoded
 	PhraseSalt      string `json:"phrase_salt,omitempty"`      // argon2 salt, hex-encoded
 
-	// VersionRetention is how many previous copies of a file to keep. 0 means
-	// no versions are retained (the old object is deleted on replace).
+	// VersionRetention is how many previous copies of a file folder sync
+	// keeps. 0 means the default (DefaultVersionRetention, 1); a negative value
+	// keeps none. Only folder sync prunes versions.
 	VersionRetention int `json:"version_retention,omitempty"`
-	// TrashRetentionDays is how long soft-deleted files stay recoverable.
-	// 0 means the 30 day default; a negative value disables trash entirely.
+	// TrashRetentionDays: a negative value disables the trash (delete is
+	// immediate). Any other value keeps it on; trashed files do not expire
+	// automatically (expiry only ran from folder sync, which is retired).
 	TrashRetentionDays int `json:"trash_retention_days,omitempty"`
 	// DefaultJobs limits parallel transfers (0 = the built-in default).
 	DefaultJobs int `json:"default_jobs,omitempty"`
